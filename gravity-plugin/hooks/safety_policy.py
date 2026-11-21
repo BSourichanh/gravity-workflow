@@ -4,10 +4,9 @@
 import ast
 import posixpath
 import re
-import shlex
 import sys
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Set, Tuple
 
 HOOKS_DIR = Path(__file__).resolve().parent
 if str(HOOKS_DIR) not in sys.path:
@@ -92,15 +91,134 @@ HARNESS_SELF_PROTECT_PATTERNS = [
 ]
 
 PATH_TOKEN_RE = re.compile(r"""[^\s"'`;&|()<>]+""")
+MAX_SUBSHELL_DEPTH = 4
+
+ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+PYTHON_VERSIONED_HEAD_RE = re.compile(r"^python[23]\.\d+$")
+PY_VERSION_OPT_RE = re.compile(r"^(?:-[23](?:\.\d+)?(?:-(?:32|64|arm64))?|-V:.+)$", re.IGNORECASE)
+
+PYTHON_VALUE_OPTS = {"-W", "-X", "--check-hash-based-pycs"}
+NODE_VALUE_OPTS = {
+    "-r",
+    "--require",
+    "--import",
+    "--loader",
+    "--experimental-loader",
+    "--conditions",
+    "-C",
+    "--env-file",
+    "--env-file-if-exists",
+    "--max-old-space-size",
+    "--inspect",
+    "--inspect-brk",
+    "--title",
+    "--redirect-warnings",
+    "--cpu-prof-dir",
+    "--heap-prof-dir",
+}
+RUBY_VALUE_OPTS = {
+    "-I",
+    "-r",
+    "-C",
+    "-E",
+    "-F",
+    "-K",
+    "-T",
+    "--encoding",
+    "--external-encoding",
+    "--internal-encoding",
+}
+PS_VALUE_OPTS = {
+    "-executionpolicy",
+    "-ep",
+    "-inputformat",
+    "-if",
+    "-outputformat",
+    "-of",
+    "-windowstyle",
+    "-w",
+    "-configurationname",
+    "-workingdirectory",
+    "-wd",
+    "-settingsfile",
+    "-custompipename",
+}
+SUDO_VALUE_OPTS = {
+    "-u",
+    "-g",
+    "-C",
+    "-D",
+    "-h",
+    "-p",
+    "-r",
+    "-t",
+    "-T",
+    "-U",
+    "--user",
+    "--group",
+    "--chdir",
+    "--prompt",
+    "--role",
+    "--type",
+    "--other-user",
+}
+ENV_VALUE_OPTS = {"-u", "-C", "--unset", "--chdir"}
+GIT_GLOBAL_VALUE_OPTS = {
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--super-prefix",
+    "--config-env",
+    "--exec-path",
+}
+HARNESS_WRITE_OR_EXEC_HEADS: Set[str] = {
+    "rm",
+    "mv",
+    "cp",
+    "chmod",
+    "chown",
+    "truncate",
+    "tee",
+    "python",
+    "python3",
+    "py",
+    "perl",
+    "ruby",
+    "node",
+    "remove-item",
+    "ri",
+    "del",
+    "rd",
+    "rmdir",
+    "erase",
+    "set-content",
+    "out-file",
+    "add-content",
+    "ac",
+    "sc",
+    "clear-content",
+    "clc",
+    "move-item",
+    "mi",
+    "copy-item",
+    "cpi",
+    "copy",
+    "rename-item",
+    "rni",
+    "new-item",
+    "ni",
+}
+
+ENV_DUMP_PATTERN = re.compile(
+    r"(?:^|[;&|]\s*)(?:printenv\b|env\s*(?:$|[;&|>])|export\s+-p\b|declare\s+-x\b|"
+    r"(?:Get-ChildItem|gci|ls|dir|Get-Item|gi|Get-Content|gc|cat)\s+Env:|Get-Variable\b)|"
+    r"\[(?:System\.)?Environment\]::GetEnvironmentVariables\b",
+    re.IGNORECASE,
+)
 
 DANGEROUS_CMDS = [
-    (
-        re.compile(
-            r"\bgit(?:\.exe)?\b(?:\s+(?:(?:-[Cc]\s+\S+)|(?:--(?:git-dir|work-tree|namespace|config-env)(?:=|\s+)\S+)|(?:-[A-Za-z0-9]+)|(?:--[a-z0-9-]+(?:=\S+)?)))*\s+push\b[^\n]*?(?:(?:\s|^)(?:-f|--force)(?:\s|$)|(?:\s|^)\+\S+)",
-            re.IGNORECASE,
-        ),
-        "Force-push Git (-f / --force / +ref) bloqué.",
-    ),
     (
         re.compile(
             r"\b(?:drop\s+(?:database|schema|table)|truncate\s+table|flushall|flushdb)\b",
@@ -109,12 +227,7 @@ DANGEROUS_CMDS = [
         "Suppression massive de base de données bloquée.",
     ),
     (
-        re.compile(
-            r"(?:^|[;&|]\s*)(?:printenv\b|env\s*(?:$|[;&|>])|export\s+-p\b|declare\s+-x\b|"
-            r"(?:Get-ChildItem|gci|ls|dir|Get-Item|gi|Get-Content|gc|cat)\s+Env:|Get-Variable\b)|"
-            r"\[(?:System\.)?Environment\]::GetEnvironmentVariables\b",
-            re.IGNORECASE,
-        ),
+        ENV_DUMP_PATTERN,
         "Affichage global des variables d'environnement bloqué (anti-fuite secrets).",
     ),
     (
@@ -134,14 +247,6 @@ DANGEROUS_CMDS = [
     ),
     (
         re.compile(
-            r"(?:\b(?:rm|mv|cp|chmod|chown|truncate|tee|(?:python3?|py|perl|ruby|node)(?:\.exe)?|Remove-Item|ri|del|rd|Set-Content|Out-File|Add-Content|ac|sc|Clear-Content|clc|Move-Item|mi|Copy-Item|cpi|copy|Rename-Item|rni|New-Item|ni)\b|\bsed\s+-i\b|>{1,2})"
-            r"[^\n]*?(?:(?:^|[\s\"'=:(])hooks\.json(?:$|[\s\"',;)])|(?:\.agents|gravity-plugin|plugins[/\\]gravity|gravity)(?:[/\\]|\./)+hooks\.json|(?:^|[\s\"'=:(/\\])(?:\.agents[/\\]gravity|gravity-plugin|plugins[/\\]gravity|gravity)(?:[/\\]|\./)+hooks(?:[/\\]|$)|01-safety(?:-boundaries)?\.md)",
-            re.IGNORECASE,
-        ),
-        "Tentative de modification/suppression des garde-fous Gravity bloquée (auto-protection).",
-    ),
-    (
-        re.compile(
             r"\b(?:curl|wget)(?:\.exe)?\b[^\n]*?\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|python3?|py|pwsh|powershell)(?:\.exe)?\b",
             re.IGNORECASE,
         ),
@@ -158,42 +263,19 @@ DANGEROUS_CMDS = [
 
 OPAQUE_ASK_CMDS = [
     (
-        re.compile(r"\bfind\b[^\n]*?\s-(?:exec|execdir|ok)\b", re.IGNORECASE),
-        "Exécution indirecte via `find -exec` détectée : validation humaine requise.",
-    ),
-    (
         re.compile(r"\bxargs\b", re.IGNORECASE),
         "Exécution dynamique via `xargs` détectée : validation humaine requise.",
     ),
     (
         re.compile(
-            r"\bbase64\b[^\n]*?(?:-d|--decode)\b|\|\s*base64\b|FromBase64String",
+            r"\|\s*base64\b|FromBase64String",
             re.IGNORECASE,
         ),
         "Décodage ou pipe `base64` détecté : validation humaine requise.",
     ),
     (
-        re.compile(r"(?:^|[;&|]\s*)eval\b", re.IGNORECASE),
-        "Évaluation shell dynamique (`eval`) détectée : validation humaine requise.",
-    ),
-    (
-        re.compile(
-            r"\b(?:sh|bash|zsh|dash|pwsh|powershell|cmd)(?:\.exe)?\b[^\n]*?\s+(?:-c|-Command|/c|-(?:EncodedCommand|enc))\b",
-            re.IGNORECASE,
-        ),
-        "Sous-shell inline ou encodé détecté : validation humaine requise.",
-    ),
-    (
         re.compile(r"\b(?:iex|Invoke-Expression)\b", re.IGNORECASE),
         "Évaluation PowerShell dynamique (`iex`/`Invoke-Expression`) détectée : validation humaine requise.",
-    ),
-    (
-        re.compile(r"\b(?:python3?|py)(?:\.exe)?\b[^\n]*?\s+-c\b", re.IGNORECASE),
-        "Exécution de code Python inline (`-c`) détectée : validation humaine requise.",
-    ),
-    (
-        re.compile(r"\b(?:node|perl|ruby)(?:\.exe)?\b[^\n]*?\s+-e\b", re.IGNORECASE),
-        "Exécution de code inline via interpréteur (`-e`) détectée : validation humaine requise.",
     ),
     (
         re.compile(r"(?:^|[\s/\"'=:(])\.[a-z0-9_]*[*?]", re.IGNORECASE),
@@ -264,53 +346,683 @@ def _is_destructive_target(tok: str) -> bool:
     return False
 
 
-def _is_destructive_rm(cmd: str) -> bool:
+def _find_matching_paren(text: str, start: int) -> Tuple[str, int]:
+    """Retourne `(corps_interne, index_apres_parenthese)` pour `$(...)` en respectant les guillemets."""
+    stack = [{"single": False, "double": False}]
+    j = start
+    n = len(text)
+    while j < n:
+        ch = text[j]
+        top = stack[-1]
+        if top["single"]:
+            if ch == "'":
+                top["single"] = False
+            j += 1
+            continue
+        if top["double"]:
+            if ch in ("\\", "`") and j + 1 < n and text[j + 1] == '"':
+                j += 2
+                continue
+            if ch == '"':
+                top["double"] = False
+                j += 1
+                continue
+            if ch == "$" and j + 1 < n and text[j + 1] == "(":
+                stack.append({"single": False, "double": False})
+                j += 2
+                continue
+            j += 1
+            continue
+        if ch == "'":
+            top["single"] = True
+            j += 1
+            continue
+        if ch == '"':
+            top["double"] = True
+            j += 1
+            continue
+        if ch == "$" and j + 1 < n and text[j + 1] == "(":
+            stack.append({"single": False, "double": False})
+            j += 2
+            continue
+        if ch == "(":
+            stack.append({"single": False, "double": False})
+            j += 1
+            continue
+        if ch == ")":
+            stack.pop()
+            if not stack:
+                return text[start:j], j + 1
+            j += 1
+            continue
+        j += 1
+    return text[start:], n
+
+
+def _find_matching_backtick(
+    text: str, start: int, stop_on_unescaped_dquote: bool = False
+) -> Optional[Tuple[str, int]]:
+    """Retourne `(corps_interne, index_apres_backtick)` pour `` `...` `` ou None si non apparié."""
+    j = start
+    n = len(text)
+    while j < n:
+        ch = text[j]
+        if ch == "\\" and j + 1 < n and text[j + 1] in ("`", '"'):
+            j += 2
+            continue
+        if stop_on_unescaped_dquote and ch == '"':
+            return None
+        if ch == "`":
+            return text[start:j], j + 1
+        j += 1
+    return None
+
+
+def split_shell_segments(
+    cmd: str, _depth: int = 0, max_depth: int = MAX_SUBSHELL_DEPTH
+) -> List[str]:
+    """Découpe une commande shell par séparateurs hors guillemets et extrait `$(...)`/backticks."""
+    segments: List[str] = []
+    extracted_subcmds: List[str] = []
+    current: List[str] = []
+    in_single = False
+    in_double = False
+    i = 0
+    n = len(cmd)
+
+    def _flush() -> None:
+        seg_text = "".join(current).strip()
+        if seg_text:
+            segments.append(seg_text)
+        current.clear()
+
+    while i < n:
+        ch = cmd[i]
+        if in_single:
+            current.append(ch)
+            if ch == "'":
+                in_single = False
+            i += 1
+            continue
+
+        if in_double:
+            if ch in ("\\", "`") and i + 1 < n and cmd[i + 1] == '"':
+                current.append(cmd[i : i + 2])
+                i += 2
+                continue
+            if ch == '"':
+                current.append(ch)
+                in_double = False
+                i += 1
+                continue
+            if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+                inner, end_idx = _find_matching_paren(cmd, i + 2)
+                current.append(cmd[i:end_idx])
+                if inner.strip():
+                    extracted_subcmds.append(inner)
+                i = end_idx
+                continue
+            if ch == "`":
+                bt = _find_matching_backtick(cmd, i + 1, stop_on_unescaped_dquote=True)
+                if bt is not None:
+                    inner, end_idx = bt
+                    current.append(cmd[i:end_idx])
+                    if inner.strip():
+                        extracted_subcmds.append(inner)
+                    i = end_idx
+                    continue
+            current.append(ch)
+            i += 1
+            continue
+
+        if ch == "'":
+            in_single = True
+            current.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            in_double = True
+            current.append(ch)
+            i += 1
+            continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+            inner, end_idx = _find_matching_paren(cmd, i + 2)
+            current.append(cmd[i:end_idx])
+            if inner.strip():
+                extracted_subcmds.append(inner)
+            i = end_idx
+            continue
+        if ch == "`":
+            bt = _find_matching_backtick(cmd, i + 1, stop_on_unescaped_dquote=False)
+            if bt is not None:
+                inner, end_idx = bt
+                current.append(cmd[i:end_idx])
+                if inner.strip():
+                    extracted_subcmds.append(inner)
+                i = end_idx
+                continue
+        if ch in ("\r", "\n", ";"):
+            _flush()
+            i += 1
+            continue
+        if ch == "|":
+            _flush()
+            i += 2 if (i + 1 < n and cmd[i + 1] == "|") else 1
+            continue
+        if ch == "&":
+            if i + 1 < n and cmd[i + 1] == "&":
+                _flush()
+                i += 2
+                continue
+            prev_ch = cmd[i - 1] if i > 0 else ""
+            next_ch = cmd[i + 1] if i + 1 < n else ""
+            is_redir = prev_ch in (">", "<") or next_ch == ">"
+            is_leading_call_op = not "".join(current).strip()
+            if not is_redir and not is_leading_call_op:
+                _flush()
+                i += 1
+                continue
+
+        current.append(ch)
+        i += 1
+
+    _flush()
+    if _depth < max_depth:
+        for sub in extracted_subcmds:
+            segments.extend(split_shell_segments(sub, _depth + 1, max_depth=max_depth))
+    return segments
+
+
+def _tokenize_shell_segment(segment: str) -> List[str]:
+    """Tokenise un segment shell en préservant les backslashes Windows hors guillemets."""
+    tokens: List[str] = []
+    buf: List[str] = []
+    has_token = False
+    in_single = False
+    in_double = False
+    i = 0
+    n = len(segment)
+
+    while i < n:
+        ch = segment[i]
+        if in_single:
+            if ch == "'":
+                in_single = False
+            else:
+                buf.append(ch)
+            i += 1
+            continue
+        if in_double:
+            if ch == "\\" and i + 1 < n and segment[i + 1] == '"':
+                buf.append('"')
+                i += 2
+                continue
+            if ch == '"':
+                in_double = False
+            else:
+                buf.append(ch)
+            i += 1
+            continue
+
+        if ch.isspace():
+            if has_token:
+                tokens.append("".join(buf))
+                buf.clear()
+                has_token = False
+            i += 1
+            continue
+        if ch == "'":
+            in_single = True
+            has_token = True
+            i += 1
+            continue
+        if ch == '"':
+            in_double = True
+            has_token = True
+            i += 1
+            continue
+
+        has_token = True
+        buf.append(ch)
+        i += 1
+
+    if has_token:
+        tokens.append("".join(buf))
+    return tokens
+
+
+def _normalize_cmd_name(tok: str) -> str:
+    """Normalise un nom d'exécutable (slashs, casse, extension `.exe`)."""
+    cleaned = tok.replace("\\", "/").strip()
+    if not cleaned:
+        return ""
+    head = posixpath.basename(cleaned).lower()
+    if head.endswith(".exe"):
+        head = head[:-4]
+    return head
+
+
+def extract_command_head_and_args(segment: str) -> Tuple[str, List[str]]:
+    """Extrait `(tete_normalisee, args)` en déballant `VAR=val`, `&`, `sudo`, `env`, `nohup`, `time`, `command`."""
+    tokens = _tokenize_shell_segment(segment)
+    if not tokens:
+        return "", []
+
+    idx = 0
+    n = len(tokens)
+    while idx < n:
+        tok = tokens[idx]
+        if tok == "&":
+            idx += 1
+            continue
+        if tok.startswith("&") and len(tok) > 1:
+            tokens[idx] = tok[1:]
+            continue
+        if ENV_ASSIGN_RE.match(tok):
+            idx += 1
+            continue
+
+        norm = _normalize_cmd_name(tok)
+        if norm == "nohup":
+            if idx + 1 < n:
+                idx += 1
+                continue
+            break
+        if norm in ("time", "command"):
+            j = idx + 1
+            while j < n:
+                opt = tokens[j]
+                if opt == "--":
+                    j += 1
+                    break
+                if opt == "-p":
+                    j += 1
+                    continue
+                break
+            if j < n:
+                idx = j
+                continue
+            break
+        if norm == "sudo":
+            j = idx + 1
+            while j < n:
+                opt = tokens[j]
+                if opt == "--":
+                    j += 1
+                    break
+                if opt in SUDO_VALUE_OPTS:
+                    j += 2
+                    continue
+                if opt.startswith("-") and len(opt) > 1:
+                    j += 1
+                    continue
+                break
+            if j < n:
+                idx = j
+                continue
+            break
+        if norm == "env":
+            j = idx + 1
+            while j < n:
+                opt = tokens[j]
+                if opt == "--":
+                    j += 1
+                    break
+                if opt in ENV_VALUE_OPTS:
+                    j += 2
+                    continue
+                if opt.startswith("-") and len(opt) > 1:
+                    j += 1
+                    continue
+                if ENV_ASSIGN_RE.match(opt):
+                    j += 1
+                    continue
+                break
+            if j < n:
+                idx = j
+                continue
+            return "env", tokens[idx + 1 :]
+        break
+
+    if idx >= n:
+        return "", []
+    head = _normalize_cmd_name(tokens[idx])
+    return head, tokens[idx + 1 :]
+
+
+def _is_python_head(head: str) -> bool:
+    return head in {"python", "python3", "py"} or bool(PYTHON_VERSIONED_HEAD_RE.match(head))
+
+
+def _is_git_force_push(segment: str) -> bool:
+    """Détecte `git ... push` avec `-f`/`--force`/`+ref` strictement dans `segment`."""
+    head, args = extract_command_head_and_args(segment)
+    if head != "git":
+        return False
+
+    i = 0
+    n = len(args)
+    subcmd = ""
+    while i < n:
+        tok = args[i]
+        if tok == "--":
+            if i + 1 < n:
+                subcmd = args[i + 1].lower()
+                i += 2
+            break
+        if tok in GIT_GLOBAL_VALUE_OPTS:
+            i += 2
+            continue
+        if len(tok) > 2 and (tok.startswith("-C") or tok.startswith("-c")):
+            i += 1
+            continue
+        if tok.startswith("-"):
+            i += 1
+            continue
+        subcmd = tok.lower()
+        i += 1
+        break
+
+    if subcmd != "push":
+        return False
+
+    after_double_dash = False
+    for arg in args[i:]:
+        if not after_double_dash:
+            if arg == "--":
+                after_double_dash = True
+                continue
+            low = arg.lower()
+            if low in ("-f", "--force"):
+                return True
+            if re.match(r"^-[A-Za-z]+$", arg) and "f" in arg[1:]:
+                return True
+        if arg.startswith("+") and len(arg) > 1:
+            return True
+    return False
+
+
+def _has_unquoted_redirection(segment: str) -> bool:
+    """Retourne True si `segment` contient `>`/`>>` hors guillemets (hors `>&1`/`>&2`/`>&-`)."""
+    in_single = False
+    in_double = False
+    i = 0
+    n = len(segment)
+    while i < n:
+        ch = segment[i]
+        if in_single:
+            if ch == "'":
+                in_single = False
+            i += 1
+            continue
+        if in_double:
+            if ch in ("\\", "`") and i + 1 < n and segment[i + 1] == '"':
+                i += 2
+                continue
+            if ch == '"':
+                in_double = False
+            i += 1
+            continue
+        if ch == "'":
+            in_single = True
+            i += 1
+            continue
+        if ch == '"':
+            in_double = True
+            i += 1
+            continue
+        if ch == ">":
+            if i + 1 < n and segment[i + 1] == "&":
+                if i + 2 < n and (segment[i + 2].isdigit() or segment[i + 2] == "-"):
+                    i += 3
+                    continue
+            return True
+        i += 1
+    return False
+
+
+def _check_segment_inline_exec(segment: str) -> Optional[Tuple[str, str]]:
+    """Inspecte les flags d'exécution inline / dynamique d'un segment unique."""
+    head, args = extract_command_head_and_args(segment)
+    if not head:
+        return None
+
+    n = len(args)
+    if _is_python_head(head):
+        i = 0
+        while i < n:
+            tok = args[i]
+            if tok in ("-", "--") or not tok.startswith("-"):
+                break
+            if tok in PYTHON_VALUE_OPTS:
+                i += 2
+                continue
+            if tok.startswith("--"):
+                i += 1
+                continue
+            if PY_VERSION_OPT_RE.match(tok):
+                i += 1
+                continue
+            short_flags = tok[1:]
+            advance_extra = 0
+            for k, ch in enumerate(short_flags):
+                if ch == "c":
+                    return (
+                        "force_ask",
+                        "Exécution de code Python inline (`-c`) détectée : validation humaine requise.",
+                    )
+                if ch == "m":
+                    return None
+                if ch in ("W", "X"):
+                    if k == len(short_flags) - 1:
+                        advance_extra = 1
+                    break
+            i += 1 + advance_extra
+        return None
+
+    if head == "node":
+        i = 0
+        while i < n:
+            tok = args[i]
+            if tok in ("-", "--") or not tok.startswith("-"):
+                break
+            if tok in NODE_VALUE_OPTS:
+                i += 2
+                continue
+            if (
+                tok in ("-e", "-p", "--eval", "--print")
+                or tok.startswith("--eval=")
+                or tok.startswith("--print=")
+                or (not tok.startswith("--") and (tok.startswith("-e") or tok.startswith("-p")))
+                or (re.match(r"^-[A-Za-z]+$", tok) and ("e" in tok[1:] or "p" in tok[1:]))
+            ):
+                return (
+                    "force_ask",
+                    "Exécution de code inline via interpréteur (`-e`) détectée : validation humaine requise.",
+                )
+            i += 1
+        return None
+
+    if head == "perl":
+        i = 0
+        while i < n:
+            tok = args[i]
+            if tok in ("-", "--") or not tok.startswith("-"):
+                break
+            if tok == "-I":
+                i += 2
+                continue
+            if tok.startswith("--"):
+                i += 1
+                continue
+            if tok in ("-e", "-E"):
+                return (
+                    "force_ask",
+                    "Exécution de code inline via interpréteur (`-e`) détectée : validation humaine requise.",
+                )
+            for ch in tok[1:]:
+                if ch in ("I", "M", "m", "F", "d", "D", "0", "C", "V"):
+                    break
+                if ch in ("e", "E"):
+                    return (
+                        "force_ask",
+                        "Exécution de code inline via interpréteur (`-e`) détectée : validation humaine requise.",
+                    )
+            i += 1
+        return None
+
+    if head == "ruby":
+        i = 0
+        while i < n:
+            tok = args[i]
+            if tok in ("-", "--") or not tok.startswith("-"):
+                break
+            if tok in RUBY_VALUE_OPTS:
+                i += 2
+                continue
+            if tok.startswith("--"):
+                i += 1
+                continue
+            if tok[:2] in ("-I", "-r", "-C", "-E", "-F", "-K", "-T", "-W"):
+                i += 1
+                continue
+            if tok == "-e" or tok.startswith("-e") or (
+                re.match(r"^-[A-Za-z]+$", tok) and "e" in tok[1:]
+            ):
+                return (
+                    "force_ask",
+                    "Exécution de code inline via interpréteur (`-e`) détectée : validation humaine requise.",
+                )
+            i += 1
+        return None
+
+    if head in {"sh", "bash", "zsh", "dash"}:
+        i = 0
+        while i < n:
+            tok = args[i]
+            if tok in ("-", "--") or (not tok.startswith("-") and not tok.startswith("+")):
+                break
+            if tok in ("-o", "+o", "--rcfile", "--init-file"):
+                i += 2
+                continue
+            if tok.startswith("--") or tok.startswith("+"):
+                i += 1
+                continue
+            if tok == "-c" or (re.match(r"^-[A-Za-z]+$", tok) and "c" in tok[1:]):
+                return (
+                    "force_ask",
+                    "Sous-shell inline ou encodé détecté : validation humaine requise.",
+                )
+            i += 1
+        return None
+
+    if head in {"pwsh", "powershell"}:
+        i = 0
+        while i < n:
+            tok = args[i]
+            if tok == "--" or not tok.startswith("-"):
+                break
+            low = tok.lower()
+            low_flag = low.split(":", 1)[0]
+            if low_flag in ("-f", "-file"):
+                break
+            if low_flag in PS_VALUE_OPTS:
+                i += 1 if ":" in low else 2
+                continue
+            if low_flag in {"-c", "-e", "-ec"} or (
+                len(low_flag) >= 3
+                and (
+                    "-command".startswith(low_flag)
+                    or "-encodedcommand".startswith(low_flag)
+                )
+            ):
+                return (
+                    "force_ask",
+                    "Sous-shell inline ou encodé détecté : validation humaine requise.",
+                )
+            i += 1
+        return None
+
+    if head == "cmd":
+        for tok in args:
+            low = tok.lower()
+            if low in ("/c", "/k") or re.match(r"^/[ck](?:[:\"'\s]|$)", low):
+                return (
+                    "force_ask",
+                    "Sous-shell inline ou encodé détecté : validation humaine requise.",
+                )
+        return None
+
+    if head == "find":
+        if any(arg.lower() in {"-exec", "-execdir", "-ok", "-okdir"} for arg in args):
+            return (
+                "force_ask",
+                "Exécution indirecte via `find -exec` détectée : validation humaine requise.",
+            )
+        return None
+
+    if head == "eval":
+        return (
+            "force_ask",
+            "Évaluation shell dynamique (`eval`) détectée : validation humaine requise.",
+        )
+
+    if head == "base64":
+        if any(
+            arg in ("-d", "-D", "--decode")
+            or (re.match(r"^-[A-Za-z]+$", arg) and ("d" in arg[1:] or "D" in arg[1:]))
+            for arg in args
+        ):
+            return (
+                "force_ask",
+                "Décodage ou pipe `base64` détecté : validation humaine requise.",
+            )
+        return None
+
+    return None
+
+
+def _is_destructive_rm(cmd: str, segments: Optional[List[str]] = None) -> bool:
     """Détecte `rm` récursif+forcé et `Remove-Item -Recurse -Force` sur cibles destructrices."""
-    for segment in re.split(r"[;&|\n]+", cmd):
-        seg = segment.strip()
-        if not seg:
+    segs = segments if segments is not None else split_shell_segments(cmd)
+    for seg in segs:
+        head, args = extract_command_head_and_args(seg)
+        if not head:
             continue
-        seg_norm = seg.replace("\\", "/")
-        try:
-            tokens = shlex.split(seg_norm, posix=True)
-        except ValueError:
-            tokens = seg_norm.split()
-        if not tokens:
-            continue
-        head = Path(tokens[0]).name.lower()
-        if head == "sudo" and len(tokens) > 1:
-            tokens = tokens[1:]
-            head = Path(tokens[0]).name.lower()
-        if head.endswith(".exe"):
-            head = head[:-4]
 
         if head == "rm":
             has_r, has_f = False, False
             targets: List[str] = []
-            for tok in tokens[1:]:
-                if tok.startswith("--"):
-                    if tok == "--recursive":
-                        has_r = True
-                    elif tok == "--force":
-                        has_f = True
-                elif tok.startswith("-") and len(tok) > 1:
-                    flags = tok[1:].lower()
-                    if "r" in flags:
-                        has_r = True
-                    if "f" in flags:
-                        has_f = True
-                else:
-                    targets.append(tok)
+            after_double_dash = False
+            for tok in args:
+                if not after_double_dash:
+                    if tok == "--":
+                        after_double_dash = True
+                        continue
+                    if tok.startswith("--"):
+                        if tok == "--recursive":
+                            has_r = True
+                        elif tok == "--force":
+                            has_f = True
+                        continue
+                    if tok.startswith("-") and len(tok) > 1:
+                        flags = tok[1:].lower()
+                        if "r" in flags:
+                            has_r = True
+                        if "f" in flags:
+                            has_f = True
+                        continue
+                targets.append(tok)
             if has_r and has_f and any(_is_destructive_target(t) for t in targets):
                 return True
 
         if head in ("remove-item", "ri", "del", "erase", "rmdir", "rd"):
-            low = [t.lower() for t in tokens[1:]]
+            low = [t.lower() for t in args]
             has_r = any(t in ("-recurse", "-r", "/s") for t in low)
             has_f = any(t in ("-force", "-fo", "/q", "/f") for t in low)
             targets = [
                 t
-                for t in tokens[1:]
+                for t in args
                 if not t.startswith("-")
                 and not (len(t) == 2 and t.startswith("/") and t[1].isalpha())
             ]
@@ -319,18 +1031,60 @@ def _is_destructive_rm(cmd: str) -> bool:
     return False
 
 
-def _shell_targets_harness(cmd: str, ws_root: Optional[Path] = None) -> bool:
-    """Détecte les chemins normalisés vers les fichiers protégés dans une commande shell."""
-    write_hint = re.search(
-        r"\b(?:rm|mv|cp|chmod|chown|truncate|tee|sed|(?:python3?|py|perl|ruby|node)(?:\.exe)?|Remove-Item|ri|del|rd|Set-Content|Out-File|Add-Content|ac|sc|Clear-Content|clc|Move-Item|mi|Copy-Item|cpi|copy|Rename-Item|rni|New-Item|ni)\b|>{1,2}",
-        cmd,
-        re.IGNORECASE,
-    )
-    if not write_hint:
-        return False
-    for token in PATH_TOKEN_RE.findall(cmd):
-        if is_harness_protected(token, ws_root):
-            return True
+def _shell_targets_harness(
+    cmd: str, ws_root: Optional[Path] = None, segments: Optional[List[str]] = None
+) -> bool:
+    """Détecte par segment une écriture, exécution ou redirection visant un fichier protégé."""
+    segs = segments if segments is not None else split_shell_segments(cmd)
+    for seg in segs:
+        head, args = extract_command_head_and_args(seg)
+        is_sed_inplace = False
+        if head == "sed":
+            for arg in args:
+                if arg == "--":
+                    break
+                if (
+                    arg == "-i"
+                    or arg.startswith("-i")
+                    or arg == "--in-place"
+                    or arg.startswith("--in-place=")
+                    or (re.match(r"^-[A-Za-z]+$", arg) and "i" in arg[1:])
+                ):
+                    is_sed_inplace = True
+                    break
+
+        writes_or_execs = (
+            head in HARNESS_WRITE_OR_EXEC_HEADS
+            or _is_python_head(head)
+            or is_sed_inplace
+            or _has_unquoted_redirection(seg)
+        )
+        if not writes_or_execs:
+            continue
+
+        candidates: List[str] = []
+        seen: Set[str] = set()
+        for raw_tok in _tokenize_shell_segment(seg) + PATH_TOKEN_RE.findall(seg):
+            for part in (raw_tok, raw_tok.strip(",:[]{}()")):
+                if part and part not in seen:
+                    seen.add(part)
+                    candidates.append(part)
+                if "=" in part:
+                    rhs = part.split("=", 1)[1]
+                    for sub in (rhs, rhs.strip(",:[]{}()")):
+                        if sub and sub not in seen:
+                            seen.add(sub)
+                            candidates.append(sub)
+                if "," in part:
+                    for piece in part.split(","):
+                        cleaned_piece = piece.strip(",:[]{}()\"'")
+                        if cleaned_piece and cleaned_piece not in seen:
+                            seen.add(cleaned_piece)
+                            candidates.append(cleaned_piece)
+
+        for token in candidates:
+            if is_harness_protected(token, ws_root):
+                return True
     return False
 
 
@@ -573,15 +1327,24 @@ def evaluate_tool_call(
 
     elif name in SHELL_TOOLS:
         cmd = first_str_arg(args, SHELL_CMD_KEYS)
-        if _is_destructive_rm(cmd):
+        segments = split_shell_segments(cmd)
+        if _is_destructive_rm(cmd, segments=segments):
             return "deny", "Suppression récursive destructrice bloquée."
+        if any(_is_git_force_push(seg) for seg in segments):
+            return "deny", "Force-push Git (-f / --force / +ref) bloqué."
         for pattern, message in DANGEROUS_CMDS:
-            if pattern.search(cmd):
+            if pattern.search(cmd) or (
+                pattern is ENV_DUMP_PATTERN and any(pattern.search(seg) for seg in segments)
+            ):
                 return "deny", message
-        if _shell_targets_harness(cmd, ws_root):
+        if _shell_targets_harness(cmd, ws_root, segments=segments):
             return "deny", "Tentative de modification des garde-fous Gravity via chemin relatif bloquée."
         if _shell_targets_secret(cmd):
             return "deny", "Accès shell à un fichier sensible via chemin relatif bloqué."
+        for seg in segments:
+            ask_res = _check_segment_inline_exec(seg)
+            if ask_res:
+                return ask_res
         for pattern, message in OPAQUE_ASK_CMDS:
             if pattern.search(cmd):
                 return "force_ask", message

@@ -53,7 +53,7 @@ gravity-plugin/
 └── scripts/
     ├── init_workspace.py               # Bootstrapper projet full/quickstart (chmod 0755)
     ├── validate.py                     # CLI validation --strict (chmod 0755)
-    ├── test_unit.py                    # 24 tests unitaires internes (100 % stdlib)
+    ├── test_unit.py                    # 26 tests unitaires internes (100 % stdlib)
     └── validators/                     # base.py, plugin_validator.py, workspace_validator.py
 ```
 
