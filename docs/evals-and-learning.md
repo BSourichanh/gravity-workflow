@@ -23,8 +23,8 @@ Copié à l'initialisation vers `.agents/gravity/evals/cases.json` ([`cases.json
 
 ## Architecture à double filtre
 
-1. **Candidat isolé (`builder`, `workspace="branch"`) :** chaque cas s'exécute en parallèle dans une branche Git jetable (capture d'exception `try/except` par cas et fermeture garantie dans `finally: del cand`).
-2. **Pré-filtre Python déterministe à 0 token ([`eval_checks.py`](../gravity-plugin/evals/eval_checks.py)) :** évalue par AST whitelist (sans `eval()`) les prédicats `auto_checks` : `expect_refusal()`, `file_exists()`, `not_exists()`, `json_valid()`, `schema_contains()`, `file_contains()`, `not_contains()`, `python_syntax_valid()`, `rule_frontmatter_valid()`. Tout échec rejette le cas avant le juge.
+1. **Candidat isolé (`builder`, `workspace="branch"`) :** chaque cas s'exécute en parallèle dans une branche Git jetable (capture d'exception `try/except` par cas et fermeture garantie dans `finally: del cand`). Un `workspace_path` vide échoue explicitement au pré-filtre sans repli sur `WS_ROOT`.
+2. **Pré-filtre Python déterministe à 0 token ([`eval_checks.py`](../gravity-plugin/evals/eval_checks.py)) :** évalue par AST whitelist (sans `eval()`) les prédicats `auto_checks` : `expect_refusal()`, `file_exists()`, `not_exists()`, `json_valid()`, `schema_contains()`, `file_contains()`, `not_contains()`, `python_syntax_valid()`, `rule_frontmatter_valid()`, `agent_frontmatter_readonly()` (utilisé sur `CASE-07` pour n'inspecter que `tools:` YAML sans faux positif sur le corps Markdown). Tout échec rejette le cas avant le juge.
 3. **Juge indépendant (`reviewer`, `workspace="inherit"`) :** n'audite que les cas ayant passé le pré-filtre (`UNCERTAIN`/`NIT` tronqués à 3, `FAIL` si `BLOCKER` ou `MAJOR`).
 4. **Double sortie projet :** écrit `.agents/gravity/evals/report.json` et `.agents/gravity/evals/report.md` (table échappée + checklist `[manual]` à valider humainement) et met à jour `live_state.json`.
 

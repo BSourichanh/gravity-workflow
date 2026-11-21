@@ -52,7 +52,17 @@ MODEL_OVERRIDE_KEYS: Tuple[str, ...] = (
     "eval_candidate",
     "eval_judge",
 )
-NORMAL_TERMINATION_REASONS = {"NO_TOOL_CALL", "STOP", "END_TURN", "COMPLETED", ""}
+NORMAL_TERMINATION_REASONS = {
+    "NO_TOOL_CALL",
+    "STOP",
+    "END_TURN",
+    "COMPLETED",
+    "TERMINAL_CUSTOM_HOOK",
+    "INJECTED_RESPONSE",
+    "TERMINAL_STEP_TYPE",
+    "USER_CANCELED",
+    "",
+}
 EXCLUDED_SCAN_DIRS = {
     ".git",
     "node_modules",
@@ -172,6 +182,8 @@ def default_profile() -> Dict[str, Any]:
         "last_score": 40,
         "last_reason": "Initialisation par défaut (mode evo au palier medium).",
         "last_evaluated_conversation_id": None,
+        "last_evaluated_execution_num": None,
+        "last_conversation_start_level": None,
         "last_updated": None,
         "signals": {
             "source_files": 0,
@@ -240,6 +252,8 @@ def _sanitize_profile(raw: Any) -> Dict[str, Any]:
         "last_score",
         "last_reason",
         "last_evaluated_conversation_id",
+        "last_evaluated_execution_num",
+        "last_conversation_start_level",
         "last_updated",
     ):
         if key in raw:
@@ -316,6 +330,18 @@ def _sanitize_profile(raw: Any) -> Dict[str, Any]:
         merged["last_score"] = max(0, min(100, int(merged.get("last_score") or 40)))
     except (TypeError, ValueError):
         merged["last_score"] = 40
+
+    raw_exec = merged.get("last_evaluated_execution_num")
+    if raw_exec is not None:
+        try:
+            merged["last_evaluated_execution_num"] = int(raw_exec)
+        except (TypeError, ValueError):
+            merged["last_evaluated_execution_num"] = None
+
+    raw_start_lvl = merged.get("last_conversation_start_level")
+    if raw_start_lvl is not None:
+        s_lvl = str(raw_start_lvl).strip().lower()
+        merged["last_conversation_start_level"] = s_lvl if s_lvl in LEVELS else None
 
     return merged
 
@@ -684,6 +710,8 @@ def set_caveman(
 def collect_signals(
     workspace_root: Path,
     stop_entry: Optional[Dict[str, Any]] = None,
+    *,
+    since_iso: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Collecte de manière déterministe les signaux projet et session (scan borné)."""
     ws_root = Path(workspace_root).resolve()
@@ -753,6 +781,9 @@ def collect_signals(
             if isinstance(events, list):
                 for ev in events[-15:]:
                     if not isinstance(ev, dict):
+                        continue
+                    ev_ts_iso = ev.get("ts_iso")
+                    if since_iso and isinstance(ev_ts_iso, str) and ev_ts_iso <= since_iso:
                         continue
                     dec = ev.get("decision")
                     if dec == "deny":
@@ -902,10 +933,21 @@ def evolve_on_stop(
         return load_profile(ws_root)
 
     conv_id = None
+    exec_num: Optional[int] = None
     if isinstance(stop_entry, dict):
         raw_cid = stop_entry.get("conversation_id") or stop_entry.get("conversationId")
         if isinstance(raw_cid, str) and raw_cid.strip():
             conv_id = raw_cid.strip()
+        raw_exec = (
+            stop_entry.get("execution_num")
+            if stop_entry.get("execution_num") is not None
+            else stop_entry.get("executionNum")
+        )
+        if raw_exec is not None:
+            try:
+                exec_num = int(raw_exec)
+            except (TypeError, ValueError):
+                exec_num = None
 
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     lock_path = profile_path.with_suffix(".lock")
@@ -915,21 +957,44 @@ def evolve_on_stop(
 
     with exclusive_file_lock(lock_path):
         profile = load_profile(ws_root)
+        same_conv_next_turn = False
         if conv_id and profile.get("last_evaluated_conversation_id") == conv_id:
-            return profile
+            if exec_num is None or exec_num == profile.get("last_evaluated_execution_num"):
+                return profile
+            same_conv_next_turn = True
 
-        signals = collect_signals(ws_root, stop_entry)
+        since_iso = (
+            str(profile["last_updated"])
+            if isinstance(profile.get("last_updated"), str) and profile.get("last_updated")
+            else None
+        )
+        signals = collect_signals(ws_root, stop_entry, since_iso=since_iso)
         eval_rate = signals.get("eval_pass_rate")
         is_clean = (
             not signals["session_error"]
             and signals["guard_deny_recent"] == 0
             and (eval_rate is None or float(eval_rate) >= 1.0)
         )
-        clean_streak = (int(profile.get("clean_streak") or 0) + 1) if is_clean else 0
+        prev_streak = int(profile.get("clean_streak") or 0)
+        if same_conv_next_turn:
+            clean_streak = prev_streak if is_clean else 0
+        else:
+            clean_streak = (prev_streak + 1) if is_clean else 0
         score, target_level, factors = compute_score(signals, clean_streak)
         factors_str = ", ".join(factors[:4]) if factors else "signaux nominaux"
 
-        profile["sessions_analyzed"] = int(profile.get("sessions_analyzed") or 0) + 1
+        prev_level = profile["current_level"]
+        prev_caveman = profile["caveman"]
+
+        if same_conv_next_turn:
+            conv_start_level = str(profile.get("last_conversation_start_level") or prev_level)
+            if conv_start_level not in LEVELS:
+                conv_start_level = prev_level
+        else:
+            profile["sessions_analyzed"] = int(profile.get("sessions_analyzed") or 0) + 1
+            conv_start_level = prev_level
+            profile["last_conversation_start_level"] = conv_start_level
+
         profile["clean_streak"] = clean_streak
         profile["last_score"] = score
         profile["suggested_level"] = target_level
@@ -937,16 +1002,14 @@ def evolve_on_stop(
         profile["last_updated"] = now_iso
         if conv_id:
             profile["last_evaluated_conversation_id"] = conv_id
-
-        prev_level = profile["current_level"]
-        prev_caveman = profile["caveman"]
+            profile["last_evaluated_execution_num"] = exec_num
 
         if profile["locked"]:
             profile["last_reason"] = (
                 f"Verrouillé en {prev_level} (score {score}/100, suggestion projet : {target_level})."
             )
         else:
-            next_level = choose_next_level(prev_level, score, target_level)
+            next_level = choose_next_level(conv_start_level, score, target_level)
             profile["current_level"] = next_level
             if next_level != prev_level:
                 level_changed = True
@@ -1026,7 +1089,18 @@ def _parse_bool(raw: str) -> bool:
     raise argparse.ArgumentTypeError(f"Booléen invalide : {raw!r}")
 
 
+def _configure_utf8_stdio() -> None:
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconf = getattr(stream, "reconfigure", None)
+        if callable(reconf):
+            try:
+                reconf(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def main() -> int:
+    _configure_utf8_stdio()
     parser = argparse.ArgumentParser(description="Gestionnaire de profil et mode Gravity")
     sub = parser.add_subparsers(dest="command", required=True)
 

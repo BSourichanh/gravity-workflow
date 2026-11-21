@@ -15,6 +15,7 @@ description: Chef d'orchestre unifié Gravity à 3 axes : mode (low, medium, hig
 - **Garde-fous `PreToolUse` fail-closed toujours ON :** quel que soit le palier (`low`, `medium`, `high`, `ultra`), la protection des secrets, le blocage des commandes destructrices et l'auto-protection du harnais restent actifs sans aucun relâchement.
 - **Zéro jargon mécanique :** n'emploie jamais de numérotation artificielle dans tes échanges avec l'utilisateur ; utilise uniquement les noms de paliers et d'étapes métier.
 - **Anti-écrasement :** n'écrase jamais un fichier existant sans présenter d'abord un diff explicite et obtenir la validation de l'utilisateur.
+- **Conventions Git & versioning (chef d'orchestre uniquement) :** avant tout `git commit`, `git push`, tag ou release (toujours après demande ou accord explicite de l'utilisateur), le chef d'orchestre applique `.agents/rules/05-git-versioning.md` (branches hors `main`/`master`, vérifications/tests selon `safe`/`unsafe`, *Conventional Commits*, SemVer + `CHANGELOG.md`, tags annotés `vX.Y.Z`). Cette règle ne s'applique **jamais** aux sous-agents (`planner`, `builder`, `reviewer`) ni aux workers `swarm`.
 - **Budget des règles actives (`defaultRulesBudget`) :** maintiens `AGENTS.md`/`GEMINI.md` + règles globales + règles `trigger: always_on` strictement sous **20 000 tokens agrégés** et chaque fichier de règle sous **24 000 octets**.
 - **Slash commands vs outils natifs :** un agent ne peut pas invoquer lui-même de slash commands (`/run-workflow`, `/swarm`, `/boost`, `/teamwork`, `/learn`, `/grill-me`, `/generative_ui`). Appelle directement les outils natifs (`run_workflow`, `swarm`, `ask_question`, `invoke_subagent`, lecture de la skill `generative_ui`) ou recommande le slash command à l'utilisateur lorsqu'une action humaine ou UI dédiée est requise.
 - **Exécution des hooks & scripts du plugin :** détecte l'interpréteur Python disponible dans le `PATH` (`python3`, `python` ou `py -3`) sous Windows comme sous POSIX. Ne modifie jamais `.agents/gravity/profile.json` à la main : passe toujours par `observability/profile_engine.py`.
@@ -99,13 +100,15 @@ python3 <plugin_root>/observability/profile_engine.py set --workspace . [--mode 
 
 ## 3. Détection automatique d'état & Initialisation
 
+> **Déploiement automatique de `.agents/rules/05-git-versioning.md` :** à **chaque** invocation `/gravity` (Reprise de session, Mode Audit ou Démarrage à froid `quickstart`/`full`), vérifie si `.agents/rules/05-git-versioning.md` existe dans le workspace cible. S'il est absent, crée-le automatiquement sans écraser aucun fichier existant via `python3 <plugin_root>/scripts/init_workspace.py --workspace . --ensure-git-rule` (ou via `--mode <quickstart|full>` lors d'une initialisation/audit).
+
 Inspecte le workspace du projet courant avant toute question :
-1. **Reprise de session** (`.agents/gravity/PROGRESS.md` présent) : lis `PROGRESS.md` et `.agents/gravity/profile.json`, affiche la **micro-carte 3 lignes** et, en présence d'ambiguïtés structurantes dans `<tâche>`, applique d'abord le protocole `/grill-me` (`ask_question` une question à la fois ou recommandation `/plan /grill-me`) avant d'exécuter la tâche demandée (ou propose l'étape suivante, `/gravity status` ou `/gravity evals`).
-2. **Mode Audit** (`.agents/` ou `AGENTS.md` présent sans `.agents/gravity/PROGRESS.md`) : analyse `AGENTS.md`, `.agents/rules/` et `.agents/mcp_config.json` (validité `trigger:`, budget `< 20 000` tokens), produis une cartographie de conformité et initialise `.agents/gravity/` via [init_workspace.py](../../scripts/init_workspace.py) sans écraser l'existant.
+1. **Reprise de session** (`.agents/gravity/PROGRESS.md` présent) : lis `PROGRESS.md` et `.agents/gravity/profile.json`, vérifie la présence de `.agents/rules/05-git-versioning.md` (sinon exécute `init_workspace.py --workspace . --ensure-git-rule`), affiche la **micro-carte 3 lignes** et, en présence d'ambiguïtés structurantes dans `<tâche>`, applique d'abord le protocole `/grill-me` (`ask_question` une question à la fois ou recommandation `/plan /grill-me`) avant d'exécuter la tâche demandée (ou propose l'étape suivante, `/gravity status` ou `/gravity evals`).
+2. **Mode Audit** (`.agents/` ou `AGENTS.md` présent sans `.agents/gravity/PROGRESS.md`) : analyse `AGENTS.md`, `.agents/rules/` (y compris présence de `05-git-versioning.md`) et `.agents/mcp_config.json` (validité `trigger:`, budget `< 20 000` tokens), produis une cartographie de conformité et initialise `.agents/gravity/` + `05-git-versioning.md` si absent via [init_workspace.py](../../scripts/init_workspace.py) sans écraser l'existant.
 3. **Démarrage à froid** (ni `.agents/gravity/` ni `AGENTS.md`) :
-   - En palier `low` → initialise directement en `--mode quickstart`.
-   - En palier `high` / `ultra` → initialise directement en `--mode full`.
-   - En palier `medium` → propose **Démarrage rapide (`quickstart`)** (`references/00-quick-start.md`) ou **Parcours Guidé complet (`full`)** en 8 étapes métier avec sauvegarde dans `.agents/gravity/PROGRESS.md`.
+   - En palier `low` → initialise directement en `--mode quickstart` (inclut `.agents/rules/05-git-versioning.md`).
+   - En palier `high` / `ultra` → initialise directement en `--mode full` (inclut `.agents/rules/05-git-versioning.md`).
+   - En palier `medium` → propose **Démarrage rapide (`quickstart`)** (`references/00-quick-start.md`) ou **Parcours Guidé complet (`full`)** en 8 étapes métier avec sauvegarde dans `.agents/gravity/PROGRESS.md` (tous deux déploient `.agents/rules/05-git-versioning.md`).
 
 ---
 
@@ -127,7 +130,7 @@ Lis `.agents/gravity/PROGRESS.md`, `.agents/gravity/profile.json`, `.agents/rule
 
 Blocs obligatoires :
 1. **Avancement & Mode actif** : étapes cochées sur 8 (hors Bonus), mode/palier courant (`evo → <palier>` ou `<palier> [verrouillé]`), stratégie workflow (`slow` ou `fast`), vérification (`safe` ou `unsafe`), niveau **Caveman** et son verrou (`auto` ou `verrouillé`), `suggested_level` et `last_reason` du profil.
-2. **Santé des règles & sécurité** : budget actif estimé (`< 20 000` tokens agrégés), `trigger: always_on` valide et taille `< 2 Ko` pour `01-safety-boundaries.md`, état des hooks fail-closed du plugin.
+2. **Santé des règles & sécurité** : budget actif estimé (`< 20 000` tokens agrégés), `trigger: always_on` valide et taille `< 2 Ko` pour `01-safety-boundaries.md`, présence de `.agents/rules/05-git-versioning.md` (conventions Git & versioning chef d'orchestre), état des hooks fail-closed du plugin.
 3. **Métriques d'évaluations** : dernier score `PASS/TOTAL`, rejets pré-filtre et items `[manual]` restants.
 4. **Recommandations** : 1 à 3 actions concrètes prioritaires.
 

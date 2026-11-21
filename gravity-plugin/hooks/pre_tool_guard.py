@@ -11,7 +11,7 @@ if str(HOOKS_DIR) not in sys.path:
 
 
 def _fallback_emit(decision: str, reason: str) -> None:
-    sys.stdout.write(json.dumps({"decision": decision, "reason": reason}, ensure_ascii=False) + "\n")
+    sys.stdout.write(json.dumps({"decision": decision, "reason": reason}, ensure_ascii=True) + "\n")
     sys.stdout.flush()
 
 
@@ -19,7 +19,14 @@ def main() -> int:
     tool_name = "unknown"
     ws_root = Path.cwd()
     try:
-        from hook_runtime import emit_json, read_stdin_text, record_live_event, resolve_workspace_root
+        from hook_runtime import (
+            configure_utf8_stdio,
+            emit_json,
+            first_not_none,
+            read_stdin_text,
+            record_live_event,
+            resolve_workspace_root,
+        )
         from safety_policy import evaluate_tool_call
     except Exception as exc:
         _fallback_emit(
@@ -28,6 +35,7 @@ def main() -> int:
         )
         return 0
 
+    configure_utf8_stdio()
     try:
         raw = read_stdin_text()
         if not raw:
@@ -46,9 +54,11 @@ def main() -> int:
         ws_root = resolve_workspace_root(parsed, __file__)
         if isinstance(parsed.get("toolCall"), dict):
             tool_name = str(parsed["toolCall"].get("name", "unknown"))
+        raw_cid = first_not_none(parsed.get("conversationId"), parsed.get("sessionId"))
+        conv_id = str(raw_cid).strip() if isinstance(raw_cid, str) and raw_cid.strip() else None
 
         decision, reason = evaluate_tool_call(parsed, ws_root)
-        record_live_event(decision, tool_name, reason, ws_root)
+        record_live_event(decision, tool_name, reason, ws_root, conversation_id=conv_id)
         payload = {"decision": decision}
         if reason:
             payload["reason"] = reason

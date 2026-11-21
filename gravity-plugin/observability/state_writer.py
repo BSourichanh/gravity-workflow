@@ -100,7 +100,14 @@ def _atomic_write_json(target: Path, payload: Dict[str, Any]) -> None:
             tmp_fh.write("\n")
             tmp_fh.flush()
             os.fsync(tmp_fh.fileno())
-        os.replace(tmp_name, target)
+        for attempt in range(5):
+            try:
+                os.replace(tmp_name, target)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.02)
     except Exception:
         try:
             os.unlink(tmp_name)
@@ -217,11 +224,10 @@ def update_live_state(
             merged_nodes.update(nodes)
             state["nodes"] = merged_nodes
         if event is not None:
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
             ev = dict(event)
-            ev.setdefault(
-                "ts",
-                datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S"),
-            )
+            ev.setdefault("ts", now_utc.strftime("%H:%M:%S"))
+            ev.setdefault("ts_iso", now_utc.isoformat())
             events = list(state.get("events") or [])
             events.append(ev)
             state["events"] = events[-MAX_EVENTS:]

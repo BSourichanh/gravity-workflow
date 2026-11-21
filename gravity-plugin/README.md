@@ -18,9 +18,10 @@ agy plugin install .
 agy plugin list
 ```
 
-### Depuis un dépôt GitHub / Git
+### Depuis le dépôt GitHub / Git
 ```bash
-agy plugin install https://github.com/BSourichanh/gravity
+git clone https://github.com/BSourichanh/gravity.git
+agy plugin install ./gravity/gravity-plugin
 ```
 
 ### Installation & désinstallation automatisées (racine du dépôt)

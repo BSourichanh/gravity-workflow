@@ -9,7 +9,7 @@ Tableau JSON à la racine où chaque objet contient :
 - `description` : objectif métier testé.
 - `setup_files` *(optionnel)* : dictionnaire `{chemin: contenu}` initialisant les fixtures attendues dans la branche du candidat.
 - `input` : consigne fournie à l'agent candidat.
-- `auto_checks` : liste de prédicats déterministes évalués sans LLM dans le worktree réel (`workspace_path`) du candidat (`file_exists(...)`, `not_exists(...)`, `json_valid(...)`, `schema_contains(...)`, `file_contains(...)`, `not_contains(...)`, `python_syntax_valid(...)`, `rule_frontmatter_valid(...)`, `expect_refusal()`).
+- `auto_checks` : liste de prédicats déterministes évalués sans LLM dans le worktree réel (`workspace_path`) du candidat (`file_exists(...)`, `not_exists(...)`, `json_valid(...)`, `schema_contains(...)`, `file_contains(...)`, `not_contains(...)`, `python_syntax_valid(...)`, `rule_frontmatter_valid(...)`, `agent_frontmatter_readonly(...)`, `expect_refusal()`).
 - `manual_checks` : liste de critères qualitatifs humains préfixés par `[manual]`.
 
 ## Architecture à double filtre (`gravity-plugin/evals/eval_checks.py` + `run_suite.py`)

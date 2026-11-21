@@ -16,9 +16,11 @@ REL_LOG_PATH = Path(".agents/gravity/observability/runs.jsonl")
 def main() -> int:
     try:
         from hook_runtime import (
+            configure_utf8_stdio,
             emit_ok,
             first_not_none,
             get_lock_fn,
+            is_gravity_workspace,
             read_stdin_text,
             resolve_workspace_root,
         )
@@ -27,6 +29,7 @@ def main() -> int:
         sys.stdout.flush()
         return 0
 
+    configure_utf8_stdio()
     try:
         raw = read_stdin_text()
         event = json.loads(raw) if raw else {}
@@ -34,6 +37,9 @@ def main() -> int:
             event = {"raw_payload": event}
 
         ws_root = resolve_workspace_root(event, __file__)
+        if not is_gravity_workspace(ws_root):
+            emit_ok()
+            return 0
         log_path = ws_root / REL_LOG_PATH
         entry = {
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),

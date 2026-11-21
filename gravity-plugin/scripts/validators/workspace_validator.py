@@ -118,6 +118,12 @@ def _validate_rules_and_charter(ws: Path, report: Report) -> None:
                         "(jamais un tableau YAML)."
                     )
 
+        if not (rules_dir / "05-git-versioning.md").is_file():
+            report.info(
+                "Règle .agents/rules/05-git-versioning.md absente : /gravity ou "
+                "init_workspace.py --ensure-git-rule l'ajoutera automatiquement (chef d'orchestre uniquement)."
+            )
+
     est_active_tokens = active_chars // 4
     if est_active_tokens >= MAX_ACTIVE_TOKENS:
         report.error(

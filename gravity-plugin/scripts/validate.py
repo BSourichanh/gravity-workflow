@@ -100,7 +100,18 @@ def _fix_python_cmd(plugin_root: Path) -> int:
     return 0
 
 
+def _configure_utf8_stdio() -> None:
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconf = getattr(stream, "reconfigure", None)
+        if callable(reconf):
+            try:
+                reconf(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def main() -> int:
+    _configure_utf8_stdio()
     parser = argparse.ArgumentParser(description="Validateur Gravity")
     parser.add_argument("--strict", action="store_true", help="Échoue également sur les avertissements.")
     parser.add_argument("--workspace", type=Path, default=None, help="Audite un workspace utilisateur.")

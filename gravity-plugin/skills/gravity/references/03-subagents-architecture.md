@@ -28,12 +28,13 @@ Les 3 sous-agents (`planner`, `builder`, `reviewer`) sont fournis par le plugin 
 - `model`: **`pro`** (ou `inherit` sur Free/Plus) pour la planification (`planner.md`) et l'audit critique (`reviewer.md`) — en cohérence avec le mode natif `Orchestrator` — ; **`flash`** pour l'exécution en branche isolée (`builder.md`) ; **`flash_lite`** pour les tris haute volumétrie.
 - `subagent: true`, `mainAgent: false`, `commandExecutionPolicy: sandbox`.
 - `inheritMcp` (`false` recommandé sur les auditeurs stricts) et `inheritCustomizations` (`true`).
+- **Périmètre Git & versioning :** `git commit`, `git push`, `git tag`, la montée de version SemVer et l'édition release de `CHANGELOG.md` (`.agents/rules/05-git-versioning.md`) sont strictement réservés au **chef d'orchestre** (interdits à `planner`, `builder`, `reviewer` et aux workers `swarm`).
 - `tools`: allowlist stricte limitée aux outils réellement nécessaires.
-  > **Avertissement Antigravity (`docs/subagents.md`) :** un nom d'outil mal orthographié ou inexistant dans `tools:` peut faire geler le sous-agent à l'exécution. Vérifie les noms exacts supportés par ta surface (`view_file`, `grep_search`, `find_by_name`, `list_dir`, `write_to_file`, `replace_file_content`, `multi_replace_file_content`, `run_command`, `send_message`).
+  > **Avertissement Antigravity (`docs/subagents.md`) :** un nom d'outil mal orthographié ou inexistant dans `tools:` peut faire geler le sous-agent à l'exécution. Vérifie les noms exacts supportés par ta surface (`view_file`, `read_file`, `grep_search`, `find_by_name`, `list_dir`, `write_to_file`, `write_file`, `replace_file_content`, `edit_file`, `multi_replace_file_content`, `run_command`, `send_message`).
 
 ## Le Reviewer indépendant (`gravity-plugin/agents/reviewer.md`)
 L'auditeur inspecte le livrable **sans aucun historique de conversation**, uniquement à partir des fichiers produits et du `git diff` transmis explicitement par le workflow ou l'appelant (le Reviewer n'ayant pas d'outil shell).
-- **Outils autorisés (lecture seule uniquement)** : `view_file`, `grep_search`, `find_by_name`, `list_dir`, `send_message` (et `read_file`/`search_files` uniquement si natifs sur la surface cible). Aucun outil d'écriture (`write_to_file`, `write_file`, `replace_file_content`, `edit_file`, `multi_replace_file_content`), d'exécution shell (`run_command`, `execute_command`, `bash`, `shell`) ni `run_workflow`.
+- **Outils autorisés (lecture seule uniquement)** : `view_file`, `read_file`, `grep_search`, `find_by_name`, `list_dir`, `send_message`. Aucun outil d'écriture (`write_to_file`, `write_file`, `replace_file_content`, `edit_file`, `multi_replace_file_content`), d'exécution shell (`run_command`, `execute_command`, `bash`, `shell`) ni `run_workflow`.
 - **Modèle** : `model: pro` (repli `inherit` sur Free/Plus).
 - **Protocole obligatoire** :
   1. **Comprehension Check** : résumé factuel en 2–3 phrases de ce que fait réellement le livrable.

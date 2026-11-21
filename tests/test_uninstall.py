@@ -221,6 +221,7 @@ class TestGravityUninstaller(unittest.TestCase):
             self.assertFalse((ws / ".agents/plugins/gravity").exists())
             self.assertTrue((ws / "AGENTS.md").is_file())
             self.assertTrue((ws / ".agents/rules/01-safety-boundaries.md").is_file())
+            self.assertTrue((ws / ".agents/rules/05-git-versioning.md").is_file())
             self.assertTrue((ws / ".agents/mcp_config.json").is_file())
 
             reg_data = json.loads(self._default_reg.read_text(encoding="utf-8"))
@@ -266,6 +267,7 @@ class TestGravityUninstaller(unittest.TestCase):
             self.assertEqual((ws_mod / "AGENTS.md").read_text(encoding="utf-8"), custom_agents)
             self.assertTrue((ws_mod / ".agents/rules/02-python-stdlib.md").is_file())
             self.assertFalse((ws_mod / ".agents/rules/01-safety-boundaries.md").exists())
+            self.assertFalse((ws_mod / ".agents/rules/05-git-versioning.md").exists())
             self.assertFalse((ws_mod / ".agents/mcp_config.json").exists())
             self.assertFalse((ws_mod / ".agents/gravity").exists())
 
@@ -279,6 +281,7 @@ class TestGravityUninstaller(unittest.TestCase):
             )
             self.assertEqual(rc_clean, 0)
             self.assertFalse((ws_clean / "AGENTS.md").exists())
+            self.assertFalse((ws_clean / ".agents/rules/05-git-versioning.md").exists())
             self.assertFalse((ws_clean / ".agents").exists())
 
     def test_clean_registry_and_all_flag(self) -> None:
@@ -350,6 +353,36 @@ class TestGravityUninstaller(unittest.TestCase):
 
         rc_scope, _, _ = _run_uninstall_quiet(["--scope", "workspace"])
         self.assertEqual(rc_scope, 2)
+
+    def test_uninstall_handles_symlink_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            real_plugin = base / "real_plugin"
+            real_plugin.mkdir()
+            (real_plugin / "plugin.json").write_text('{"name": "gravity"}', encoding="utf-8")
+            link_plugin = base / "gravity_link"
+            try:
+                os.symlink(real_plugin, link_plugin, target_is_directory=True)
+            except OSError:
+                self.skipTest("Symlink creation requires elevated privileges on this host.")
+
+            rc_plugin, _, _ = _run_uninstall_quiet(["--target", str(link_plugin)])
+            self.assertEqual(rc_plugin, 0)
+            self.assertFalse(link_plugin.exists() or link_plugin.is_symlink())
+            self.assertTrue((real_plugin / "plugin.json").is_file())
+
+            ws = base / "ws"
+            (ws / ".agents").mkdir(parents=True)
+            real_state = base / "real_state"
+            real_state.mkdir()
+            (real_state / "PROGRESS.md").write_text("# Progress\n", encoding="utf-8")
+            link_state = ws / ".agents" / "gravity"
+            os.symlink(real_state, link_state, target_is_directory=True)
+
+            rc_ws, _, _ = _run_uninstall_quiet(["--workspace-only", "--clean-workspace", str(ws)])
+            self.assertEqual(rc_ws, 0)
+            self.assertFalse(link_state.exists() or link_state.is_symlink())
+            self.assertTrue((real_state / "PROGRESS.md").is_file())
 
     def test_stdlib_only_ast(self) -> None:
         stdlib_names = getattr(sys, "stdlib_module_names", None)

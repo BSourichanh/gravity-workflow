@@ -53,6 +53,7 @@ def _load_canonical_templates() -> Dict[str, str]:
         ".agents/rules/02-python-stdlib.md": str(module.RULE_02_PYTHON),
         ".agents/rules/03-api-architecture.md": str(module.RULE_03_API),
         ".agents/rules/04-release-checklist.md": str(module.RULE_04_RELEASE),
+        ".agents/rules/05-git-versioning.md": str(module.RULE_05_GIT_VERSIONING),
     }
 
 
@@ -254,7 +255,7 @@ def clean_workspace(
         if dry_run:
             print(f"[DRY-RUN] Remove workspace Gravity state: {gravity_state_dir}")
         else:
-            shutil.rmtree(gravity_state_dir)
+            install._remove_tree_or_symlink(gravity_state_dir)
             print(f"[OK]    Removed {gravity_state_dir}")
 
     if ws_plugin_dir.exists() or ws_plugin_dir.is_symlink():
@@ -262,7 +263,7 @@ def clean_workspace(
         if dry_run:
             print(f"[DRY-RUN] Remove workspace Gravity plugin: {ws_plugin_dir}")
         else:
-            shutil.rmtree(ws_plugin_dir)
+            install._remove_tree_or_symlink(ws_plugin_dir)
             print(f"[OK]    Removed {ws_plugin_dir}")
 
     if purge_templates:

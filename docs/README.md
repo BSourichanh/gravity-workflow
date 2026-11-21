@@ -10,7 +10,7 @@ Cette documentation remplace la spécification statique monolithique par des fic
 
 | Fiche | Sujet couvert | Composants principaux |
 |---|---|---|
-| [`architecture.md`](architecture.md) | Séparation plugin / projet cible, empreinte 12 fichiers, initialisation, `install.py` et `uninstall.py` | `gravity-plugin/`, `workspace-template/`, `init_workspace.py`, `install.py`, `uninstall.py` |
+| [`architecture.md`](architecture.md) | Séparation plugin / projet cible, empreinte 13 fichiers, initialisation, `install.py` et `uninstall.py` | `gravity-plugin/`, `workspace-template/`, `init_workspace.py`, `install.py`, `uninstall.py` |
 | [`modes-and-routing.md`](modes-and-routing.md) | Skill unifié `/gravity`, 3 axes orthogonaux, attribution des modèles, moteur `evo` et skill compagnon `/caveman` | `skills/gravity/SKILL.md`, `skills/caveman/SKILL.md`, `profile_engine.py`, `caveman_protocol.py`, `profile.json` |
 | [`agents-and-workflows.md`](agents-and-workflows.md) | Sous-agents (`planner`, `builder`, `reviewer` indépendant), pipeline de revue et moteurs natifs | `agents/*.md`, `workflows/review_pipeline.py` |
 | [`safety-and-hooks.md`](safety-and-hooks.md) | Garde-fous `PreToolUse` fail-closed, `SessionStart`, `PostToolUse`, `Stop`, règles YAML et budget contexte | `hooks.json`, `hooks/*.py`, `.agents/rules/*.md` |
@@ -23,7 +23,7 @@ Cette documentation remplace la spécification statique monolithique par des fic
 ## Invariants du dépôt
 
 1. **100 % bibliothèque standard Python 3 :** aucune dépendance tierce dans [`gravity-plugin/`](../gravity-plugin/), [`workspace-template/`](../workspace-template/), [`install.py`](../install.py) ni [`tests/`](../tests/).
-2. **Séparation stricte moteur vs projet :** toute la logique du harnais vit dans `gravity-plugin/` ; l'initialisation dans un projet utilisateur ne crée que les 12 fichiers vitaux de `AGENTS.md` + `.agents/`.
+2. **Séparation stricte moteur vs projet :** toute la logique du harnais vit dans `gravity-plugin/` ; l'initialisation dans un projet utilisateur ne crée que les 13 fichiers vitaux de `AGENTS.md` + `.agents/`.
 3. **Zéro jargon interne :** ne jamais introduire de numérotation artificielle (`Module XX`) dans les skills, fiches de référence ou cette documentation.
 4. **Dépôt compagnon métriques :** la collecte et l'analyse des coûts/tokens de sessions Antigravity sont séparées dans le dépôt frère `../gravity-metrics`.
 

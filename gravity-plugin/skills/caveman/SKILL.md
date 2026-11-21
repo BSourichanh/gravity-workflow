@@ -72,7 +72,7 @@ python3 <plugin_root>/observability/profile_engine.py set --workspace . --cavema
 ### `/caveman commit`
 1. Inspecte `git status --short` et `git diff --staged` (ou `git diff` si rien n'est indexé).
 2. Propose un titre *Conventional Commits* (`<type>(<scope>): <impératif <= 50 car.>`) centré sur le **pourquoi**, suivi si nécessaire de puces courtes (`<= 72` car./ligne).
-3. Ne lance jamais `git commit` ou `git push` sans demande explicite.
+3. Ne lance jamais `git commit` ou `git push` sans demande explicite ; côté **chef d'orchestre** uniquement, la préparation complète avant commit/push suit `.agents/rules/05-git-versioning.md` (branches hors `main`, SemVer, `CHANGELOG.md`, tags annotés `vX.Y.Z`).
 
 ### `/caveman compress <fichier>`
 1. **Sécurité & anti-écrasement :** refuse de modifier `.env`, `secrets/`, `hooks.json`, `hooks/` ou `.agents/rules/01-safety-boundaries.md` sans accord humain explicite.

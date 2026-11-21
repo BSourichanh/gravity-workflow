@@ -106,7 +106,47 @@ def _read_caveman_badge(root: Path) -> str:
         return "caveman:lite"
 
 
+def _configure_utf8_stdio() -> None:
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconf = getattr(stream, "reconfigure", None)
+        if callable(reconf):
+            try:
+                reconf(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+def _read_badges(root: Path) -> tuple:
+    try:
+        obs_dir = str((PLUGIN_ROOT / "observability").resolve())
+        if obs_dir not in sys.path:
+            sys.path.insert(0, obs_dir)
+        from profile_engine import (  # type: ignore[import-not-found]
+            format_caveman_badge,
+            format_mode_badge,
+            load_profile,
+        )
+
+        prof = load_profile(root)
+        return format_mode_badge(prof), format_caveman_badge(prof)
+    except Exception:
+        return _read_mode_badge(root), _read_caveman_badge(root)
+
+
+def _is_hooks_guard_enabled(hooks_json: Path) -> bool:
+    if not hooks_json.is_file():
+        return False
+    try:
+        data = json.loads(hooks_json.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("harness-pre-tool-guard"), dict):
+            return bool(data["harness-pre-tool-guard"].get("enabled", True))
+        return isinstance(data, dict)
+    except Exception:
+        return False
+
+
 def main() -> int:
+    _configure_utf8_stdio()
     try:
         payload = _read_cli_payload()
         root = _resolve_project_dir(payload)
@@ -120,14 +160,12 @@ def main() -> int:
                     done += 1
             done = min(done, total)
 
-        mode_badge = _read_mode_badge(root)
-        caveman_badge = _read_caveman_badge(root)
+        mode_badge, caveman_badge = _read_badges(root)
 
-        plugin_guard_ok = (
-            (PLUGIN_ROOT / "hooks/pre_tool_guard.py").is_file()
-            and (PLUGIN_ROOT / "hooks.json").is_file()
+        plugin_guard_ok = (PLUGIN_ROOT / "hooks/pre_tool_guard.py").is_file() and _is_hooks_guard_enabled(
+            PLUGIN_ROOT / "hooks.json"
         )
-        ws_guard_ok = (root / ".agents/hooks.json").is_file()
+        ws_guard_ok = _is_hooks_guard_enabled(root / ".agents/hooks.json")
         guard = "ON" if (plugin_guard_ok or ws_guard_ok) else "OFF"
 
         eval_str = "Evals N/A"

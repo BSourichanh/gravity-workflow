@@ -80,8 +80,14 @@ SENSITIVE_PATH_PATTERNS = [
 ]
 
 HARNESS_SELF_PROTECT_PATTERNS = [
-    re.compile(r"(?:^|/)(?:\.agents/)?hooks\.json$", re.IGNORECASE),
-    re.compile(r"(?:^|/)(?:gravity/)?hooks(?:/|$)", re.IGNORECASE),
+    re.compile(
+        r"(?:^hooks\.json$|(?:^|/)(?:\.agents|gravity-plugin|plugins/gravity|gravity)/hooks\.json$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:^|/)(?:\.agents/gravity|gravity-plugin|plugins/gravity|gravity)/hooks(?:/|$)",
+        re.IGNORECASE,
+    ),
     re.compile(r"(?:^|/)(?:\.agents/rules/)?01-safety(?:-boundaries)?\.md$", re.IGNORECASE),
 ]
 
@@ -89,7 +95,10 @@ PATH_TOKEN_RE = re.compile(r"""[^\s"'`;&|()<>]+""")
 
 DANGEROUS_CMDS = [
     (
-        re.compile(r"\bgit\s+push\b[^\n]*?(?:(?:\s|^)(?:-f|--force)(?:\s|$)|(?:\s|^)\+\S+)"),
+        re.compile(
+            r"\bgit(?:\.exe)?\b(?:\s+(?:(?:-[Cc]\s+\S+)|(?:--(?:git-dir|work-tree|namespace|config-env)(?:=|\s+)\S+)|(?:-[A-Za-z0-9]+)|(?:--[a-z0-9-]+(?:=\S+)?)))*\s+push\b[^\n]*?(?:(?:\s|^)(?:-f|--force)(?:\s|$)|(?:\s|^)\+\S+)",
+            re.IGNORECASE,
+        ),
         "Force-push Git (-f / --force / +ref) bloqué.",
     ),
     (
@@ -101,8 +110,9 @@ DANGEROUS_CMDS = [
     ),
     (
         re.compile(
-            r"(?:^|[;&|]\s*)(?:printenv\b|env\s*(?:$|[;&|>])|"
-            r"(?:Get-ChildItem|gci|ls|dir)\s+Env:|Get-Variable\b)",
+            r"(?:^|[;&|]\s*)(?:printenv\b|env\s*(?:$|[;&|>])|export\s+-p\b|declare\s+-x\b|"
+            r"(?:Get-ChildItem|gci|ls|dir|Get-Item|gi|Get-Content|gc|cat)\s+Env:|Get-Variable\b)|"
+            r"\[(?:System\.)?Environment\]::GetEnvironmentVariables\b",
             re.IGNORECASE,
         ),
         "Affichage global des variables d'environnement bloqué (anti-fuite secrets).",
@@ -124,15 +134,15 @@ DANGEROUS_CMDS = [
     ),
     (
         re.compile(
-            r"(?:\b(?:rm|mv|cp|chmod|chown|truncate|tee|python3?|py|perl|ruby|node|Remove-Item|ri|del|Set-Content|Out-File)\b|\bsed\s+-i\b|>{1,2})"
-            r"[^\n]*?(?:(?:\.agents/(?:\./)*)?hooks\.json|(?:gravity/(?:\./)*)?hooks/|01-safety(?:-boundaries)?\.md)",
+            r"(?:\b(?:rm|mv|cp|chmod|chown|truncate|tee|(?:python3?|py|perl|ruby|node)(?:\.exe)?|Remove-Item|ri|del|rd|Set-Content|Out-File|Add-Content|ac|sc|Clear-Content|clc|Move-Item|mi|Copy-Item|cpi|copy|Rename-Item|rni|New-Item|ni)\b|\bsed\s+-i\b|>{1,2})"
+            r"[^\n]*?(?:(?:^|[\s\"'=:(])hooks\.json(?:$|[\s\"',;)])|(?:\.agents|gravity-plugin|plugins[/\\]gravity|gravity)(?:[/\\]|\./)+hooks\.json|(?:^|[\s\"'=:(/\\])(?:\.agents[/\\]gravity|gravity-plugin|plugins[/\\]gravity|gravity)(?:[/\\]|\./)+hooks(?:[/\\]|$)|01-safety(?:-boundaries)?\.md)",
             re.IGNORECASE,
         ),
         "Tentative de modification/suppression des garde-fous Gravity bloquée (auto-protection).",
     ),
     (
         re.compile(
-            r"\b(?:curl|wget)\b[^\n]*?\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|python3?|pwsh)\b",
+            r"\b(?:curl|wget)(?:\.exe)?\b[^\n]*?\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|python3?|py|pwsh|powershell)(?:\.exe)?\b",
             re.IGNORECASE,
         ),
         "Téléchargement et exécution directe via pipe shell bloqués.",
@@ -168,7 +178,7 @@ OPAQUE_ASK_CMDS = [
     ),
     (
         re.compile(
-            r"\b(?:sh|bash|zsh|dash|pwsh|powershell|cmd)\b[^\n]*?\s+(?:-c|-Command|/c|-(?:EncodedCommand|enc))\b",
+            r"\b(?:sh|bash|zsh|dash|pwsh|powershell|cmd)(?:\.exe)?\b[^\n]*?\s+(?:-c|-Command|/c|-(?:EncodedCommand|enc))\b",
             re.IGNORECASE,
         ),
         "Sous-shell inline ou encodé détecté : validation humaine requise.",
@@ -178,11 +188,11 @@ OPAQUE_ASK_CMDS = [
         "Évaluation PowerShell dynamique (`iex`/`Invoke-Expression`) détectée : validation humaine requise.",
     ),
     (
-        re.compile(r"\b(?:python3?|py)\b[^\n]*?\s+-c\b", re.IGNORECASE),
+        re.compile(r"\b(?:python3?|py)(?:\.exe)?\b[^\n]*?\s+-c\b", re.IGNORECASE),
         "Exécution de code Python inline (`-c`) détectée : validation humaine requise.",
     ),
     (
-        re.compile(r"\b(?:node|perl|ruby)\b[^\n]*?\s+-e\b", re.IGNORECASE),
+        re.compile(r"\b(?:node|perl|ruby)(?:\.exe)?\b[^\n]*?\s+-e\b", re.IGNORECASE),
         "Exécution de code inline via interpréteur (`-e`) détectée : validation humaine requise.",
     ),
     (
@@ -209,6 +219,35 @@ def matches_any(path: str, patterns: List[re.Pattern]) -> bool:
     if not norm:
         return False
     return any(p.search(norm) for p in patterns)
+
+
+def _is_active_plugin_protected_path(path: str, ws_root: Optional[Path] = None) -> bool:
+    """Vérifie si `path` pointe réellement vers le plugin Gravity actif (`hooks.json` ou `hooks/`)."""
+    cleaned = str(path or "").strip().strip("\"'")
+    if not cleaned or any(ch in cleaned for ch in "*?<>|\r\n\x00"):
+        return False
+    try:
+        candidate = Path(cleaned).expanduser()
+        if not candidate.is_absolute():
+            base = ws_root if ws_root is not None else HOOKS_DIR.parent
+            candidate = base / candidate
+        resolved = candidate.resolve()
+        active_hooks_dir = HOOKS_DIR.resolve()
+        active_hooks_json = (HOOKS_DIR.parent / "hooks.json").resolve()
+        return (
+            resolved == active_hooks_json
+            or resolved == active_hooks_dir
+            or active_hooks_dir in resolved.parents
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def is_harness_protected(path: str, ws_root: Optional[Path] = None) -> bool:
+    """Retourne True si `path` cible un fichier protégé du harnais Gravity."""
+    return matches_any(path, HARNESS_SELF_PROTECT_PATTERNS) or _is_active_plugin_protected_path(
+        path, ws_root
+    )
 
 
 def _is_destructive_target(tok: str) -> bool:
@@ -242,6 +281,8 @@ def _is_destructive_rm(cmd: str) -> bool:
         if head == "sudo" and len(tokens) > 1:
             tokens = tokens[1:]
             head = Path(tokens[0]).name.lower()
+        if head.endswith(".exe"):
+            head = head[:-4]
 
         if head == "rm":
             has_r, has_f = False, False
@@ -263,27 +304,32 @@ def _is_destructive_rm(cmd: str) -> bool:
             if has_r and has_f and any(_is_destructive_target(t) for t in targets):
                 return True
 
-        if head in ("remove-item", "ri", "del", "erase", "rmdir"):
+        if head in ("remove-item", "ri", "del", "erase", "rmdir", "rd"):
             low = [t.lower() for t in tokens[1:]]
-            has_r = any(t in ("-recurse", "-r") for t in low)
-            has_f = any(t in ("-force", "-fo") for t in low)
-            targets = [t for t in tokens[1:] if not t.startswith("-")]
+            has_r = any(t in ("-recurse", "-r", "/s") for t in low)
+            has_f = any(t in ("-force", "-fo", "/q", "/f") for t in low)
+            targets = [
+                t
+                for t in tokens[1:]
+                if not t.startswith("-")
+                and not (len(t) == 2 and t.startswith("/") and t[1].isalpha())
+            ]
             if has_r and has_f and any(_is_destructive_target(t) for t in targets):
                 return True
     return False
 
 
-def _shell_targets_harness(cmd: str) -> bool:
+def _shell_targets_harness(cmd: str, ws_root: Optional[Path] = None) -> bool:
     """Détecte les chemins normalisés vers les fichiers protégés dans une commande shell."""
     write_hint = re.search(
-        r"\b(?:rm|mv|cp|chmod|chown|truncate|tee|sed|python3?|py|perl|ruby|node|Remove-Item|ri|del|Set-Content|Out-File)\b|>{1,2}",
+        r"\b(?:rm|mv|cp|chmod|chown|truncate|tee|sed|(?:python3?|py|perl|ruby|node)(?:\.exe)?|Remove-Item|ri|del|rd|Set-Content|Out-File|Add-Content|ac|sc|Clear-Content|clc|Move-Item|mi|Copy-Item|cpi|copy|Rename-Item|rni|New-Item|ni)\b|>{1,2}",
         cmd,
         re.IGNORECASE,
     )
     if not write_hint:
         return False
     for token in PATH_TOKEN_RE.findall(cmd):
-        if matches_any(token, HARNESS_SELF_PROTECT_PATTERNS):
+        if is_harness_protected(token, ws_root):
             return True
     return False
 
@@ -339,7 +385,9 @@ def _collect_write_targets(args: dict) -> List[str]:
     return targets
 
 
-def inspect_workflow_code(code: str) -> Optional[Tuple[str, str]]:
+def inspect_workflow_code(
+    code: str, ws_root: Optional[Path] = None
+) -> Optional[Tuple[str, str]]:
     """Inspecte un script `run_workflow` pour fuite de secrets, tamper harnais ou exec opaque."""
     if re.search(
         r"\bos\.environ\b|['\"][^'\"]*(?:\.env(?:\.[a-z0-9_]+)?|secrets/|\.ssh/|id_rsa|id_ed25519|\.pem|\.key)['\"]",
@@ -348,7 +396,9 @@ def inspect_workflow_code(code: str) -> Optional[Tuple[str, str]]:
     ):
         return "deny", "Script `run_workflow` ciblant un secret ou `os.environ` bloqué."
     if re.search(
-        r"['\"][^'\"]*(?:(?:\.agents/)?hooks\.json|(?:gravity/)?hooks/|01-safety(?:-boundaries)?\.md)['\"]",
+        r"['\"](?:[^'\"]*[/\\])?(?:(?:\.agents|gravity-plugin|plugins[/\\]gravity|gravity)[/\\])?hooks\.json['\"]"
+        r"|['\"](?:[^'\"]*[/\\])?(?:\.agents[/\\]gravity|gravity-plugin|plugins[/\\]gravity|gravity)[/\\]hooks(?:[/\\][^'\"]*)?['\"]"
+        r"|['\"][^'\"]*01-safety(?:-boundaries)?\.md['\"]",
         code,
         re.IGNORECASE,
     ):
@@ -365,19 +415,52 @@ def inspect_workflow_code(code: str) -> Optional[Tuple[str, str]]:
         return "force_ask", "Script `run_workflow` non analysable par AST : validation humaine requise."
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if is_harness_protected(node.value, ws_root):
+                return "deny", "Script `run_workflow` ciblant les garde-fous Gravity bloqué."
+        elif isinstance(node, ast.Import):
             for alias in node.names:
                 top_mod = alias.name.split(".")[0]
-                if top_mod in ("subprocess", "shutil", "ctypes"):
+                if top_mod in ("subprocess", "shutil", "ctypes", "importlib"):
                     return "force_ask", f"Import `{top_mod}` dans `run_workflow` : validation humaine requise."
         elif isinstance(node, ast.ImportFrom) and node.module:
             top_mod = node.module.split(".")[0]
-            if top_mod in ("subprocess", "shutil", "ctypes"):
+            if top_mod in ("subprocess", "shutil", "ctypes", "importlib"):
                 return "force_ask", f"Import `{top_mod}` dans `run_workflow` : validation humaine requise."
         elif isinstance(node, ast.Call):
             fn = node.func
-            if isinstance(fn, ast.Name) and fn.id in ("eval", "exec", "getenv"):
-                return "force_ask", f"Appel dynamique `{fn.id}()` dans `run_workflow` : validation humaine requise."
+            if isinstance(fn, ast.Name):
+                if fn.id in ("eval", "exec", "getenv", "__import__"):
+                    return "force_ask", f"Appel dynamique `{fn.id}()` dans `run_workflow` : validation humaine requise."
+                if (
+                    fn.id == "getattr"
+                    and len(node.args) >= 2
+                    and isinstance(node.args[1], ast.Constant)
+                    and isinstance(node.args[1].value, str)
+                ):
+                    attr_name = node.args[1].value
+                    if attr_name == "environ":
+                        return "deny", "Accès dynamique à `environ` dans `run_workflow` bloqué."
+                    if attr_name in (
+                        "system",
+                        "popen",
+                        "execv",
+                        "execl",
+                        "execve",
+                        "spawnv",
+                        "rmtree",
+                        "unlink",
+                        "chmod",
+                        "getenv",
+                        "remove",
+                        "replace",
+                        "rmdir",
+                        "removedirs",
+                    ):
+                        return (
+                            "force_ask",
+                            f"Accès dynamique `getattr(..., {attr_name!r})` dans `run_workflow` : validation humaine requise.",
+                        )
             if isinstance(fn, ast.Attribute):
                 if fn.attr in (
                     "system",
@@ -417,7 +500,7 @@ def evaluate_tool_call(
 
     if name in FILE_WRITE_TOOLS:
         for target in _collect_write_targets(args):
-            if matches_any(target, HARNESS_SELF_PROTECT_PATTERNS):
+            if is_harness_protected(target, ws_root):
                 return "deny", f"Auto-protection du harnais : écriture interdite sur {target}"
             if matches_any(target, SENSITIVE_PATH_PATTERNS):
                 return "deny", f"Écriture interdite sur fichier sensible : {target}"
@@ -441,7 +524,7 @@ def evaluate_tool_call(
 
     elif name == "call_mcp_tool":
         for val in _iter_string_leaves(args):
-            if matches_any(val, HARNESS_SELF_PROTECT_PATTERNS):
+            if is_harness_protected(val, ws_root):
                 return "deny", f"Auto-protection du harnais via MCP bloquée : {val}"
             if matches_any(val, SENSITIVE_PATH_PATTERNS):
                 return "deny", f"Accès MCP interdit sur chemin sensible : {val}"
@@ -451,20 +534,40 @@ def evaluate_tool_call(
         if script_path:
             if matches_any(script_path, SENSITIVE_PATH_PATTERNS):
                 return "deny", f"Chemin `run_workflow` sensible interdit : {script_path}"
-            if matches_any(script_path, HARNESS_SELF_PROTECT_PATTERNS):
+            if is_harness_protected(script_path, ws_root):
                 return "deny", f"Auto-protection : chemin `run_workflow` interdit : {script_path}"
+            cwd_arg = first_str_arg(args, ("Cwd", "cwd"))
+            cwd_root = None
+            if cwd_arg:
+                raw_cwd = Path(cwd_arg)
+                cwd_root = raw_cwd if raw_cwd.is_absolute() else (ws_root / raw_cwd)
             candidate_file = Path(script_path)
             if not candidate_file.is_absolute():
-                ws_candidate = ws_root / candidate_file
-                candidate_file = ws_candidate if ws_candidate.is_file() else (HOOKS_DIR.parent / candidate_file)
+                search_bases: List[Path] = []
+                if cwd_root is not None:
+                    search_bases.append(cwd_root)
+                search_bases.extend([ws_root, HOOKS_DIR.parent])
+                for base in search_bases:
+                    probe = base / candidate_file
+                    if probe.is_file():
+                        candidate_file = probe
+                        break
             if candidate_file.is_file():
-                verdict = inspect_workflow_code(candidate_file.read_text(encoding="utf-8", errors="replace"))
+                verdict = inspect_workflow_code(
+                    candidate_file.read_text(encoding="utf-8", errors="replace"),
+                    ws_root=ws_root,
+                )
                 if verdict:
                     return verdict
+            else:
+                return (
+                    "force_ask",
+                    f"Script `run_workflow` introuvable pour inspection statique ({script_path}) : validation humaine requise.",
+                )
 
         inline_script = first_str_arg(args, ("Script", "script"))
         if inline_script:
-            verdict = inspect_workflow_code(inline_script)
+            verdict = inspect_workflow_code(inline_script, ws_root=ws_root)
             if verdict:
                 return verdict
 
@@ -475,7 +578,7 @@ def evaluate_tool_call(
         for pattern, message in DANGEROUS_CMDS:
             if pattern.search(cmd):
                 return "deny", message
-        if _shell_targets_harness(cmd):
+        if _shell_targets_harness(cmd, ws_root):
             return "deny", "Tentative de modification des garde-fous Gravity via chemin relatif bloquée."
         if _shell_targets_secret(cmd):
             return "deny", "Accès shell à un fichier sensible via chemin relatif bloqué."

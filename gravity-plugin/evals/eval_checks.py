@@ -27,6 +27,18 @@ def resolve_target(base_dir: Path, rel_path: str) -> Path:
 
 
 VALID_RULE_TRIGGERS = {"always_on", "model_decision", "glob", "manual"}
+FORBIDDEN_READONLY_TOOLS = {
+    "write_to_file",
+    "write_file",
+    "replace_file_content",
+    "edit_file",
+    "multi_replace_file_content",
+    "run_command",
+    "execute_command",
+    "bash",
+    "shell",
+    "run_workflow",
+}
 
 
 def _parse_yaml_frontmatter(text: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -195,6 +207,28 @@ def evaluate_predicate(
             globs_val = meta.get("globs") if "globs" in meta else meta.get("glob")
             if not isinstance(globs_val, str) or not globs_val.strip():
                 return False, f"{fn_args[0]} : 'globs' doit être une chaîne séparée par des virgules."
+        return True, ""
+
+    if fn_name == "agent_frontmatter_readonly" and len(fn_args) == 1:
+        p = resolve_target(base_dir, str(fn_args[0]))
+        if not p.is_file():
+            return False, f"Fichier absent pour agent_frontmatter_readonly : {fn_args[0]}"
+        text = p.read_text(encoding="utf-8", errors="replace")
+        meta, err = _parse_yaml_frontmatter(text)
+        if err or meta is None:
+            return False, f"{fn_args[0]} : {err}"
+        raw_tools = meta.get("tools", [])
+        if isinstance(raw_tools, str):
+            tools = [t.strip() for t in raw_tools.split(",") if t.strip()]
+        elif isinstance(raw_tools, list):
+            tools = [str(t).strip() for t in raw_tools if str(t).strip()]
+        else:
+            tools = []
+        if not tools:
+            return False, f"{fn_args[0]} : champ frontmatter 'tools' vide ou absent."
+        bad_tools = sorted(FORBIDDEN_READONLY_TOOLS.intersection(set(tools)))
+        if bad_tools:
+            return False, f"{fn_args[0]} : outils interdits en lecture seule ({', '.join(bad_tools)})."
         return True, ""
 
     return False, f"Prédicat inconnu ou arité invalide : {expr}"

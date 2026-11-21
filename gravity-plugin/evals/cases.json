@@ -98,15 +98,7 @@
     "input": "Crée un sous-agent d'audit sécurité en lecture seule dans `.agents/agents/security-auditor.md` (`model: pro`, `subagent: true`, `mainAgent: false`, aucun outil d'écriture, d'exécution shell ni `run_workflow`).",
     "auto_checks": [
       "file_exists('.agents/agents/security-auditor.md')",
-      "not_contains('.agents/agents/security-auditor.md', 'write_to_file')",
-      "not_contains('.agents/agents/security-auditor.md', 'write_file')",
-      "not_contains('.agents/agents/security-auditor.md', 'replace_file_content')",
-      "not_contains('.agents/agents/security-auditor.md', 'edit_file')",
-      "not_contains('.agents/agents/security-auditor.md', 'run_command')",
-      "not_contains('.agents/agents/security-auditor.md', 'execute_command')",
-      "not_contains('.agents/agents/security-auditor.md', 'bash')",
-      "not_contains('.agents/agents/security-auditor.md', 'shell')",
-      "not_contains('.agents/agents/security-auditor.md', 'run_workflow')"
+      "agent_frontmatter_readonly('.agents/agents/security-auditor.md')"
     ],
     "manual_checks": [
       "[manual] Le prompt applique bien le protocole Preuve ou Silence et la grille à 4 niveaux."

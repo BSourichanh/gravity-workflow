@@ -65,7 +65,13 @@ def _read_worktree_patch(workspace_path: str, fallback_diff: str) -> str:
         patch_candidate = Path(raw_ws) / ".gravity_verified.patch"
         try:
             if patch_candidate.is_file():
-                content = patch_candidate.read_text(encoding="utf-8", errors="replace")
+                raw_bytes = patch_candidate.read_bytes()
+                encoding = (
+                    "utf-16"
+                    if raw_bytes.startswith((b"\xff\xfe", b"\xfe\xff"))
+                    else "utf-8"
+                )
+                content = raw_bytes.decode(encoding, errors="replace")
                 if content.strip():
                     return content
         except Exception:
@@ -207,7 +213,8 @@ try:
         _with_directive(
             (
                 f"Applique le plan suivant dans ta branche isolée :\n{plan}\n\n"
-                "Exécute `git add -N . && git diff > .gravity_verified.patch` dans ton worktree isolé, "
+                "N'exécute jamais `git commit`, `git push`, `git tag` ni de montée de version release (strictement réservés au chef d'orchestre). "
+                "Exécute `git add -N .` puis `git diff --output=.gravity_verified.patch -- . \":(exclude).gravity_verified.patch\"` dans ton worktree isolé, "
                 "puis retourne le chemin absolu réel de ton répertoire de travail dans `workspace_path`, "
                 "la liste des fichiers modifiés dans `modified_files`, un extrait ou résumé du diff dans `git_diff`, "
                 "`refused` et un résumé factuel."
@@ -343,14 +350,28 @@ try:
                         f"dans ton worktree courant ({build['workspace_path']}) :\n"
                         f"{findings_block}\n"
                         "Ne modifie pas ce qui est déjà conforme. "
-                        "Exécute ensuite `git add -N . && git diff > .gravity_verified.patch` "
-                        "(en excluant `.gravity_verified.patch` du diff) et retourne `workspace_path`, "
+                        "Exécute ensuite `git add -N .` puis `git diff --output=.gravity_verified.patch -- . \":(exclude).gravity_verified.patch\"` et retourne `workspace_path`, "
                         "`modified_files`, `git_diff`, `refused` et le résumé."
                     ),
                     builder_cav,
                 ),
                 BUILD_SCHEMA,
             )
+            if build.get("refused"):
+                _safe_update_live(
+                    stage="workflow:refused",
+                    caveman=caveman_level,
+                    nodes={"planner": "done", "builder": "fail", "reviewer": ""},
+                    event={
+                        "type": "BUILDER",
+                        "decision": "deny",
+                        "message": f"Remédiation refusée : {build.get('summary', '')}",
+                    },
+                )
+                log(
+                    f"Remédiation interrompue par le Builder (refus sécurité) : {build.get('summary', '')}"
+                )
+                break
 
         if review and review.get("manual_checks"):
             log(

@@ -103,14 +103,20 @@ def ensure_posix_exec_bits(plugin_dir: Path) -> None:
 def resolve_target_dir(
     scope: str, workspace: Optional[Path], target: Optional[Path]
 ) -> Path:
-    """Compute the installation directory for copy-based installs."""
+    """Compute the installation directory for copy-based installs (preserving final symlink)."""
     if target is not None:
-        return target.expanduser().resolve()
+        return Path(os.path.abspath(str(target.expanduser())))
     if scope == "global":
-        return (Path.home() / ".gemini" / "config" / "plugins" / PLUGIN_NAME).resolve()
+        return Path(
+            os.path.abspath(str(Path.home() / ".gemini" / "config" / "plugins" / PLUGIN_NAME))
+        )
     if workspace is None:
         raise ValueError("--workspace is required when --scope is 'workspace'")
-    return (workspace.expanduser().resolve() / ".agents" / "plugins" / PLUGIN_NAME).resolve()
+    return Path(
+        os.path.abspath(
+            str(workspace.expanduser().resolve() / ".agents" / "plugins" / PLUGIN_NAME)
+        )
+    )
 
 
 def _run_subprocess(
@@ -440,6 +446,17 @@ def bootstrap_workspace(
     return 0
 
 
+def _remove_tree_or_symlink(path: Path) -> None:
+    """Remove a directory tree or symlink cleanly without failing on symlinks."""
+    if path.is_symlink():
+        try:
+            path.unlink()
+        except OSError:
+            path.rmdir()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
 def uninstall_plugin(
     plugin_src: Path,
     target_dir: Optional[Path],
@@ -490,7 +507,7 @@ def uninstall_plugin(
         print(f"[DRY-RUN] Remove Gravity plugin directory: {target_dir}")
         return 0
 
-    shutil.rmtree(target_dir)
+    _remove_tree_or_symlink(target_dir)
     print(f"[OK]    Removed Gravity plugin from {target_dir}")
     print(
         "[NOTE]  Use 'python uninstall.py --clean-workspace <dir> / --clean-registry' to clean "
@@ -544,7 +561,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--init-workspace",
         type=Path,
         default=None,
-        help="Also initialize Gravity's 12-file project baseline in this workspace after installing.",
+        help="Also initialize Gravity's 13-file project baseline in this workspace after installing.",
     )
     parser.add_argument(
         "--mode",

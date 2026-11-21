@@ -17,6 +17,7 @@ for _p in (str(HOOKS_DIR), str(OBS_DIR)):
 def main() -> int:
     try:
         from hook_runtime import (
+            configure_utf8_stdio,
             emit_json,
             emit_ok,
             read_stdin_text,
@@ -33,6 +34,7 @@ def main() -> int:
         sys.stdout.flush()
         return 0
 
+    configure_utf8_stdio()
     try:
         raw = read_stdin_text()
         try:

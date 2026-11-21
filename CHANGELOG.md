@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-11-22
+
+### Added
+- **Orchestrator-only Git & Versioning Rule (`workspace-template/.agents/rules/05-git-versioning.md` — 13-file baseline):**
+  - Added `trigger: model_decision` project rule covering branch discipline (`dev` / feature branches, never direct commit/push to `main`/`master`), pre-commit/pre-push checks, Conventional Commits, Semantic Versioning + `CHANGELOG.md` (Keep a Changelog), and annotated `vX.Y.Z` tags — strictly scoped to the main `/gravity` orchestrator and forbidden to subagents (`planner`, `builder`, `reviewer`) and `swarm` workers.
+  - Updated `gravity-plugin/scripts/init_workspace.py` to deploy `05-git-versioning.md` in both `quickstart` and `full` modes, plus idempotent `ensure_git_versioning_rule()` / `--ensure-git-rule` automatically invoked by `/gravity` when absent from a project, and synced `uninstall.py` (`--purge-workspace-templates`) and `workspace_validator.py`.
+- **Read-only Agent Eval Predicate (`agent_frontmatter_readonly`):**
+  - Added `agent_frontmatter_readonly()` in `gravity-plugin/evals/eval_checks.py` and updated `CASE-07` (`gravity-plugin/evals/cases.json` & `workspace-template/.agents/gravity/evals/cases.json`) to inspect YAML `tools:` without false positives from Markdown prose.
+- **Expanded Test Coverage (`test_unit.py`: 24 tests, `tests/test_uninstall.py`):**
+  - Added unit tests for `agent_frontmatter_readonly`, scoped hooks protection & Windows/PowerShell hardening, ASCII-safe `pre_tool_guard.py` output without non-Gravity pollution, multi-turn `evo` / `TERMINAL_CUSTOM_HOOK` handling, `ensure_git_versioning_rule` / `--ensure-git-rule` / `workspace-template` parity, and symlink uninstall targets.
+
+### Changed
+- **Subagent & Workflow Alignment:**
+  - Harmonized tool allowlists (`read_file`, `write_file`, `edit_file`) across `agents/planner.md`, `agents/builder.md`, `agents/reviewer.md`, and `03-subagents-architecture.md`.
+  - Explicitly restricted `builder`, `planner`, `review_pipeline.py`, and `swarm` workers from running `git commit`, `git push`, `git tag`, or release version bumps.
+  - Updated `review_pipeline.py` to generate `.gravity_verified.patch` via `git diff --output=...` (UTF-8 without BOM across POSIX & PowerShell 5.1, with UTF-16/UTF-8 fallback reading) and check `build.get("refused")` during remediation rounds.
+- **Observability & Living Documentation:**
+  - Updated `live-widget/server.py` SSE signature tracking (`live_state.json`, `profile.json`, `live_workspaces.json`), single-read `statusline.py` checking `harness-pre-tool-guard.enabled`, and `state_writer.py` atomic `os.replace` retry on Windows `PermissionError` with `ts_iso` event timestamps.
+  - Synchronized `AGENTS.md`, `README.md`, `gravity-plugin/README.md`, `install.py`, and all living documentation sheets in `docs/`.
+
+### Fixed
+- **Safety Guard Scoping & Windows Compatibility (`hooks/` & `scripts/`):**
+  - Scoped harness self-protection in `safety_policy.py` to Gravity's actual `hooks.json` / `hooks/` paths (preventing false positives on sibling plugins or `src/hooks/`), hardened `git` global-flag force-push detection, Windows/PowerShell `rd`/`rmdir`/`.exe`/env-dump detection, `run_workflow` `Cwd` resolution + fail-closed missing-script handling, and AST checks for `importlib`/`__import__`/`getattr`.
+  - Enforced UTF-8 stdio reconfiguration and ASCII-safe `emit_json()` across hooks and CLIs (`validate.py`, `init_workspace.py`, `statusline.py`, `profile_engine.py`, `hook_runtime.py`) to avoid Windows `cp1252`/`protojson` errors, and prevented `pre_tool_guard.py` / `stop_session_logger.py` from creating `.agents/gravity/` in non-Gravity workspaces.
+- **Profile Engine, Evals & Symlink Cleanup:**
+  - Fixed `profile_engine.py` multi-turn `(conversation_id, execution_num)` idempotency, `ts_iso` event windowing, and `NORMAL_TERMINATION_REASONS` (`TERMINAL_CUSTOM_HOOK`, `INJECTED_RESPONSE`, `TERMINAL_STEP_TYPE`, `USER_CANCELED`).
+  - Failed explicitly in `evals/run_suite.py` when candidate `workspace_path` is empty instead of falling back to `WS_ROOT`.
+  - Preserved final symlink paths in `install.py` / `uninstall.py` via `_remove_tree_or_symlink()` so symlinked targets are unlinked safely without deleting real target directories.
+
 ## [0.1.0] - 2026-11-21
 
 ### Added

@@ -122,7 +122,16 @@ async def evaluate_case(case: Dict[str, Any]) -> Dict[str, Any]:
         )
 
         ws_raw = str(candidate.get("workspace_path", "")).strip()
-        ws_path = Path(ws_raw) if ws_raw else WS_ROOT
+        if not ws_raw:
+            return {
+                "id": case["id"],
+                "description": case["description"],
+                "verdict": "FAIL",
+                "deterministic_failures": ["Champ `workspace_path` vide retourné par le candidat."],
+                "judge": None,
+                "manual_checks": case.get("manual_checks", []),
+            }
+        ws_path = Path(ws_raw)
         if not ws_path.is_dir():
             return {
                 "id": case["id"],

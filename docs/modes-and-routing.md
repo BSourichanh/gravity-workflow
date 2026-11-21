@@ -18,6 +18,7 @@ Le plugin expose le skill principal `/gravity` ([`SKILL.md`](../gravity-plugin/s
 ### Règles de parsing anti-ambiguïté
 - Correspondance **mot entier uniquement** en tête de commande (`fast-path` ou `low-latency` ne sont pas interprétés comme `fast` ou `low`).
 - `status`, `evals` et `init` ne déclenchent une sous-commande que s'ils sont seuls ou suivis uniquement de leurs arguments dédiés (`CASE-ID...` pour `evals`, `quickstart|full` pour `init`) ; sinon l'entrée est exécutée comme `<tâche>` (ex. `/gravity status de la PR`).
+- À chaque invocation `/gravity` (Reprise de session, Audit ou Initialisation), si `.agents/rules/05-git-versioning.md` est absent du projet cible, il est créé automatiquement sans écraser l'existant (`init_workspace.py --ensure-git-rule`). Cette règle Git & versioning s'applique **exclusivement au chef d'orchestre**, jamais aux sous-agents ni aux workers `swarm`.
 - En CLI hors chat, [`profile_engine.py`](../gravity-plugin/observability/profile_engine.py) expose `get`, `set` (`--mode`, `--pace`, `--verify`/`--verification`, `--caveman`, `--allow-pro`, `--reason`, `--json`) et `evolve`.
 
 ---
@@ -58,9 +59,9 @@ Avant de modifier le dépôt ou de lancer `review_pipeline.py` / `swarm` sur une
 
 Le schéma par défaut (`schema_version: 1`, modèle dans [`workspace-template/.agents/gravity/profile.json`](../workspace-template/.agents/gravity/profile.json)) démarre avec `mode: "evo"`, `current_level: "medium"`, `locked: false`, `pace: "slow"`, `verification: "safe"`, `caveman: "lite"`, `caveman_locked: false`, `last_score: 40`.
 
-En fin de session (`Stop`), [`stop_session_logger.py`](../gravity-plugin/hooks/stop_session_logger.py) appelle `evolve_on_stop()` *(idempotent par `conversation_id`, ignoré si `fully_idle: false` ou hors projet Gravity)* :
+En fin de session (`Stop`), [`stop_session_logger.py`](../gravity-plugin/hooks/stop_session_logger.py) appelle `evolve_on_stop()` *(idempotent par couple `(conversation_id, execution_num)`, réévaluant les tours `2..N` d'une conversation tout en plafonnant la variation à ±1 palier par rapport au niveau initial `last_conversation_start_level`, ignoré si `fully_idle: false` ou hors projet Gravity)* :
 
-1. **Collecte bornée des signaux** (`MAX_SCAN_FILES = 500`) : nombre de fichiers sources, présence de tests/CI, nombre de règles `.agents/rules/*.md`, serveurs MCP, étapes cochées dans `PROGRESS.md`, alertes `deny` / `force_ask` dans les 15 derniers événements `live_state.json`, taux de réussite `evals/report.json`, et erreurs / arrêt anormal de session.
+1. **Collecte bornée des signaux** (`MAX_SCAN_FILES = 500`) : nombre de fichiers sources, présence de tests/CI, nombre de règles `.agents/rules/*.md`, serveurs MCP, étapes cochées dans `PROGRESS.md`, alertes `deny` / `force_ask` dans les 15 derniers événements `live_state.json` postérieurs à `last_updated` (filtrage par `ts_iso`), taux de réussite `evals/report.json`, et erreurs de session (`NORMAL_TERMINATION_REASONS` inclut `TERMINAL_CUSTOM_HOOK`, `INJECTED_RESPONSE`, `TERMINAL_STEP_TYPE` et `USER_CANCELED` afin d'éviter les faux positifs avec les hooks `PreInvocation` comme `gravity-metrics`).
 2. **Calcul déterministe du score `0..100`** : inclut un bonus d'allègement (`-5` si `eval_pass_rate == 100 %`, `-10` si `clean_streak >= 3` sans erreur ni `deny`).
 3. **Seuils & hystérésis (`HYSTERESIS_MARGIN = 5`) :**
    - Plages cibles : `low` `[0, 25)`, `medium` `[25, 55)`, `high` `[55, 80)`, `ultra` `[80, 101)`.

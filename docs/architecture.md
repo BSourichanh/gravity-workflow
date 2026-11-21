@@ -5,7 +5,7 @@
 Gravity sépare strictement le moteur du harnais des fichiers propres au projet cible :
 
 1. **Plugin autonome ([`gravity-plugin/`](../gravity-plugin/) — 42 fichiers) :** embarque le manifeste, le skill principal `/gravity` (et ses 10 fiches de référence), le skill compagnon `/caveman`, les 3 sous-agents, les hooks (`hooks.json` + `hooks/*.py`), les workflows, le moteur d'évaluations, le moteur de profil/protocole Caveman/observabilité, le sidecar Live Widget, le validateur, l'initialiseur et les tests unitaires.
-2. **Empreinte projet minimale ([`workspace-template/`](../workspace-template/) — 12 fichiers) :** l'initialisation d'un projet cible ne déploie que `AGENTS.md` et `.agents/` (`mcp_config.json`, règles, suivi `PROGRESS.md`/`BACKLOG.md`, `profile.json`, catalogue `evals/cases.json`, `live_state.json` et `.gitignore`). Aucun dossier visible `gravity/` n'est créé à la racine du projet.
+2. **Empreinte projet minimale ([`workspace-template/`](../workspace-template/) — 13 fichiers) :** l'initialisation d'un projet cible ne déploie que `AGENTS.md` et `.agents/` (`mcp_config.json`, règles, suivi `PROGRESS.md`/`BACKLOG.md`, `profile.json`, catalogue `evals/cases.json`, `live_state.json` et `.gitignore`). Aucun dossier visible `gravity/` n'est créé à la racine du projet.
 
 ---
 
@@ -53,7 +53,7 @@ gravity-plugin/
 └── scripts/
     ├── init_workspace.py               # Bootstrapper projet full/quickstart (chmod 0755)
     ├── validate.py                     # CLI validation --strict (chmod 0755)
-    ├── test_unit.py                    # 19 tests unitaires internes (100 % stdlib)
+    ├── test_unit.py                    # 24 tests unitaires internes (100 % stdlib)
     └── validators/                     # base.py, plugin_validator.py, workspace_validator.py
 ```
 
@@ -68,7 +68,8 @@ workspace-template/
     │   ├── 01-safety-boundaries.md     # trigger: always_on (< 2 Ko)
     │   ├── 02-python-stdlib.md         # trigger: glob ('**/*.py')
     │   ├── 03-api-architecture.md      # trigger: model_decision
-    │   └── 04-release-checklist.md     # trigger: manual
+    │   ├── 04-release-checklist.md     # trigger: manual
+    │   └── 05-git-versioning.md        # trigger: model_decision (chef d'orchestre uniquement)
     └── gravity/
         ├── .gitignore                  # Ignore *.lock, runs.jsonl, last_verified.patch, reports
         ├── PROGRESS.md                 # Suivi des 8 étapes + Bonus
@@ -85,12 +86,13 @@ workspace-template/
 À l'appel de `/gravity` (voir [`SKILL.md`](../gravity-plugin/skills/gravity/SKILL.md)) ou via [`init_workspace.py`](../gravity-plugin/scripts/init_workspace.py) :
 
 - **Détection automatique dans l'ordre :**
-  1. **Reprise de session** (`.agents/gravity/PROGRESS.md` présent) : lit `PROGRESS.md` + `profile.json`, affiche la micro-carte 3 lignes et poursuit la tâche.
-  2. **Mode Audit** (`.agents/` ou `AGENTS.md` présent sans `PROGRESS.md`) : contrôle `trigger:` et le budget `< 20 000` tokens, puis complète `.agents/gravity/` sans écraser les fichiers existants.
+  1. **Reprise de session** (`.agents/gravity/PROGRESS.md` présent) : lit `PROGRESS.md` + `profile.json`, vérifie/déploie `.agents/rules/05-git-versioning.md` via `init_workspace.py --ensure-git-rule` s'il est absent, affiche la micro-carte 3 lignes et poursuit la tâche.
+  2. **Mode Audit** (`.agents/` ou `AGENTS.md` présent sans `PROGRESS.md`) : contrôle `trigger:` et le budget `< 20 000` tokens, puis complète `.agents/gravity/` et `.agents/rules/05-git-versioning.md` (si absent) sans écraser les fichiers existants.
   3. **Démarrage à froid** (workspace vierge) : `low` lance `--mode quickstart`, `high`/`ultra` lance `--mode full`, `medium` laisse le choix.
 - **Modes de `init_workspace.py` :**
-  - `full` *(défaut)* : déploie les 12 fichiers (`PROGRESS.md` à `0/8` + les 4 modèles de règles).
-  - `quickstart` : déploie le socle minimal viable (`AGENTS.md`, `mcp_config.json`, `01-safety-boundaries.md` + `.agents/gravity/`, `PROGRESS.md` à `Quick Start [~] 3/8`).
+  - `full` *(défaut)* : déploie les 13 fichiers (`PROGRESS.md` à `0/8` + les 5 modèles de règles).
+  - `quickstart` : déploie le socle minimal viable (`AGENTS.md`, `mcp_config.json`, `01-safety-boundaries.md`, `05-git-versioning.md` + `.agents/gravity/`, `PROGRESS.md` à `Quick Start [~] 3/8`).
+  - `--ensure-git-rule` : déploie uniquement `.agents/rules/05-git-versioning.md` s'il est absent d'un projet existant (idempotent).
   - **Anti-écrasement :** aucun fichier existant n'est remplacé sans `--force` après accord explicite.
 
 ---

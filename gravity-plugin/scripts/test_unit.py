@@ -99,6 +99,44 @@ class TestEvalChecks(unittest.TestCase):
         self.assertIn("OK \\| propre", md)
         self.assertIn("[manual] Vérifier lisibilité", md)
 
+    def test_agent_frontmatter_readonly(self) -> None:
+        ok_rev, msg_rev = eval_checks.evaluate_predicate(
+            "agent_frontmatter_readonly('agents/reviewer.md')", PLUGIN_ROOT, {}
+        )
+        self.assertTrue(ok_rev, msg_rev)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            safe_agent = (
+                "---\n"
+                "name: security-auditor\n"
+                "tools:\n"
+                "  - view_file\n"
+                "  - read_file\n"
+                "  - grep_search\n"
+                "---\n\n"
+                "# Auditeur\nNe jamais exécuter de commande shell.\n"
+            )
+            (base / "safe_auditor.md").write_text(safe_agent, encoding="utf-8")
+            ok_safe, msg_safe = eval_checks.evaluate_predicate(
+                "agent_frontmatter_readonly('safe_auditor.md')", base, {}
+            )
+            self.assertTrue(ok_safe, msg_safe)
+
+            bad_agent = (
+                "---\n"
+                "name: bad-auditor\n"
+                "tools:\n"
+                "  - read_file\n"
+                "  - run_command\n"
+                "---\n\n# Bad\n"
+            )
+            (base / "bad_auditor.md").write_text(bad_agent, encoding="utf-8")
+            ok_bad, _ = eval_checks.evaluate_predicate(
+                "agent_frontmatter_readonly('bad_auditor.md')", base, {}
+            )
+            self.assertFalse(ok_bad)
+
 
 class TestStateWriter(unittest.TestCase):
     def test_atomic_write_and_max_events_cap(self) -> None:
@@ -236,6 +274,119 @@ class TestSafetyPolicy(unittest.TestCase):
         )
         self.assertIsNone(safety_policy.inspect_workflow_code(benign))
 
+        res_getattr_env = safety_policy.inspect_workflow_code("import os\nprint(getattr(os, 'environ'))\n")
+        self.assertIsNotNone(res_getattr_env)
+        self.assertEqual(res_getattr_env[0], "deny")
+
+        for dyn in (
+            "import importlib\nimportlib.import_module('os')\n",
+            "__import__('os')\n",
+            "import os\ngetattr(os, 'system')('echo ok')\n",
+        ):
+            res_dyn = safety_policy.inspect_workflow_code(dyn)
+            self.assertIsNotNone(res_dyn)
+            self.assertEqual(res_dyn[0], "force_ask")
+
+    def test_scoped_hooks_protection_and_hardening(self) -> None:
+        for allowed_target in (
+            "gravity-metrics-plugin/hooks/hook_runtime.py",
+            "gravity-metrics-plugin/hooks/pre_invocation_metrics.py",
+            "gravity-metrics-plugin/hooks.json",
+            "src/hooks/useAuth.ts",
+        ):
+            dec, reason = safety_policy.evaluate_tool_call(
+                {"toolCall": {"name": "write_to_file", "args": {"TargetFile": allowed_target}}},
+                PLUGIN_ROOT,
+            )
+            self.assertEqual(dec, "allow", f"Faux positif sur {allowed_target}: {reason}")
+
+        for denied_target in (
+            "gravity-plugin/hooks/safety_policy.py",
+            "hooks/pre_tool_guard.py",
+            ".agents/hooks.json",
+            "hooks.json",
+        ):
+            dec, _ = safety_policy.evaluate_tool_call(
+                {"toolCall": {"name": "edit_file", "args": {"path": denied_target}}},
+                PLUGIN_ROOT,
+            )
+            self.assertEqual(dec, "deny", f"Devrait bloquer {denied_target}")
+
+        for denied_cmd in (
+            "git -C repo push --force",
+            "git.exe --no-pager push origin +main",
+            "rd /s /q C:\\",
+            "rmdir /s /q /",
+            "[System.Environment]::GetEnvironmentVariables()",
+            "Get-Item Env:*",
+            "export -p",
+            'Add-Content .agents/hooks.json "bad"',
+            "python.exe -c \"print(open('.env').read())\"",
+        ):
+            dec, _ = safety_policy.evaluate_tool_call(
+                {"toolCall": {"name": "run_command", "args": {"CommandLine": denied_cmd}}},
+                PLUGIN_ROOT,
+            )
+            self.assertEqual(dec, "deny", f"Devrait bloquer la commande : {denied_cmd}")
+
+        for ask_cmd in (
+            'python.exe -c "print(1)"',
+            "powershell.exe -EncodedCommand ZQBjAGgAbwAgADEA",
+            "cmd.exe /c dir",
+        ):
+            dec, _ = safety_policy.evaluate_tool_call(
+                {"toolCall": {"name": "run_command", "args": {"CommandLine": ask_cmd}}},
+                PLUGIN_ROOT,
+            )
+            self.assertEqual(dec, "force_ask", f"Devrait escalader : {ask_cmd}")
+
+        dec_missing, _ = safety_policy.evaluate_tool_call(
+            {"toolCall": {"name": "run_workflow", "args": {"ScriptPath": "does_not_exist.py"}}},
+            PLUGIN_ROOT,
+        )
+        self.assertEqual(dec_missing, "force_ask")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            wf_dir = Path(tmp)
+            (wf_dir / "wf.py").write_text("import os\nos.remove('x.txt')\n", encoding="utf-8")
+            dec_cwd, _ = safety_policy.evaluate_tool_call(
+                {"toolCall": {"name": "run_workflow", "args": {"ScriptPath": "wf.py", "Cwd": str(wf_dir)}}},
+                PLUGIN_ROOT,
+            )
+            self.assertEqual(dec_cwd, "force_ask")
+
+    def test_pre_tool_guard_ascii_safe_and_non_gravity_no_pollution(self) -> None:
+        guard = PLUGIN_ROOT / "hooks/pre_tool_guard.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            plain_ws = Path(tmp) / "plain_repo"
+            plain_ws.mkdir()
+            env = dict(os.environ)
+            env.pop("GRAVITY_STATE_PATH", None)
+            env["GRAVITY_SKIP_REGISTRY"] = "1"
+            payload = json.dumps(
+                {
+                    "cwd": str(plain_ws),
+                    "conversationId": "conv-ascii-1",
+                    "toolCall": {"name": "run_command", "args": {"CommandLine": "git push --force"}},
+                }
+            )
+            proc = subprocess.run(
+                [sys.executable, str(guard)],
+                input=payload,
+                text=True,
+                encoding="utf-8",
+                capture_output=True,
+                cwd=str(PLUGIN_ROOT),
+                env=env,
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertTrue(proc.stdout.isascii(), f"Sortie non ASCII: {proc.stdout!r}")
+            out = json.loads(proc.stdout.strip())
+            self.assertEqual(out["decision"], "deny")
+            self.assertFalse((plain_ws / ".agents").exists())
+
 
 class TestInitWorkspace(unittest.TestCase):
     def test_quickstart_state_and_anti_overwrite(self) -> None:
@@ -247,6 +398,7 @@ class TestInitWorkspace(unittest.TestCase):
             rc = init_workspace.init_workspace(ws, mode="quickstart", force=False)
             self.assertEqual(rc, 0)
             self.assertEqual((ws / "AGENTS.md").read_text(encoding="utf-8"), custom_agents)
+            self.assertTrue((ws / ".agents/rules/05-git-versioning.md").is_file())
             self.assertTrue((ws / ".agents/gravity/.gitignore").is_file())
 
             live_state = json.loads(
@@ -271,6 +423,75 @@ class TestInitWorkspace(unittest.TestCase):
             self.assertEqual(profile["caveman"], "lite")
             self.assertFalse(profile["caveman_locked"])
             self.assertFalse(profile["locked"])
+
+    def test_git_versioning_rule_ensure_and_template_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp)
+            created = init_workspace.ensure_git_versioning_rule(ws)
+            self.assertTrue(created)
+            rule_path = ws / ".agents/rules/05-git-versioning.md"
+            self.assertTrue(rule_path.is_file())
+            self.assertFalse((ws / ".agents/rules/02-python-stdlib.md").exists())
+            self.assertFalse((ws / ".agents/rules/03-api-architecture.md").exists())
+            self.assertFalse((ws / ".agents/rules/04-release-checklist.md").exists())
+
+            meta, _ = parse_frontmatter(rule_path.read_text(encoding="utf-8"))
+            self.assertEqual(meta.get("trigger"), "model_decision")
+            self.assertTrue(str(meta.get("description", "")).strip())
+
+            # Anti-écrasement : un fichier personnalisé est préservé avec force=False
+            custom_text = "---\ntrigger: model_decision\ndescription: Custom Git.\n---\n# Custom\n"
+            rule_path.write_text(custom_text, encoding="utf-8")
+            self.assertFalse(init_workspace.ensure_git_versioning_rule(ws, force=False))
+            self.assertEqual(rule_path.read_text(encoding="utf-8"), custom_text)
+
+            # Remplacement uniquement avec force=True
+            self.assertTrue(init_workspace.ensure_git_versioning_rule(ws, force=True))
+            self.assertEqual(
+                rule_path.read_text(encoding="utf-8"),
+                init_workspace.RULE_05_GIT_VERSIONING,
+            )
+
+            # Vérification CLI --ensure-git-rule idempotente
+            cli_ws = Path(tmp) / "cli_proj"
+            cli_ws.mkdir()
+            init_cli = PLUGIN_ROOT / "scripts/init_workspace.py"
+            proc1 = subprocess.run(
+                [sys.executable, str(init_cli), "--workspace", str(cli_ws), "--ensure-git-rule"],
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(proc1.returncode, 0, proc1.stderr)
+            self.assertTrue((cli_ws / ".agents/rules/05-git-versioning.md").is_file())
+            self.assertIn("[CREATE]", proc1.stdout)
+
+            proc2 = subprocess.run(
+                [sys.executable, str(init_cli), "--workspace", str(cli_ws), "--ensure-git-rule"],
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(proc2.returncode, 0, proc2.stderr)
+            self.assertIn("[SKIP]", proc2.stdout)
+
+        # Synchronisation exacte avec workspace-template/ si présent dans le dépôt parent
+        wt_root = PLUGIN_ROOT.parent / "workspace-template"
+        if wt_root.is_dir():
+            self.assertEqual(
+                (wt_root / "AGENTS.md").read_text(encoding="utf-8"),
+                init_workspace.AGENTS_MD,
+            )
+            self.assertEqual(
+                (wt_root / ".agents/rules/04-release-checklist.md").read_text(encoding="utf-8"),
+                init_workspace.RULE_04_RELEASE,
+            )
+            self.assertEqual(
+                (wt_root / ".agents/rules/05-git-versioning.md").read_text(encoding="utf-8"),
+                init_workspace.RULE_05_GIT_VERSIONING,
+            )
 
 
 class TestProfileEngine(unittest.TestCase):
@@ -584,6 +805,79 @@ class TestProfileEngine(unittest.TestCase):
             self.assertEqual(proc.returncode, 0)
             self.assertEqual(proc.stdout.strip(), "{}")
             self.assertEqual(sample_py.read_text(encoding="utf-8"), "x=1\n")
+
+    def test_terminal_custom_hook_event_window_and_multiturn_evo(self) -> None:
+        stop_hook = PLUGIN_ROOT / "hooks/stop_session_logger.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            plain_ws = base / "plain"
+            plain_ws.mkdir()
+
+            p_plain = subprocess.run(
+                [sys.executable, str(stop_hook)],
+                input=json.dumps({"cwd": str(plain_ws), "fullyIdle": True}),
+                text=True,
+                encoding="utf-8",
+                capture_output=True,
+                cwd=str(PLUGIN_ROOT),
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(p_plain.returncode, 0)
+            self.assertEqual(p_plain.stdout.strip(), "{}")
+            self.assertFalse((plain_ws / ".agents").exists())
+
+            ws = base / "gravity_ws"
+            init_workspace.init_workspace(ws, mode="quickstart", force=False)
+
+            # Un événement deny enregistré avant la fin de la session 1 ne doit pas polluer la session 2
+            state_writer.update_live_state(
+                workspace_root=ws,
+                event={"type": "GUARD:run_command", "decision": "deny", "message": "old deny"},
+            )
+            r1 = profile_engine.evolve_on_stop(
+                ws,
+                {
+                    "conversation_id": "conv-m1",
+                    "execution_num": 1,
+                    "fully_idle": True,
+                    "termination_reason": "TERMINAL_CUSTOM_HOOK",
+                },
+            )
+            assert r1 is not None
+            self.assertFalse(r1["signals"]["session_error"])
+            self.assertEqual(r1["signals"]["guard_deny_recent"], 1)
+            self.assertEqual(r1["clean_streak"], 0)
+            self.assertEqual(r1["sessions_analyzed"], 1)
+
+            # Tour 2 de la même conversation : réévaluation sans double comptage de sessions_analyzed
+            r1_t2 = profile_engine.evolve_on_stop(
+                ws,
+                {
+                    "conversation_id": "conv-m1",
+                    "execution_num": 2,
+                    "fully_idle": True,
+                    "termination_reason": "TERMINAL_CUSTOM_HOOK",
+                },
+            )
+            assert r1_t2 is not None
+            self.assertEqual(r1_t2["sessions_analyzed"], 1)
+            self.assertEqual(r1_t2["signals"]["guard_deny_recent"], 0)
+
+            # Session 2 propre : l'ancien deny antérieur à last_updated est ignoré
+            r2 = profile_engine.evolve_on_stop(
+                ws,
+                {
+                    "conversation_id": "conv-m2",
+                    "execution_num": 1,
+                    "fully_idle": True,
+                    "termination_reason": "TERMINAL_CUSTOM_HOOK",
+                },
+            )
+            assert r2 is not None
+            self.assertEqual(r2["sessions_analyzed"], 2)
+            self.assertEqual(r2["signals"]["guard_deny_recent"], 0)
+            self.assertEqual(r2["clean_streak"], 1)
 
 
 class TestCavemanIntegration(unittest.TestCase):

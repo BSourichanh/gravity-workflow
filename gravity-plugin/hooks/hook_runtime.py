@@ -10,6 +10,17 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 
+def configure_utf8_stdio() -> None:
+    """Force l'encodage UTF-8 sur stdin/stdout/stderr (évite les erreurs cp1252/protojson sous Windows)."""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconf = getattr(stream, "reconfigure", None)
+        if callable(reconf):
+            try:
+                reconf(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def read_stdin_text(timeout_s: float = 1.0) -> str:
     """Lit stdin en toute sécurité sans bloquer si aucun flux n'est pipé."""
     if sys.stdin is None or sys.stdin.isatty():
@@ -29,8 +40,8 @@ def read_stdin_text(timeout_s: float = 1.0) -> str:
 
 
 def emit_json(payload: Dict[str, Any]) -> None:
-    """Émet un objet JSON sur une ligne et vide stdout."""
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    """Émet un objet JSON ASCII-safe sur une ligne et vide stdout."""
+    sys.stdout.write(json.dumps(payload, ensure_ascii=True) + "\n")
     sys.stdout.flush()
 
 
@@ -90,11 +101,27 @@ def get_lock_fn():
         return _fallback_lock
 
 
+def is_gravity_workspace(ws_root: Path) -> bool:
+    """Retourne True uniquement si le workspace est initialisé avec le socle Gravity."""
+    return (
+        (ws_root / ".agents/gravity/profile.json").is_file()
+        or (ws_root / ".agents/gravity/PROGRESS.md").is_file()
+    )
+
+
 def record_live_event(
-    decision: str, tool_name: str, reason: Optional[str], workspace_root: Path
+    decision: str,
+    tool_name: str,
+    reason: Optional[str],
+    workspace_root: Path,
+    conversation_id: Optional[str] = None,
 ) -> None:
     """Enregistre les décisions bloquantes/escaladées dans live_state.json sans jamais échouer."""
     if decision not in ("deny", "ask", "force_ask"):
+        return
+    if not os.environ.get("GRAVITY_STATE_PATH", "").strip() and not is_gravity_workspace(
+        workspace_root
+    ):
         return
     try:
         obs_dir = Path(__file__).resolve().parent.parent / "observability"
@@ -102,14 +129,18 @@ def record_live_event(
             sys.path.insert(0, str(obs_dir))
         from state_writer import update_live_state  # type: ignore[import-not-found]
 
+        event_payload: Dict[str, Any] = {
+            "type": f"GUARD:{tool_name}",
+            "decision": decision,
+            "message": reason or "Action interceptée.",
+        }
+        if conversation_id:
+            event_payload["conversation_id"] = conversation_id
+
         update_live_state(
             guard_status="ON",
             workspace_root=workspace_root,
-            event={
-                "type": f"GUARD:{tool_name}",
-                "decision": decision,
-                "message": reason or "Action interceptée.",
-            },
+            event=event_payload,
         )
     except Exception:
         # Ne jamais compromettre le contrat fail-closed exit 0

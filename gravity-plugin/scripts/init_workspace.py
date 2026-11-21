@@ -3,10 +3,12 @@
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
 from typing import Dict
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+GIT_VERSIONING_RULE_REL = ".agents/rules/05-git-versioning.md"
 
 AGENTS_MD = """# Charte Projet — Agents Antigravity
 
@@ -21,6 +23,7 @@ AGENTS_MD = """# Charte Projet — Agents Antigravity
 3. Privilégier les outils natifs (`/browser`, terminal sandbox, outils fichiers) avant tout connecteur MCP.
 4. Soumettre tout livrable significatif au sous-agent `reviewer` (indépendant, à froid) avant clôture.
 5. En cas de correction manuelle ou d'incident, appliquer la double boucle `/learn` : proposer une règle ciblée (`learning_proposal.md` validé avant écriture) et ajouter un cas de non-régression dans `.agents/gravity/evals/cases.json`.
+6. **Git & versioning (chef d'orchestre uniquement) :** avant tout `git commit`, `git push` ou release, l'agent principal applique `.agents/rules/05-git-versioning.md` (branches hors `main`, *Conventional Commits*, SemVer, `CHANGELOG.md`, tags annotés `vX.Y.Z`) ; les sous-agents et workers `swarm` ne committent ni ne poussent jamais.
 """
 
 MCP_CONFIG_JSON = """{
@@ -67,6 +70,34 @@ description: Checklist de pré-publication invoquée explicitement avant toute r
 
 - [ ] `python3 <plugin_gravity>/scripts/validate.py --workspace . --strict` passe sans erreur ni avertissement.
 - [ ] Suite `/gravity evals` exécutée (12/12 PASS) et checklist `[manual]` arbitrée par un humain.
+- [ ] Conventions Git & versioning vérifiées par le chef d'orchestre (`.agents/rules/05-git-versioning.md` : branche hors `main`, SemVer, `CHANGELOG.md`, *Conventional Commits*, tag annoté `vX.Y.Z`).
+"""
+
+RULE_05_GIT_VERSIONING = """---
+trigger: model_decision
+description: Conventions Git et versioning (branches, Conventional Commits, SemVer, CHANGELOG, tags) réservées au chef d'orchestre (agent principal) avant tout commit, push ou release — ignorées par les sous-agents et workers swarm.
+---
+
+# Conventions Git & Versioning (Chef d'orchestre uniquement)
+
+> **Portée stricte :** Cette règle s'applique **exclusivement au chef d'orchestre** (agent principal / session `/gravity`). Les sous-agents (`planner`, `builder`, `reviewer`) et les workers `swarm` ne doivent **jamais** exécuter `git commit`, `git push`, `git tag`, ni modifier les numéros de version ou `CHANGELOG.md` à titre de release.
+
+Avant tout `git commit` et `git push` (toujours après demande ou validation explicite de l'utilisateur) :
+
+1. **Stratégie de branches :**
+   - Travailler sur `dev` ou une branche dédiée (`feat/<nom>`, `fix/<nom>`, `docs/<nom>`, `chore/<nom>`).
+   - **Jamais** de commit ni de push direct sur `main` ou `master` (intégration uniquement via `dev` / PR / merge contrôlé ; `--force` / `-f` / `+ref` strictement interdits).
+2. **Propreté & vérifications pré-commit / pré-push :**
+   - Contrôler `git status` et `git diff --staged` : exclure tout secret (`.env`, clés), fichier temporaire ou artefact local (`__pycache__/`, `*.lock`, `runs.jsonl`).
+   - En mode **`safe`** (défaut) : exécuter les validations et tests du projet avant de commiter et pousser ; en mode **`unsafe`**, vérifier au minimum la propreté du diff et l'absence de secrets.
+3. **Messages *Conventional Commits* :**
+   - Titre impératif `<= 50` car. : `<type>(<scope>): <résumé>` (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `build`, `ci`, `perf`, `style` ; ajouter `!` et un pied `BREAKING CHANGE:` en cas de rupture).
+   - Privilégier le **pourquoi** dans le corps si des puces complémentaires (`<= 72` car./ligne) sont nécessaires.
+4. **Semantic Versioning (`MAJOR.MINOR.PATCH`) & `CHANGELOG.md` :**
+   - Déterminer si le lot requiert une montée SemVer (`MAJOR` rupture, `MINOR` ajout rétrocompatible, `PATCH` correctif) et synchroniser tous les manifestes de version du projet (`plugin.json`, `package.json`, `pyproject.toml`, `Cargo.toml`, `VERSION`, etc.).
+   - Mettre à jour `CHANGELOG.md` au format *Keep a Changelog* (`[Unreleased]` ou `[X.Y.Z] - YYYY-MM-DD`, rubriques `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`) pour tout changement notable ou release.
+5. **Tags Git annotés (`vX.Y.Z`) :**
+   - À chaque montée de version / release validée, créer un tag annoté aligné avec le manifeste et `CHANGELOG.md` (`git tag -a vX.Y.Z -m "Release vX.Y.Z"`), puis pousser explicitement le tag (`git push origin vX.Y.Z` ou `--follow-tags`, sans jamais forcer l'écrasement d'un tag existant).
 """
 
 PROGRESS_FULL_MD = """# Gravity Progress
@@ -202,6 +233,19 @@ evals/report.md
 """
 
 
+def ensure_git_versioning_rule(target_root: Path, force: bool = False) -> bool:
+    """Crée `.agents/rules/05-git-versioning.md` s'il est absent du projet cible (sans écraser l'existant)."""
+    target_root = target_root.resolve()
+    dest = target_root / GIT_VERSIONING_RULE_REL
+    if dest.exists() and not force:
+        print(f"[SKIP]   {GIT_VERSIONING_RULE_REL} (existe déjà, anti-écrasement actif)")
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(RULE_05_GIT_VERSIONING, encoding="utf-8")
+    print(f"[CREATE] {GIT_VERSIONING_RULE_REL}")
+    return True
+
+
 def init_workspace(target_root: Path, mode: str = "full", force: bool = False) -> int:
     target_root = target_root.resolve()
     target_root.mkdir(parents=True, exist_ok=True)
@@ -212,6 +256,7 @@ def init_workspace(target_root: Path, mode: str = "full", force: bool = False) -
         "AGENTS.md": AGENTS_MD,
         ".agents/mcp_config.json": MCP_CONFIG_JSON,
         ".agents/rules/01-safety-boundaries.md": RULE_01_SAFETY,
+        GIT_VERSIONING_RULE_REL: RULE_05_GIT_VERSIONING,
         ".agents/gravity/.gitignore": GRAVITY_GITIGNORE,
         ".agents/gravity/PROGRESS.md": progress_text,
         ".agents/gravity/BACKLOG.md": BACKLOG_MD,
@@ -249,7 +294,18 @@ def init_workspace(target_root: Path, mode: str = "full", force: bool = False) -
     return 0
 
 
+def _configure_utf8_stdio() -> None:
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconf = getattr(stream, "reconfigure", None)
+        if callable(reconf):
+            try:
+                reconf(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def main() -> int:
+    _configure_utf8_stdio()
     parser = argparse.ArgumentParser(description="Initialise le socle vital Gravity dans un projet.")
     parser.add_argument("--workspace", type=Path, default=Path("."), help="Répertoire du projet cible.")
     parser.add_argument(
@@ -259,11 +315,19 @@ def main() -> int:
         help="Mode d'initialisation : 'quickstart' (socle minimal 10 min) ou 'full' (socle complet).",
     )
     parser.add_argument(
+        "--ensure-git-rule",
+        action="store_true",
+        help="Crée uniquement `.agents/rules/05-git-versioning.md` s'il est absent du projet (sans écraser l'existant).",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Remplace les fichiers existants (uniquement après validation explicite de l'utilisateur).",
     )
     args = parser.parse_args()
+    if args.ensure_git_rule:
+        ensure_git_versioning_rule(args.workspace, force=args.force)
+        return 0
     return init_workspace(args.workspace, mode=args.mode, force=args.force)
 
 

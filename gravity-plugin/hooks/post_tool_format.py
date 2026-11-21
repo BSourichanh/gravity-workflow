@@ -63,12 +63,19 @@ def _has_prettier_config(ws_root: Path) -> bool:
 
 def main() -> int:
     try:
-        from hook_runtime import emit_ok, first_str_arg, read_stdin_text, resolve_workspace_root
+        from hook_runtime import (
+            configure_utf8_stdio,
+            emit_ok,
+            first_str_arg,
+            read_stdin_text,
+            resolve_workspace_root,
+        )
     except Exception:
         sys.stdout.write("{}\n")
         sys.stdout.flush()
         return 0
 
+    configure_utf8_stdio()
     try:
         raw = read_stdin_text()
         if not raw:

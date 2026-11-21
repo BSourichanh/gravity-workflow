@@ -192,12 +192,26 @@ es.onmessage = (e) => {
 """
 
 
-def _state_signature(state_path: Path) -> Tuple[str, int, int]:
+def _stat_sig(path: Path) -> Tuple[str, int, int]:
     try:
-        st = state_path.stat()
-        return (str(state_path), st.st_mtime_ns, st.st_size)
+        st = path.stat()
+        return (str(path), st.st_mtime_ns, st.st_size)
     except OSError:
-        return (str(state_path), -1, -1)
+        return (str(path), -1, -1)
+
+
+def _profile_path_for_state(state_path: Path) -> Path:
+    if state_path.parent.name == "observability":
+        return state_path.parent.parent / "profile.json"
+    return Path(_workspace_from_state_path(state_path)) / ".agents/gravity/profile.json"
+
+
+def _state_signature(state_path: Path) -> Tuple[Tuple[str, int, int], Tuple[str, int, int], Tuple[str, int, int]]:
+    return (
+        _stat_sig(state_path),
+        _stat_sig(_profile_path_for_state(state_path)),
+        _stat_sig(REGISTRY_PATH),
+    )
 
 
 def read_state(ws_index: Optional[int] = None) -> str:
@@ -328,7 +342,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
             self.end_headers()
-            last_sig: Optional[Tuple[str, int, int]] = None
+            last_sig: Optional[
+                Tuple[Tuple[str, int, int], Tuple[str, int, int], Tuple[str, int, int]]
+            ] = None
             last_payload: Optional[str] = None
             last_ping = time.time()
             try:
