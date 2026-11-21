@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-11-22
+
+### Changed
+- **Quote-Aware Shell Segmentation (`gravity-plugin/hooks/safety_policy.py`):**
+  - Added `split_shell_segments()` (quote-aware splitting preserving Windows backslashes with bounded recursive `$(...)` and backtick subcommand extraction) and `extract_command_head_and_args()` (Windows-safe tokenizer unwrapping `VAR=val`, `&`, `sudo`, `env`, `command`, `nohup`, `time`), separating per-segment evaluation (`_is_destructive_rm`, `_is_git_force_push`, `_shell_targets_harness`, `_check_segment_inline_exec`) from full-command/pipeline rules.
+- **Expanded Unit Tests & Living Documentation (`test_unit.py`: 26 tests, `docs/`, `skills/gravity/references/06-safety-hooks.md`):**
+  - Added `test_shell_segmentation_and_tokenization` and `test_shell_false_positives_and_anti_bypass` covering the full `allow` / `force_ask` / `deny` matrix, and synchronized `docs/safety-and-hooks.md`, `docs/validation-and-development.md`, `docs/architecture.md`, `gravity-plugin/skills/gravity/references/06-safety-hooks.md`, and `README.md`.
+
+### Fixed
+- **Eliminated Shell Guard False Positives Without Weakening Fail-Closed Coverage (`gravity-plugin/hooks/safety_policy.py`):**
+  - Stopped `force_ask` false positives on chained commands (`python -m unittest ...; git -C ... status`, `node build.js; grep -E ...`), post-script/-module flags (`python scripts/cli.py -c config.json`, `python -m mypkg.cli -c prod`), and `deny` false positives on read-only commands referencing harness `.py` files (`git diff -- gravity-plugin/hooks/...`, `Get-Content ...`, `2>&1`) or `git push origin dev; rm -f /tmp/cache`, while blocking bypasses via quoted `;`, wrappers, and `$(...)`/backtick subcommands.
+
 ## [0.1.1] - 2026-11-22
 
 ### Added
