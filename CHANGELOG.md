@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Fail-Closed AST Allowlist for Inline Python (`gravity-plugin/hooks/safety_policy.py`):**
+  - Added `_match_ps_single_herestring()` (PowerShell `@'\n...\n'@` support in `split_shell_segments()`, `_tokenize_shell_segment_rich()`, and `_has_unquoted_redirection()`), `_extract_command_head_args_rich()` (`sudo` tracking & quote metadata), `_is_safe_inline_path()`, and `inspect_inline_python_code()`.
+- **Expanded Tests & Living Documentation (`test_unit.py`: 27 tests, `validators/base.py`, `docs/`, `skills/gravity/references/06-safety-hooks.md`, `README.md`):**
+  - Added `test_inline_python_ast_allowlist_and_anti_bypass` and synchronized all safety/architecture/validation docs.
+- **Repository Agent Charter (`AGENTS.md`):**
+  - Aligned root `AGENTS.md` to the canonical 3-section skeleton (`<= 2 500` bytes UTF-8) while preserving all invariants.
+
+### Fixed
+- **Eliminated Blanket `force_ask` Prompts on Benign `python -c` One-Liners (`gravity-plugin/hooks/safety_policy.py`):**
+  - Auto-allows pure stdlib calculations and workspace-scoped read-only file inspection (including multiline PowerShell `@'...'@` here-strings) while escalating writes, non-allowlisted imports, dynamic/out-of-workspace paths, shell expansion (`$`, backticks, `%VAR%`), `sudo`, and dunder/module-reexport bypass attempts to `force_ask`, and strengthening inline `os.environ` access to `deny`.
+
 ## [0.1.2] - 2026-11-22
 
 ### Changed

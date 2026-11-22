@@ -15,7 +15,7 @@ python gravity-plugin/scripts/validate.py --strict
 # 2. Valider strictement le socle de référence workspace-template/
 python gravity-plugin/scripts/validate.py --workspace workspace-template --strict
 
-# 3. Exécuter la suite de tests unitaires interne du plugin (26 tests)
+# 3. Exécuter la suite de tests unitaires interne du plugin (27 tests)
 python gravity-plugin/scripts/test_unit.py
 
 # 4. Exécuter les tests d'intégration installateur & désinstalleur
@@ -25,7 +25,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 ### Checklist pré-release (`v0.1.0+`)
 - [ ] `validate.py --strict` et `validate.py --workspace workspace-template --strict` retournent `0` erreur et `0` avertissement.
 - [ ] `agy plugin validate ./gravity-plugin` retourne `[ok]` (`exit 0`).
-- [ ] `test_unit.py` (26 tests) et `tests/test_*.py` (`test_install.py` + `test_uninstall.py`) passent intégralement.
+- [ ] `test_unit.py` (27 tests) et `tests/test_*.py` (`test_install.py` + `test_uninstall.py`) passent intégralement.
 - [ ] [`CHANGELOG.md`](../CHANGELOG.md), [`LICENSE`](../LICENSE), [`.gitignore`](../.gitignore) et [`.gitattributes`](../.gitattributes) sont à jour et aucun `__pycache__/` ou secret n'est suivi.
 
 ### Vérifications complémentaires

@@ -6,7 +6,7 @@ import posixpath
 import re
 import sys
 from pathlib import Path
-from typing import Any, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 HOOKS_DIR = Path(__file__).resolve().parent
 if str(HOOKS_DIR) not in sys.path:
@@ -283,6 +283,216 @@ OPAQUE_ASK_CMDS = [
     ),
 ]
 
+INLINE_PY_PURE_MODULES = {
+    "json",
+    "re",
+    "ast",
+    "csv",
+    "tomllib",
+    "html",
+    "difflib",
+    "textwrap",
+    "string",
+    "unicodedata",
+    "pprint",
+    "fnmatch",
+    "shlex",
+    "hashlib",
+    "hmac",
+    "zlib",
+    "math",
+    "cmath",
+    "decimal",
+    "fractions",
+    "statistics",
+    "random",
+    "collections",
+    "itertools",
+    "functools",
+    "operator",
+    "heapq",
+    "bisect",
+    "dataclasses",
+    "enum",
+    "typing",
+    "copy",
+    "datetime",
+    "time",
+    "calendar",
+    "zoneinfo",
+    "array",
+}
+INLINE_PY_PURE_SUBMODULES = {
+    "collections.abc",
+    "html.parser",
+    "html.entities",
+    "urllib.parse",
+}
+INLINE_PY_SAFE_SYS_ATTRS = {
+    "version",
+    "version_info",
+    "platform",
+    "executable",
+    "maxsize",
+    "byteorder",
+    "prefix",
+    "base_prefix",
+    "stdin",
+    "stdout",
+    "stderr",
+}
+INLINE_PY_SAFE_OS_PATH_PURE_FUNCS = {
+    "join",
+    "normpath",
+    "basename",
+    "dirname",
+    "splitext",
+    "split",
+    "relpath",
+    "commonpath",
+    "commonprefix",
+    "normcase",
+    "isabs",
+}
+INLINE_PY_SAFE_OS_PATH_FS_FUNCS = {
+    "getsize",
+    "exists",
+    "isfile",
+    "isdir",
+    "islink",
+    "getmtime",
+}
+INLINE_PY_SAFE_OS_PATH_FUNCS = (
+    INLINE_PY_SAFE_OS_PATH_PURE_FUNCS | INLINE_PY_SAFE_OS_PATH_FS_FUNCS
+)
+INLINE_PY_SAFE_IO_EXPORTS = {"StringIO", "BytesIO"}
+INLINE_PY_SAFE_PATHLIB_CLASSES = {
+    "Path",
+    "PurePath",
+    "PosixPath",
+    "WindowsPath",
+    "PurePosixPath",
+    "PureWindowsPath",
+}
+INLINE_PY_SAFE_READ_MODES = {"r", "rb", "rt", "br", "tr"}
+INLINE_PY_FORBIDDEN_CALL_NAMES = {
+    "eval",
+    "exec",
+    "compile",
+    "__import__",
+    "getattr",
+    "setattr",
+    "delattr",
+    "globals",
+    "locals",
+    "vars",
+    "breakpoint",
+    "input",
+    "memoryview",
+}
+INLINE_PY_FORBIDDEN_ATTRS = {
+    "os",
+    "sys",
+    "io",
+    "posix",
+    "nt",
+    "builtins",
+    "subprocess",
+    "shutil",
+    "socket",
+    "ctypes",
+    "importlib",
+    "threading",
+    "multiprocessing",
+    "signal",
+    "webbrowser",
+    "tempfile",
+    "runpy",
+    "code",
+    "pickle",
+    "marshal",
+    "urllib",
+    "http",
+    "ssl",
+    "inspect",
+    "gc",
+    "types",
+    "winreg",
+    "msvcrt",
+    "fcntl",
+    "pty",
+    "platform",
+    "glob",
+    "system",
+    "popen",
+    "execv",
+    "execl",
+    "execve",
+    "execvp",
+    "execvpe",
+    "spawnv",
+    "spawnl",
+    "fork",
+    "kill",
+    "rmtree",
+    "unlink",
+    "rmdir",
+    "removedirs",
+    "chmod",
+    "lchmod",
+    "chown",
+    "write_text",
+    "write_bytes",
+    "mkdir",
+    "touch",
+    "rename",
+    "symlink_to",
+    "hardlink_to",
+    "expanduser",
+    "expandvars",
+    "home",
+    "parent",
+    "parents",
+    "root",
+    "drive",
+    "anchor",
+    "with_name",
+    "with_stem",
+    "with_suffix",
+    "joinpath",
+    "urlopen",
+    "getenv",
+    "putenv",
+    "unsetenv",
+    "import_module",
+    "eval",
+    "exec",
+    "posixpath",
+    "ntpath",
+    "genericpath",
+    "linecache",
+    "codecs",
+    "tokenize",
+    "warnings",
+    "from_uri",
+    "with_segments",
+    "samefile",
+}
+INLINE_PY_EXTRA_SECRET_NAMES = {
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
+    ".aws",
+    ".gnupg",
+    ".kube",
+    ".docker",
+}
+INLINE_PY_SHELL_EXPAND_RE = re.compile(r"\$|`|%[A-Za-z_][A-Za-z0-9_]*%|\\\\\"")
+INLINE_PY_HIDDEN_GLOB_RE = re.compile(
+    r"(?:^|[/\\])\.[a-z0-9_]*[*?]|(?:^|[/\\])\.env", re.IGNORECASE
+)
+
 
 def normalize_path(path: str) -> str:
     cleaned = path.replace("\\", "/").strip().strip("\"'")
@@ -418,6 +628,27 @@ def _find_matching_backtick(
     return None
 
 
+def _match_ps_single_herestring(text: str, start: int) -> Optional[Tuple[str, int]]:
+    """Retourne `(corps_interne, index_apres_herestring)` pour `@'\\n...\\n'@` ou None."""
+    if text[start : start + 2] != "@'":
+        return None
+    n = len(text)
+    pos = start + 2
+    if pos < n and text[pos] == "\r":
+        pos += 1
+    if pos >= n or text[pos] != "\n":
+        return None
+    body_start = pos + 1
+    if text[body_start : body_start + 2] == "'@":
+        after = body_start + 2
+        if after == n or text[after].isspace() or text[after] in ";|&)":
+            return "", after
+    match = re.search(r"(?:\r?\n)'@(?=$|[\s;|&)])", text[body_start:])
+    if not match:
+        return None
+    return text[body_start : body_start + match.start()], body_start + match.end()
+
+
 def split_shell_segments(
     cmd: str, _depth: int = 0, max_depth: int = MAX_SUBSHELL_DEPTH
 ) -> List[str]:
@@ -475,6 +706,13 @@ def split_shell_segments(
             i += 1
             continue
 
+        if ch == "@" and cmd[i : i + 2] == "@'":
+            hs = _match_ps_single_herestring(cmd, i)
+            if hs is not None:
+                _, end_idx = hs
+                current.append(cmd[i:end_idx])
+                i = end_idx
+                continue
         if ch == "'":
             in_single = True
             current.append(ch)
@@ -533,20 +771,42 @@ def split_shell_segments(
     return segments
 
 
-def _tokenize_shell_segment(segment: str) -> List[str]:
-    """Tokenise un segment shell en préservant les backslashes Windows hors guillemets."""
-    tokens: List[str] = []
+def _tokenize_shell_segment_rich(
+    segment: str,
+) -> List[Tuple[str, List[Tuple[str, str]], bool]]:
+    """Tokenise un segment shell en conservant `(valeur, chunks, unterminated)`."""
+    tokens: List[Tuple[str, List[Tuple[str, str]], bool]] = []
     buf: List[str] = []
+    chunks: List[Tuple[str, str]] = []
+    unquoted_buf: List[str] = []
     has_token = False
+    unterminated = False
     in_single = False
     in_double = False
+    raw_start = 0
     i = 0
     n = len(segment)
+
+    def _flush_unquoted() -> None:
+        if unquoted_buf:
+            chunks.append(("unquoted", "".join(unquoted_buf)))
+            unquoted_buf.clear()
+
+    def _flush_token() -> None:
+        nonlocal has_token, unterminated
+        _flush_unquoted()
+        if has_token:
+            tokens.append(("".join(buf), list(chunks), unterminated))
+            buf.clear()
+            chunks.clear()
+            has_token = False
+            unterminated = False
 
     while i < n:
         ch = segment[i]
         if in_single:
             if ch == "'":
+                chunks.append(("single", segment[raw_start:i]))
                 in_single = False
             else:
                 buf.append(ch)
@@ -558,6 +818,7 @@ def _tokenize_shell_segment(segment: str) -> List[str]:
                 i += 2
                 continue
             if ch == '"':
+                chunks.append(("double", segment[raw_start:i]))
                 in_double = False
             else:
                 buf.append(ch)
@@ -565,30 +826,52 @@ def _tokenize_shell_segment(segment: str) -> List[str]:
             continue
 
         if ch.isspace():
-            if has_token:
-                tokens.append("".join(buf))
-                buf.clear()
-                has_token = False
+            _flush_token()
             i += 1
             continue
+        if ch == "@" and segment[i : i + 2] == "@'":
+            hs = _match_ps_single_herestring(segment, i)
+            if hs is not None:
+                body, end_idx = hs
+                _flush_unquoted()
+                has_token = True
+                buf.append(body)
+                chunks.append(("ps_single_herestring", body))
+                i = end_idx
+                continue
         if ch == "'":
+            _flush_unquoted()
             in_single = True
             has_token = True
+            raw_start = i + 1
             i += 1
             continue
         if ch == '"':
+            _flush_unquoted()
             in_double = True
             has_token = True
+            raw_start = i + 1
             i += 1
             continue
 
         has_token = True
         buf.append(ch)
+        unquoted_buf.append(ch)
         i += 1
 
-    if has_token:
-        tokens.append("".join(buf))
+    if in_single:
+        unterminated = True
+        chunks.append(("single", segment[raw_start:]))
+    elif in_double:
+        unterminated = True
+        chunks.append(("double", segment[raw_start:]))
+    _flush_token()
     return tokens
+
+
+def _tokenize_shell_segment(segment: str) -> List[str]:
+    """Tokenise un segment shell en préservant les backslashes Windows hors guillemets."""
+    return [tok for tok, _, _ in _tokenize_shell_segment_rich(segment)]
 
 
 def _normalize_cmd_name(tok: str) -> str:
@@ -602,12 +885,16 @@ def _normalize_cmd_name(tok: str) -> str:
     return head
 
 
-def extract_command_head_and_args(segment: str) -> Tuple[str, List[str]]:
-    """Extrait `(tete_normalisee, args)` en déballant `VAR=val`, `&`, `sudo`, `env`, `nohup`, `time`, `command`."""
-    tokens = _tokenize_shell_segment(segment)
-    if not tokens:
-        return "", []
+def _extract_command_head_args_rich(
+    segment: str,
+) -> Tuple[str, List[Tuple[str, List[Tuple[str, str]], bool]], bool]:
+    """Extrait `(tete, rich_args, wrapped_in_sudo)` en déballant `VAR=val`, `&`, `sudo`, `env`, `nohup`, `time`, `command`."""
+    rich_tokens = _tokenize_shell_segment_rich(segment)
+    if not rich_tokens:
+        return "", [], False
 
+    tokens = [tok for tok, _, _ in rich_tokens]
+    wrapped_in_sudo = False
     idx = 0
     n = len(tokens)
     while idx < n:
@@ -617,6 +904,19 @@ def extract_command_head_and_args(segment: str) -> Tuple[str, List[str]]:
             continue
         if tok.startswith("&") and len(tok) > 1:
             tokens[idx] = tok[1:]
+            raw_tok, raw_chunks, raw_unterm = rich_tokens[idx]
+            new_chunks = list(raw_chunks)
+            if (
+                new_chunks
+                and new_chunks[0][0] == "unquoted"
+                and new_chunks[0][1].startswith("&")
+            ):
+                trimmed = new_chunks[0][1][1:]
+                if trimmed:
+                    new_chunks[0] = ("unquoted", trimmed)
+                else:
+                    new_chunks.pop(0)
+            rich_tokens[idx] = (raw_tok[1:], new_chunks, raw_unterm)
             continue
         if ENV_ASSIGN_RE.match(tok):
             idx += 1
@@ -644,6 +944,7 @@ def extract_command_head_and_args(segment: str) -> Tuple[str, List[str]]:
                 continue
             break
         if norm == "sudo":
+            wrapped_in_sudo = True
             j = idx + 1
             while j < n:
                 opt = tokens[j]
@@ -681,13 +982,19 @@ def extract_command_head_and_args(segment: str) -> Tuple[str, List[str]]:
             if j < n:
                 idx = j
                 continue
-            return "env", tokens[idx + 1 :]
+            return "env", rich_tokens[idx + 1 :], wrapped_in_sudo
         break
 
     if idx >= n:
-        return "", []
+        return "", [], wrapped_in_sudo
     head = _normalize_cmd_name(tokens[idx])
-    return head, tokens[idx + 1 :]
+    return head, rich_tokens[idx + 1 :], wrapped_in_sudo
+
+
+def extract_command_head_and_args(segment: str) -> Tuple[str, List[str]]:
+    """Extrait `(tete_normalisee, args)` en déballant `VAR=val`, `&`, `sudo`, `env`, `nohup`, `time`, `command`."""
+    head, rich_args, _ = _extract_command_head_args_rich(segment)
+    return head, [tok for tok, _, _ in rich_args]
 
 
 def _is_python_head(head: str) -> bool:
@@ -763,6 +1070,12 @@ def _has_unquoted_redirection(segment: str) -> bool:
                 in_double = False
             i += 1
             continue
+        if ch == "@" and segment[i : i + 2] == "@'":
+            hs = _match_ps_single_herestring(segment, i)
+            if hs is not None:
+                _, end_idx = hs
+                i = end_idx
+                continue
         if ch == "'":
             in_single = True
             i += 1
@@ -781,12 +1094,798 @@ def _has_unquoted_redirection(segment: str) -> bool:
     return False
 
 
-def _check_segment_inline_exec(segment: str) -> Optional[Tuple[str, str]]:
+def _is_safe_inline_path(
+    raw_path: str, ws_root: Optional[Path] = None
+) -> Tuple[str, Optional[str]]:
+    """Valide qu'un chemin littéral dans `python -c` reste bénin et borné au workspace."""
+    if is_harness_protected(raw_path, ws_root):
+        return "deny", "Code Python inline (`-c`) ciblant les garde-fous Gravity bloqué."
+    if matches_any(raw_path, SENSITIVE_PATH_PATTERNS):
+        return "deny", "Code Python inline (`-c`) ciblant un chemin sensible bloqué."
+
+    cleaned = raw_path.strip()
+    if not cleaned or "\x00" in cleaned:
+        return (
+            "force_ask",
+            "Chemin vide ou invalide dans `python -c` : validation humaine requise.",
+        )
+
+    norm = cleaned.replace("\\", "/")
+    parts = [p for p in norm.split("/") if p]
+    if norm.startswith("~") or "~" in parts:
+        return (
+            "force_ask",
+            "Accès au répertoire personnel (`~`) dans `python -c` : validation humaine requise.",
+        )
+    if ".." in parts:
+        return (
+            "force_ask",
+            "Traversée de répertoire (`..`) dans `python -c` : validation humaine requise.",
+        )
+    for part in parts:
+        if part.lower() in INLINE_PY_EXTRA_SECRET_NAMES:
+            return (
+                "force_ask",
+                f"Accès à un chemin sensible caché (`{part}`) dans `python -c` : validation humaine requise.",
+            )
+
+    if re.match(r"^[A-Za-z]:(?![/\\])", norm):
+        return (
+            "force_ask",
+            f"Chemin relatif au lecteur ambigu (`{cleaned}`) dans `python -c` : validation humaine requise.",
+        )
+
+    is_abs = norm.startswith("/") or bool(re.match(r"^[A-Za-z]:", norm))
+    if is_abs:
+        if ws_root is None:
+            return (
+                "force_ask",
+                "Chemin absolu dans `python -c` : validation humaine requise.",
+            )
+        try:
+            ws_res = ws_root.resolve()
+            cand_res = Path(cleaned).resolve()
+            if cand_res == ws_res or ws_res in cand_res.parents:
+                return "allow", None
+        except (OSError, ValueError):
+            pass
+        return (
+            "force_ask",
+            f"Accès fichier hors du workspace (`{cleaned}`) dans `python -c` : validation humaine requise.",
+        )
+
+    if ws_root is not None:
+        try:
+            ws_res = ws_root.resolve()
+            cand_res = (ws_res / cleaned).resolve()
+            if cand_res != ws_res and ws_res not in cand_res.parents:
+                return (
+                    "force_ask",
+                    f"Résolution de chemin hors du workspace (`{cleaned}`) dans `python -c` : validation humaine requise.",
+                )
+        except (OSError, ValueError):
+            return (
+                "force_ask",
+                f"Chemin non résoluble (`{cleaned}`) dans `python -c` : validation humaine requise.",
+            )
+
+    return "allow", None
+
+
+def _resolve_static_str(node: ast.AST, const_str_vars: Dict[str, str]) -> Optional[str]:
+    """Résout un nœud AST vers une chaîne statique (littéral ou constante module unique)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name) and node.id in const_str_vars:
+        return const_str_vars[node.id]
+    return None
+
+
+def _collect_const_str_vars(
+    tree: ast.Module, parent_map: Dict[ast.AST, ast.AST]
+) -> Dict[str, str]:
+    """Collecte les variables chaînes constantes liées une seule fois au niveau module."""
+    bind_counts: Dict[str, int] = {}
+
+    def _bump(name: str) -> None:
+        if name:
+            bind_counts[name] = bind_counts.get(name, 0) + 1
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            _bump(node.id)
+        elif isinstance(node, ast.arg):
+            _bump(node.arg)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            _bump(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                _bump(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            _bump(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            for nm in node.names:
+                _bump(nm)
+
+    const_vars: Dict[str, str] = {}
+    for stmt in tree.body:
+        if (
+            isinstance(stmt, ast.Assign)
+            and parent_map.get(stmt) is tree
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and isinstance(stmt.value, ast.Constant)
+            and isinstance(stmt.value.value, str)
+        ):
+            var_name = stmt.targets[0].id
+            if bind_counts.get(var_name, 0) == 1:
+                const_vars[var_name] = stmt.value.value
+    return const_vars
+
+
+def _has_starred_or_kwargs(call: ast.Call) -> bool:
+    """Retourne True si l'appel utilise `*args` ou `**kwargs`."""
+    return any(isinstance(a, ast.Starred) for a in call.args) or any(
+        kw.arg is None for kw in call.keywords
+    )
+
+
+def _validate_inline_py_imports(
+    tree: ast.Module,
+) -> Tuple[
+    Optional[Tuple[str, str]],
+    Set[str],
+    Set[str],
+    Set[str],
+    Set[str],
+    Set[str],
+    Set[str],
+]:
+    """Valide les imports de `python -c` contre l'allowlist stricte et collecte les symboles restreints."""
+    restricted_sys_names: Set[str] = set()
+    restricted_os_names: Set[str] = set()
+    restricted_os_path_names: Set[str] = set()
+    os_path_fs_func_names: Set[str] = set()
+    restricted_pathlib_mod_names: Set[str] = set()
+    path_ctor_names: Set[str] = set()
+
+    def _fail(dec: str, msg: str) -> Tuple[
+        Tuple[str, str], Set[str], Set[str], Set[str], Set[str], Set[str], Set[str]
+    ]:
+        return (
+            (dec, msg),
+            restricted_sys_names,
+            restricted_os_names,
+            restricted_os_path_names,
+            os_path_fs_func_names,
+            restricted_pathlib_mod_names,
+            path_ctor_names,
+        )
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                mod = alias.name
+                bound = alias.asname or mod.split(".")[0]
+                if mod in INLINE_PY_PURE_MODULES or mod in {
+                    "collections.abc",
+                    "html.parser",
+                    "html.entities",
+                }:
+                    continue
+                if mod == "urllib.parse":
+                    if not alias.asname:
+                        return _fail(
+                            "force_ask",
+                            "Code Python inline (`-c`) : utiliser `import urllib.parse as ...` ou `from urllib.parse import ...`.",
+                        )
+                    continue
+                if mod == "sys":
+                    restricted_sys_names.add(bound)
+                    continue
+                if mod == "os":
+                    restricted_os_names.add(bound)
+                    continue
+                if mod == "os.path":
+                    if alias.asname:
+                        restricted_os_path_names.add(alias.asname)
+                    else:
+                        restricted_os_names.add("os")
+                    continue
+                if mod == "pathlib":
+                    restricted_pathlib_mod_names.add(bound)
+                    continue
+                return _fail(
+                    "force_ask",
+                    f"Code Python inline (`-c`) : import `{mod}` non autorisé automatiquement — validation humaine requise.",
+                )
+
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if node.level > 0 or not mod:
+                return _fail(
+                    "force_ask",
+                    "Code Python inline (`-c`) : import relatif non autorisé automatiquement — validation humaine requise.",
+                )
+            for alias in node.names:
+                if alias.name == "*":
+                    return _fail(
+                        "force_ask",
+                        f"Code Python inline (`-c`) : import wildcard `from {mod} import *` non autorisé automatiquement.",
+                    )
+                bound = alias.asname or alias.name
+                if mod in INLINE_PY_PURE_MODULES or mod in INLINE_PY_PURE_SUBMODULES:
+                    if alias.name.startswith("_") or alias.name in INLINE_PY_FORBIDDEN_ATTRS:
+                        return _fail(
+                            "force_ask",
+                            f"Code Python inline (`-c`) : symbole `{mod}.{alias.name}` non autorisé automatiquement — validation humaine requise.",
+                        )
+                    continue
+                if mod == "pathlib":
+                    if alias.name not in INLINE_PY_SAFE_PATHLIB_CLASSES:
+                        return _fail(
+                            "force_ask",
+                            f"Code Python inline (`-c`) : `from pathlib import {alias.name}` non autorisé automatiquement — validation humaine requise.",
+                        )
+                    path_ctor_names.add(bound)
+                    continue
+                if mod == "sys":
+                    if alias.name not in INLINE_PY_SAFE_SYS_ATTRS:
+                        return _fail(
+                            "force_ask",
+                            f"Code Python inline (`-c`) : `from sys import {alias.name}` non autorisé automatiquement — validation humaine requise.",
+                        )
+                    continue
+                if mod == "os.path":
+                    if alias.name not in INLINE_PY_SAFE_OS_PATH_FUNCS:
+                        return _fail(
+                            "force_ask",
+                            f"Code Python inline (`-c`) : `from os.path import {alias.name}` non autorisé automatiquement — validation humaine requise.",
+                        )
+                    if alias.name in INLINE_PY_SAFE_OS_PATH_FS_FUNCS:
+                        os_path_fs_func_names.add(bound)
+                    continue
+                if mod == "os":
+                    if alias.name == "environ":
+                        return _fail(
+                            "deny",
+                            "Import de `os.environ` dans `python -c` bloqué.",
+                        )
+                    if alias.name == "path":
+                        restricted_os_path_names.add(bound)
+                        continue
+                    return _fail(
+                        "force_ask",
+                        f"Code Python inline (`-c`) : `from os import {alias.name}` non autorisé automatiquement — validation humaine requise.",
+                    )
+                if mod == "io":
+                    if alias.name not in INLINE_PY_SAFE_IO_EXPORTS:
+                        return _fail(
+                            "force_ask",
+                            f"Code Python inline (`-c`) : `from io import {alias.name}` non autorisé automatiquement — validation humaine requise.",
+                        )
+                    continue
+                return _fail(
+                    "force_ask",
+                    f"Code Python inline (`-c`) : import `{mod}` non autorisé automatiquement — validation humaine requise.",
+                )
+
+    return (
+        None,
+        restricted_sys_names,
+        restricted_os_names,
+        restricted_os_path_names,
+        os_path_fs_func_names,
+        restricted_pathlib_mod_names,
+        path_ctor_names,
+    )
+
+
+def _check_inline_py_call(
+    node: ast.Call,
+    ws_root: Optional[Path],
+    const_str_vars: Dict[str, str],
+    restricted_os_names: Set[str],
+    restricted_os_path_names: Set[str],
+    os_path_fs_func_names: Set[str],
+    restricted_pathlib_mod_names: Set[str],
+    path_ctor_names: Set[str],
+) -> Optional[Tuple[str, str]]:
+    """Valide un nœud `ast.Call` pour les opérations I/O, `Path`, `os.path`, `.glob` et `.replace`."""
+    fn = node.func
+    kw_map = {kw.arg: kw.value for kw in node.keywords if kw.arg is not None}
+
+    if isinstance(fn, ast.Name) and fn.id == "open":
+        if _has_starred_or_kwargs(node):
+            return (
+                "force_ask",
+                "Appel `open()` avec `*args`/`**kwargs` dans `python -c` : validation humaine requise.",
+            )
+        if len(node.args) >= 8 or "opener" in kw_map:
+            return (
+                "force_ask",
+                "Paramètre `opener` dans `open()` dans `python -c` : validation humaine requise.",
+            )
+        if node.args and "file" in kw_map:
+            return (
+                "force_ask",
+                "Arguments ambigus dans `open()` dans `python -c` : validation humaine requise.",
+            )
+        file_node = node.args[0] if node.args else kw_map.get("file")
+        if file_node is None:
+            return (
+                "force_ask",
+                "Appel `open()` sans cible explicite dans `python -c` : validation humaine requise.",
+            )
+        file_str = _resolve_static_str(file_node, const_str_vars)
+        if file_str is None:
+            return (
+                "force_ask",
+                "Chemin dynamique dans `open()` dans `python -c` : validation humaine requise.",
+            )
+        p_dec, p_reason = _is_safe_inline_path(file_str, ws_root)
+        if p_dec != "allow":
+            return p_dec, p_reason or "Chemin non autorisé dans `open()`."
+        if len(node.args) >= 2 and "mode" in kw_map:
+            return (
+                "force_ask",
+                "Argument `mode` ambigu dans `open()` dans `python -c` : validation humaine requise.",
+            )
+        mode_node = node.args[1] if len(node.args) >= 2 else kw_map.get("mode")
+        if mode_node is not None:
+            mode_str = _resolve_static_str(mode_node, const_str_vars)
+            if mode_str is None or mode_str not in INLINE_PY_SAFE_READ_MODES:
+                return (
+                    "force_ask",
+                    "Mode d'ouverture non lecture seule dans `open()` dans `python -c` : validation humaine requise.",
+                )
+        return None
+
+    is_path_ctor = (isinstance(fn, ast.Name) and fn.id in path_ctor_names) or (
+        isinstance(fn, ast.Attribute)
+        and isinstance(fn.value, ast.Name)
+        and fn.value.id in restricted_pathlib_mod_names
+        and fn.attr in INLINE_PY_SAFE_PATHLIB_CLASSES
+    )
+    if is_path_ctor:
+        if _has_starred_or_kwargs(node) or node.keywords:
+            return (
+                "force_ask",
+                "Appel `Path()` avec `*args` ou paramètres nommés dans `python -c` : validation humaine requise.",
+            )
+        if not node.args:
+            return (
+                "force_ask",
+                "Appel `Path()` sans argument explicite dans `python -c` : validation humaine requise.",
+            )
+        resolved_segs: List[str] = []
+        for seg_idx, arg_node in enumerate(node.args):
+            seg_str = _resolve_static_str(arg_node, const_str_vars)
+            if seg_str is None:
+                return (
+                    "force_ask",
+                    "Chemin dynamique dans `Path()` dans `python -c` : validation humaine requise.",
+                )
+            seg_dec, seg_reason = _is_safe_inline_path(seg_str, ws_root)
+            if seg_dec != "allow":
+                return seg_dec, seg_reason or "Chemin non autorisé dans `Path()`."
+            if seg_idx > 0 and (
+                seg_str.replace("\\", "/").startswith("/")
+                or bool(re.match(r"^[A-Za-z]:", seg_str))
+            ):
+                return (
+                    "force_ask",
+                    "Segment absolu après le premier argument dans `Path()` dans `python -c` : validation humaine requise.",
+                )
+            resolved_segs.append(seg_str)
+        joined_dec, joined_reason = _is_safe_inline_path(
+            str(Path(*resolved_segs)), ws_root
+        )
+        if joined_dec != "allow":
+            return joined_dec, joined_reason or "Chemin joint non autorisé dans `Path()`."
+        return None
+
+    is_os_path_fs_call = (
+        (isinstance(fn, ast.Name) and fn.id in os_path_fs_func_names)
+        or (
+            isinstance(fn, ast.Attribute)
+            and isinstance(fn.value, ast.Name)
+            and fn.value.id in restricted_os_path_names
+            and fn.attr in INLINE_PY_SAFE_OS_PATH_FS_FUNCS
+        )
+        or (
+            isinstance(fn, ast.Attribute)
+            and isinstance(fn.value, ast.Attribute)
+            and fn.value.attr == "path"
+            and isinstance(fn.value.value, ast.Name)
+            and fn.value.value.id in restricted_os_names
+            and fn.attr in INLINE_PY_SAFE_OS_PATH_FS_FUNCS
+        )
+    )
+    if is_os_path_fs_call:
+        if _has_starred_or_kwargs(node):
+            return (
+                "force_ask",
+                "Appel `os.path.*` avec `*args`/`**kwargs` dans `python -c` : validation humaine requise.",
+            )
+        p_node = (
+            node.args[0]
+            if node.args
+            else kw_map.get("path") or kw_map.get("filename")
+        )
+        if p_node is None:
+            return (
+                "force_ask",
+                "Appel `os.path.*` sans chemin explicite dans `python -c` : validation humaine requise.",
+            )
+        p_str = _resolve_static_str(p_node, const_str_vars)
+        if p_str is None:
+            return (
+                "force_ask",
+                "Chemin dynamique dans `os.path.*` dans `python -c` : validation humaine requise.",
+            )
+        p_dec, p_reason = _is_safe_inline_path(p_str, ws_root)
+        if p_dec != "allow":
+            return p_dec, p_reason or "Chemin non autorisé dans `os.path.*`."
+        return None
+
+    if isinstance(fn, ast.Attribute) and fn.attr == "open":
+        if _has_starred_or_kwargs(node) or len(node.args) > 5 or "opener" in kw_map:
+            return (
+                "force_ask",
+                "Paramètres non autorisés sur `.open()` dans `python -c` : validation humaine requise.",
+            )
+        if node.args and "mode" in kw_map:
+            return (
+                "force_ask",
+                "Argument `mode` ambigu sur `.open()` dans `python -c` : validation humaine requise.",
+            )
+        mode_node = node.args[0] if node.args else kw_map.get("mode")
+        if mode_node is not None:
+            mode_str = _resolve_static_str(mode_node, const_str_vars)
+            if mode_str is None or mode_str not in INLINE_PY_SAFE_READ_MODES:
+                return (
+                    "force_ask",
+                    "Mode d'ouverture non lecture seule dans `.open()` dans `python -c` : validation humaine requise.",
+                )
+        return None
+
+    if isinstance(fn, ast.Attribute) and fn.attr in ("glob", "rglob"):
+        if _has_starred_or_kwargs(node):
+            return (
+                "force_ask",
+                "Appel `.glob()`/`.rglob()` avec `*args`/`**kwargs` dans `python -c` : validation humaine requise.",
+            )
+        pat_node = node.args[0] if node.args else kw_map.get("pattern")
+        pat_str = (
+            _resolve_static_str(pat_node, const_str_vars)
+            if pat_node is not None
+            else None
+        )
+        if pat_str is None:
+            return (
+                "force_ask",
+                "Motif dynamique dans `.glob()`/`.rglob()` dans `python -c` : validation humaine requise.",
+            )
+        if ".." in pat_str.replace("\\", "/").split("/") or INLINE_PY_HIDDEN_GLOB_RE.search(
+            pat_str
+        ):
+            return (
+                "force_ask",
+                f"Motif sensible ou traversée dans `.{fn.attr}()` dans `python -c` : validation humaine requise.",
+            )
+        return None
+
+    if isinstance(fn, ast.Attribute) and fn.attr == "replace":
+        if _has_starred_or_kwargs(node) or len(node.args) < 2 or bool(node.keywords):
+            return (
+                "force_ask",
+                "Appel `.replace()` ambigu (possible `Path.replace`) dans `python -c` : validation humaine requise.",
+            )
+
+    return None
+
+
+def inspect_inline_python_code(
+    code: str, ws_root: Optional[Path] = None
+) -> Tuple[str, Optional[str]]:
+    """Analyse statiquement un script `python -c` selon une allowlist fail-closed."""
+    if re.search(r"\bos\.environ\b", code):
+        return "deny", "Accès à `os.environ` dans `python -c` bloqué."
+
+    try:
+        tree = ast.parse(code, mode="exec", type_comments=False)
+    except (SyntaxError, ValueError, TypeError):
+        return (
+            "force_ask",
+            "Code Python inline (`-c`) non analysable par AST : validation humaine requise.",
+        )
+
+    parent_map: Dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parent_map[child] = parent
+
+    # Passe 1 : blocage ferme (`deny`) prioritaire
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if is_harness_protected(node.value, ws_root):
+                return "deny", "Code Python inline (`-c`) ciblant les garde-fous Gravity bloqué."
+            if matches_any(node.value, SENSITIVE_PATH_PATTERNS):
+                return "deny", "Code Python inline (`-c`) ciblant un chemin sensible bloqué."
+        elif isinstance(node, ast.Attribute) and node.attr == "environ":
+            return "deny", "Accès à `environ` dans `python -c` bloqué."
+        elif isinstance(node, ast.ImportFrom) and node.module == "os":
+            if any(alias.name == "environ" for alias in node.names):
+                return "deny", "Import de `os.environ` dans `python -c` bloqué."
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == "environ"
+        ):
+            return "deny", "Accès dynamique à `environ` dans `python -c` bloqué."
+
+    # Passe 2 : constantes module & allowlist d'imports
+    const_str_vars = _collect_const_str_vars(tree, parent_map)
+    (
+        import_err,
+        restricted_sys_names,
+        restricted_os_names,
+        restricted_os_path_names,
+        os_path_fs_func_names,
+        restricted_pathlib_mod_names,
+        path_ctor_names,
+    ) = _validate_inline_py_imports(tree)
+    if import_err is not None:
+        return import_err
+
+    # Passe 3 : vérification complète de l'AST
+    has_pathlib = bool(restricted_pathlib_mod_names or path_ctor_names)
+    validated_sys_attr_nodes: Set[ast.AST] = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            if node.id.startswith("__") and node.id != "__name__":
+                return (
+                    "force_ask",
+                    f"Code Python inline (`-c`) : symbole interne `{node.id}` non autorisé automatiquement — validation humaine requise.",
+                )
+            if node.id in INLINE_PY_FORBIDDEN_CALL_NAMES:
+                return (
+                    "force_ask",
+                    f"Code Python inline (`-c`) : appel ou référence `{node.id}` non autorisé automatiquement — validation humaine requise.",
+                )
+            parent = parent_map.get(node)
+            if node.id in restricted_sys_names:
+                if (
+                    isinstance(parent, ast.Attribute)
+                    and parent.value is node
+                    and parent.attr in INLINE_PY_SAFE_SYS_ATTRS
+                    and not isinstance(parent.ctx, (ast.Store, ast.Del))
+                ):
+                    validated_sys_attr_nodes.add(parent)
+                else:
+                    return (
+                        "force_ask",
+                        f"Code Python inline (`-c`) : usage de `sys` hors attributs lecture seule — validation humaine requise.",
+                    )
+            elif node.id in restricted_os_names:
+                gp = parent_map.get(parent) if parent is not None else None
+                ok_os = (
+                    isinstance(parent, ast.Attribute)
+                    and parent.value is node
+                    and parent.attr == "path"
+                    and isinstance(gp, ast.Attribute)
+                    and gp.value is parent
+                    and gp.attr in INLINE_PY_SAFE_OS_PATH_FUNCS
+                )
+                if ok_os and gp is not None and gp.attr in INLINE_PY_SAFE_OS_PATH_FS_FUNCS:
+                    ggp = parent_map.get(gp)
+                    ok_os = isinstance(ggp, ast.Call) and ggp.func is gp
+                if not ok_os:
+                    return (
+                        "force_ask",
+                        "Code Python inline (`-c`) : usage de `os` hors `os.path.*` autorisé — validation humaine requise.",
+                    )
+            elif node.id in restricted_os_path_names:
+                ok_op = (
+                    isinstance(parent, ast.Attribute)
+                    and parent.value is node
+                    and parent.attr in INLINE_PY_SAFE_OS_PATH_FUNCS
+                )
+                if ok_op and isinstance(parent, ast.Attribute) and parent.attr in INLINE_PY_SAFE_OS_PATH_FS_FUNCS:
+                    gp = parent_map.get(parent)
+                    ok_op = isinstance(gp, ast.Call) and gp.func is parent
+                if not ok_op:
+                    return (
+                        "force_ask",
+                        "Code Python inline (`-c`) : usage non direct de `os.path` — validation humaine requise.",
+                    )
+            elif node.id in os_path_fs_func_names:
+                if not (isinstance(parent, ast.Call) and parent.func is node):
+                    return (
+                        "force_ask",
+                        f"Code Python inline (`-c`) : référence indirecte à `{node.id}` — validation humaine requise.",
+                    )
+            elif node.id in restricted_pathlib_mod_names:
+                gp = parent_map.get(parent) if parent is not None else None
+                ok_pl = (
+                    isinstance(parent, ast.Attribute)
+                    and parent.value is node
+                    and parent.attr in INLINE_PY_SAFE_PATHLIB_CLASSES
+                    and isinstance(gp, ast.Call)
+                    and gp.func is parent
+                )
+                if not ok_pl:
+                    return (
+                        "force_ask",
+                        "Code Python inline (`-c`) : usage de `pathlib` hors constructeur direct — validation humaine requise.",
+                    )
+            elif node.id in path_ctor_names or node.id == "open":
+                if not (isinstance(parent, ast.Call) and parent.func is node):
+                    return (
+                        "force_ask",
+                        f"Code Python inline (`-c`) : référence indirecte à `{node.id}` — validation humaine requise.",
+                    )
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            if node in validated_sys_attr_nodes:
+                continue
+            if node.attr.startswith("_") and node.attr != "__version__":
+                return (
+                    "force_ask",
+                    f"Code Python inline (`-c`) : attribut interne `.{node.attr}` non autorisé automatiquement — validation humaine requise.",
+                )
+            if node.attr in INLINE_PY_FORBIDDEN_ATTRS:
+                return (
+                    "force_ask",
+                    f"Code Python inline (`-c`) : attribut sensible `.{node.attr}` non autorisé automatiquement — validation humaine requise.",
+                )
+            if node.attr in ("open", "glob", "rglob"):
+                parent = parent_map.get(node)
+                if not (isinstance(parent, ast.Call) and parent.func is node):
+                    return (
+                        "force_ask",
+                        f"Code Python inline (`-c`) : référence indirecte à `.{node.attr}` — validation humaine requise.",
+                    )
+
+        elif has_pathlib and isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            right = node.right
+            is_num_const = (
+                isinstance(right, ast.Constant)
+                and isinstance(right.value, (int, float))
+                and not isinstance(right.value, bool)
+            )
+            is_num_call = (
+                isinstance(right, ast.Call)
+                and isinstance(right.func, ast.Name)
+                and right.func.id in ("len", "int", "float", "sum", "max", "min")
+            )
+            if not is_num_const and not is_num_call:
+                seg = _resolve_static_str(right, const_str_vars)
+                if seg is None:
+                    return (
+                        "force_ask",
+                        "Code Python inline (`-c`) : jonction `/` dynamique avec `pathlib` importé — validation humaine requise.",
+                    )
+                if seg.replace("\\", "/").startswith("/") or bool(
+                    re.match(r"^[A-Za-z]:", seg)
+                ):
+                    return (
+                        "force_ask",
+                        "Code Python inline (`-c`) : segment absolu après `/` — validation humaine requise.",
+                    )
+                seg_dec, seg_reason = _is_safe_inline_path(seg, ws_root)
+                if seg_dec != "allow":
+                    return (
+                        seg_dec,
+                        seg_reason or "Segment non autorisé après `/` dans `python -c`.",
+                    )
+
+        elif isinstance(node, ast.Call):
+            call_err = _check_inline_py_call(
+                node,
+                ws_root,
+                const_str_vars,
+                restricted_os_names,
+                restricted_os_path_names,
+                os_path_fs_func_names,
+                restricted_pathlib_mod_names,
+                path_ctor_names,
+            )
+            if call_err is not None:
+                return call_err
+
+    return "allow", None
+
+
+def _extract_inline_py_payload(
+    rich_args: List[Tuple[str, List[Tuple[str, str]], bool]],
+    arg_idx: int,
+    flag_pos: int,
+    short_flags: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Extrait de façon stricte le code Python passé à `-c` si le quoting shell est sûr."""
+    if flag_pos == len(short_flags) - 1:
+        if arg_idx + 1 >= len(rich_args):
+            return (
+                None,
+                "Exécution de code Python inline (`-c`) sans code explicite : validation humaine requise.",
+            )
+        tok_val, chunks, unterminated = rich_args[arg_idx + 1]
+        if unterminated:
+            return (
+                None,
+                "Guillemets non fermés dans le code Python inline (`-c`) : validation humaine requise.",
+            )
+        if len(chunks) != 1:
+            return (
+                None,
+                "Quoting multiple ou ambigu dans le code Python inline (`-c`) : validation humaine requise.",
+            )
+        kind, raw_content = chunks[0]
+        if kind in ("double", "unquoted") and INLINE_PY_SHELL_EXPAND_RE.search(raw_content):
+            return (
+                None,
+                "Interpolation shell potentielle détectée dans `python -c` : validation humaine requise.",
+            )
+        if not tok_val.strip():
+            return (
+                None,
+                "Code Python inline (`-c`) vide : validation humaine requise.",
+            )
+        return tok_val, None
+
+    _, chunks, unterminated = rich_args[arg_idx]
+    if unterminated:
+        return (
+            None,
+            "Guillemets non fermés dans le code Python inline (`-c`) : validation humaine requise.",
+        )
+    inline_tail = short_flags[flag_pos + 1 :]
+    if len(chunks) == 1 and chunks[0][0] == "unquoted":
+        if INLINE_PY_SHELL_EXPAND_RE.search(inline_tail):
+            return (
+                None,
+                "Interpolation shell potentielle détectée dans `python -c` : validation humaine requise.",
+            )
+    elif (
+        len(chunks) == 2
+        and chunks[0][0] == "unquoted"
+        and chunks[0][1].endswith("c")
+    ):
+        kind, raw_content = chunks[1]
+        if kind in ("double", "unquoted") and INLINE_PY_SHELL_EXPAND_RE.search(raw_content):
+            return (
+                None,
+                "Interpolation shell potentielle détectée dans `python -c` : validation humaine requise.",
+            )
+    else:
+        return (
+            None,
+            "Quoting multiple ou ambigu dans le code Python inline (`-c`) : validation humaine requise.",
+        )
+    if not inline_tail.strip():
+        return (
+            None,
+            "Code Python inline (`-c`) vide : validation humaine requise.",
+        )
+    return inline_tail, None
+
+
+def _check_segment_inline_exec(
+    segment: str, ws_root: Optional[Path] = None
+) -> Optional[Tuple[str, str]]:
     """Inspecte les flags d'exécution inline / dynamique d'un segment unique."""
-    head, args = extract_command_head_and_args(segment)
+    head, rich_args, wrapped_in_sudo = _extract_command_head_args_rich(segment)
     if not head:
         return None
 
+    args = [tok for tok, _, _ in rich_args]
     n = len(args)
     if _is_python_head(head):
         i = 0
@@ -807,9 +1906,27 @@ def _check_segment_inline_exec(segment: str) -> Optional[Tuple[str, str]]:
             advance_extra = 0
             for k, ch in enumerate(short_flags):
                 if ch == "c":
+                    if wrapped_in_sudo:
+                        return (
+                            "force_ask",
+                            "Exécution de code Python inline (`-c`) sous `sudo` : validation humaine requise.",
+                        )
+                    code, payload_err = _extract_inline_py_payload(
+                        rich_args, i, k, short_flags
+                    )
+                    if payload_err is not None or code is None:
+                        return (
+                            "force_ask",
+                            payload_err
+                            or "Exécution de code Python inline (`-c`) détectée : validation humaine requise.",
+                        )
+                    py_dec, py_reason = inspect_inline_python_code(code, ws_root=ws_root)
+                    if py_dec == "allow":
+                        return None
                     return (
-                        "force_ask",
-                        "Exécution de code Python inline (`-c`) détectée : validation humaine requise.",
+                        py_dec,
+                        py_reason
+                        or "Exécution de code Python inline (`-c`) détectée : validation humaine requise.",
                     )
                 if ch == "m":
                     return None
@@ -1342,7 +2459,7 @@ def evaluate_tool_call(
         if _shell_targets_secret(cmd):
             return "deny", "Accès shell à un fichier sensible via chemin relatif bloqué."
         for seg in segments:
-            ask_res = _check_segment_inline_exec(seg)
+            ask_res = _check_segment_inline_exec(seg, ws_root=ws_root)
             if ask_res:
                 return ask_res
         for pattern, message in OPAQUE_ASK_CMDS:
