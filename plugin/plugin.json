@@ -1,7 +1,7 @@
 {
   "name": "gravity-workflow",
   "displayName": "Gravity Workflow",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Ground your Antigravity agents — harnais multi-agents, garde-fous fail-closed et suite d'évaluations 100 % natifs Antigravity App & CLI.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [

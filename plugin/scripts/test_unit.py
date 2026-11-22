@@ -26,7 +26,7 @@ import profile_engine  # noqa: E402
 import safety_policy  # noqa: E402
 import state_writer  # noqa: E402
 from validators import Report, plugin_validator, validate_plugin  # noqa: E402
-from validators.base import parse_frontmatter  # noqa: E402
+from validators.base import parse_frontmatter, validate_agent_file  # noqa: E402
 
 
 def _load_live_widget_server():
@@ -341,6 +341,48 @@ class TestPluginValidator(unittest.TestCase):
                 rep_no_mod = Report()
                 validate_plugin(plugin_dir, rep_no_mod)
                 self.assertFalse(rep_no_mod.ok(strict=True))
+
+    def test_agent_tools_rejects_duplicates_and_canonical_alias_collisions(self) -> None:
+        agents_dir = PLUGIN_ROOT / "agents"
+        for fname, readonly, prefer_pro in (
+            ("planner.md", True, True),
+            ("builder.md", False, False),
+            ("reviewer.md", True, True),
+        ):
+            rep = Report()
+            validate_agent_file(agents_dir / fname, rep, readonly=readonly, prefer_pro=prefer_pro)
+            self.assertTrue(rep.ok(strict=True), f"{fname} invalide : {rep.errors} {rep.warnings}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            cases = [
+                ("dup_exact.md", ["read_file", "read_file"]),
+                ("collision_read.md", ["view_file", "read_file"]),
+                ("collision_write.md", ["write_to_file", "write_file"]),
+                ("collision_edit.md", ["replace_file_content", "edit_file"]),
+                ("collision_multi_edit.md", ["multi_replace_file_content", "edit_file"]),
+                ("collision_two_aliases.md", ["replace_file_content", "multi_replace_file_content"]),
+            ]
+            for filename, tool_list in cases:
+                tools_yaml = "\n".join(f"  - {t}" for t in tool_list)
+                content = (
+                    "---\n"
+                    "name: test-agent\n"
+                    "description: Agent de test collision outils.\n"
+                    "model: inherit\n"
+                    "commandExecutionPolicy: sandbox\n"
+                    "tools:\n"
+                    f"{tools_yaml}\n"
+                    "---\n\n# Agent\n"
+                )
+                agent_file = base / filename
+                agent_file.write_text(content, encoding="utf-8")
+                rep_bad = Report()
+                validate_agent_file(agent_file, rep_bad)
+                self.assertTrue(
+                    rep_bad.errors,
+                    f"{filename} devrait produire une erreur pour {tool_list}",
+                )
 
 
 class TestFrontmatterParser(unittest.TestCase):

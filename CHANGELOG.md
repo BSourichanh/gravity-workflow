@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-11-22
+
+### Added
+- **Canonical Tool Alias Collision Guard (`plugin/scripts/validators/base.py`, `plugin/scripts/test_unit.py`):**
+  - Added `CANONICAL_TOOL_ALIASES` (`view_file` → `read_file`, `write_to_file` → `write_file`, `replace_file_content` / `multi_replace_file_content` → `edit_file`) and collision/exact-duplicate detection in `validate_agent_file()`, with unit regression tests covering exact duplicates, canonical alias collisions, and the 3 plugin agent manifests (`REQUIRED_PRETOOL_MATCHERS` and `plugin/hooks.json` kept intact).
+
+### Fixed
+- **Subagent Tool Name Conflict on Executor Construction (`plugin/agents/{planner,builder,reviewer}.md`, `docs/agents-and-workflows.md`):**
+  - Removed legacy tool aliases (`view_file`, `write_to_file`, `replace_file_content`, `multi_replace_file_content`) from `planner.md`, `builder.md`, and `reviewer.md` `tools:` frontmatters so each agent declares unique canonical tool names only (fixing `failed to construct executor: tool name conflict: multiple tools resolved with name "read_file"`), and synchronized the agent tools table in `docs/agents-and-workflows.md`.
+
 ## [0.2.0] - 2026-11-22
 
 ### Added

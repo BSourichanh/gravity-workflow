@@ -8,7 +8,6 @@ mainAgent: false
 commandExecutionPolicy: sandbox
 inheritCustomizations: true
 tools:
-  - view_file
   - read_file
   - grep_search
   - find_by_name

@@ -53,6 +53,13 @@ FORBIDDEN_READONLY_TOOLS = {
     "run_workflow",
 }
 
+CANONICAL_TOOL_ALIASES = {
+    "view_file": "read_file",
+    "write_to_file": "write_file",
+    "replace_file_content": "edit_file",
+    "multi_replace_file_content": "edit_file",
+}
+
 REQUIRED_PRETOOL_MATCHERS = (
     "run_command",
     "run_workflow",
@@ -239,6 +246,23 @@ def validate_agent_file(
     tools = meta.get("tools", [])
     if isinstance(tools, str):
         tools = [t.strip() for t in tools.split(",") if t.strip()]
+    seen_tools: Dict[str, str] = {}
+    for raw_tool in tools:
+        tool_name = str(raw_tool).strip()
+        if not tool_name:
+            continue
+        canonical = CANONICAL_TOOL_ALIASES.get(tool_name, tool_name)
+        prior = seen_tools.get(canonical)
+        if prior is not None:
+            if prior == tool_name:
+                report.error(f"{agent_path.name} : outil dupliqué dans 'tools:' ({tool_name}).")
+            else:
+                report.error(
+                    f"{agent_path.name} : collision d'alias canonique '{canonical}' dans 'tools:' "
+                    f"({prior} et {tool_name})."
+                )
+        else:
+            seen_tools[canonical] = tool_name
     if readonly:
         bad_tools = sorted(FORBIDDEN_READONLY_TOOLS.intersection(set(tools)))
         if bad_tools:
