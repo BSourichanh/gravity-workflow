@@ -2,20 +2,20 @@
 
 ## Principe fondamental : Plugin autonome vs Socle vital projet
 
-Gravity sépare strictement le moteur du harnais des fichiers propres au projet cible :
+Gravity Workflow sépare strictement le moteur du harnais des fichiers propres au projet cible :
 
-1. **Plugin autonome ([`gravity-plugin/`](../gravity-plugin/) — 42 fichiers) :** embarque le manifeste, le skill principal `/gravity` (et ses 10 fiches de référence), le skill compagnon `/caveman`, les 3 sous-agents, les hooks (`hooks.json` + `hooks/*.py`), les workflows, le moteur d'évaluations, le moteur de profil/protocole Caveman/observabilité, le sidecar Live Widget, le validateur, l'initialiseur et les tests unitaires.
-2. **Empreinte projet minimale ([`workspace-template/`](../workspace-template/) — 13 fichiers) :** l'initialisation d'un projet cible ne déploie que `AGENTS.md` et `.agents/` (`mcp_config.json`, règles, suivi `PROGRESS.md`/`BACKLOG.md`, `profile.json`, catalogue `evals/cases.json`, `live_state.json` et `.gitignore`). Aucun dossier visible `gravity/` n'est créé à la racine du projet.
+1. **Plugin autonome ([`gravity-workflow-plugin/`](../gravity-workflow-plugin/) — 42 fichiers) :** embarque le manifeste, le skill principal `/gravity-workflow` (et ses 10 fiches de référence), le skill compagnon `/caveman`, les 3 sous-agents, les hooks (`hooks.json` + `hooks/*.py`), les workflows, le moteur d'évaluations, le moteur de profil/protocole Caveman/observabilité, le sidecar Live Widget, le validateur, l'initialiseur et les tests unitaires.
+2. **Empreinte projet minimale ([`workspace-template/`](../workspace-template/) — 13 fichiers) :** l'initialisation d'un projet cible ne déploie que `AGENTS.md` et `.agents/` (`mcp_config.json`, règles, suivi `PROGRESS.md`/`BACKLOG.md`, `profile.json`, catalogue `evals/cases.json`, `live_state.json` et `.gitignore`). Aucun dossier visible `gravity-workflow/` n'est créé à la racine du projet.
 
 ---
 
 ## Arborescence complète
 
-### 1. Plugin (`gravity-plugin/`)
+### 1. Plugin (`gravity-workflow-plugin/`)
 
 ```text
-gravity-plugin/
-├── plugin.json                         # Manifeste Antigravity (name="gravity", 3 suggestedPrompts)
+gravity-workflow-plugin/
+├── plugin.json                         # Manifeste Antigravity (name="gravity-workflow", 3 suggestedPrompts)
 ├── hooks.json                          # Groupes PreToolUse, PostToolUse, SessionStart et Stop (portables python3)
 ├── README.md
 ├── assets/logo.svg                     # SVG carré 1:1
@@ -24,8 +24,8 @@ gravity-plugin/
 │   ├── builder.md                      # Branche isolée (flash / sandbox)
 │   └── reviewer.md                     # Reviewer indépendant lecture seule (pro / inheritMcp: false)
 ├── skills/
-│   ├── gravity/
-│   │   ├── SKILL.md                    # Chef d'orchestre principal /gravity
+│   ├── gravity-workflow/
+│   │   ├── SKILL.md                    # Chef d'orchestre principal /gravity-workflow
 │   │   └── references/                 # 10 fiches chargées à la demande (00 à 09)
 │   └── caveman/
 │       └── SKILL.md                    # Skill compagnon /caveman (intensités, commit, compress)
@@ -70,7 +70,7 @@ workspace-template/
     │   ├── 03-api-architecture.md      # trigger: model_decision
     │   ├── 04-release-checklist.md     # trigger: manual
     │   └── 05-git-versioning.md        # trigger: model_decision (chef d'orchestre uniquement)
-    └── gravity/
+    └── gravity-workflow/
         ├── .gitignore                  # Ignore *.lock, runs.jsonl, last_verified.patch, reports
         ├── PROGRESS.md                 # Suivi des 8 étapes + Bonus
         ├── BACKLOG.md                  # Arbitrages différés & nouveaux cas /learn
@@ -83,15 +83,15 @@ workspace-template/
 
 ## Initialisation & détection d'état
 
-À l'appel de `/gravity` (voir [`SKILL.md`](../gravity-plugin/skills/gravity/SKILL.md)) ou via [`init_workspace.py`](../gravity-plugin/scripts/init_workspace.py) :
+À l'appel de `/gravity-workflow` (voir [`SKILL.md`](../gravity-workflow-plugin/skills/gravity-workflow/SKILL.md)) ou via [`init_workspace.py`](../gravity-workflow-plugin/scripts/init_workspace.py) :
 
 - **Détection automatique dans l'ordre :**
-  1. **Reprise de session** (`.agents/gravity/PROGRESS.md` présent) : lit `PROGRESS.md` + `profile.json`, vérifie/déploie `.agents/rules/05-git-versioning.md` via `init_workspace.py --ensure-git-rule` s'il est absent, affiche la micro-carte 3 lignes et poursuit la tâche.
-  2. **Mode Audit** (`.agents/` ou `AGENTS.md` présent sans `PROGRESS.md`) : contrôle `trigger:` et le budget `< 20 000` tokens, puis complète `.agents/gravity/` et `.agents/rules/05-git-versioning.md` (si absent) sans écraser les fichiers existants.
+  1. **Reprise de session** (`.agents/gravity-workflow/PROGRESS.md` présent) : lit `PROGRESS.md` + `profile.json`, vérifie/déploie `.agents/rules/05-git-versioning.md` via `init_workspace.py --ensure-git-rule` s'il est absent, affiche la micro-carte 3 lignes et poursuit la tâche. *(Zéro shim hérité : l'ancien dossier `.agents/gravity/` n'est plus reconnu au runtime.)*
+  2. **Mode Audit** (`.agents/` ou `AGENTS.md` présent sans `PROGRESS.md`) : contrôle `trigger:` et le budget `< 20 000` tokens, puis complète `.agents/gravity-workflow/` et `.agents/rules/05-git-versioning.md` (si absent) sans écraser les fichiers existants.
   3. **Démarrage à froid** (workspace vierge) : `low` lance `--mode quickstart`, `high`/`ultra` lance `--mode full`, `medium` laisse le choix.
 - **Modes de `init_workspace.py` :**
   - `full` *(défaut)* : déploie les 13 fichiers (`PROGRESS.md` à `0/8` + les 5 modèles de règles).
-  - `quickstart` : déploie le socle minimal viable (`AGENTS.md`, `mcp_config.json`, `01-safety-boundaries.md`, `05-git-versioning.md` + `.agents/gravity/`, `PROGRESS.md` à `Quick Start [~] 3/8`).
+  - `quickstart` : déploie le socle minimal viable (`AGENTS.md`, `mcp_config.json`, `01-safety-boundaries.md`, `05-git-versioning.md` + `.agents/gravity-workflow/`, `PROGRESS.md` à `Quick Start [~] 3/8`).
   - `--ensure-git-rule` : déploie uniquement `.agents/rules/05-git-versioning.md` s'il est absent d'un projet existant (idempotent).
   - **Anti-écrasement :** aucun fichier existant n'est remplacé sans `--force` après accord explicite.
 
@@ -99,20 +99,22 @@ workspace-template/
 
 ## Installateur cross-plateforme (`install.py`)
 
-[`install.py`](../install.py) installe, met à niveau, valide et désinstalle `gravity-plugin/` (Python 3.8+, 100 % stdlib) :
+[`install.py`](../install.py) installe, met à niveau, valide et désinstalle `gravity-workflow-plugin/` (Python 3.8+, 100 % stdlib) :
 
-- **Portées :** `--scope global` (`~/.gemini/config/plugins/gravity/`, défaut) ou `--scope workspace --workspace <dir>` (`<dir>/.agents/plugins/gravity/`).
+- **Portées :** `--scope global` (`~/.gemini/config/plugins/gravity-workflow/`, défaut) ou `--scope workspace --workspace <dir>` (`<dir>/.agents/plugins/gravity-workflow/`).
 - **Méthodes :** `--method copy` *(défaut — copie mise en zone de staging, swap atomique par `os.rename` avec sauvegarde et rollback automatique en cas d'échec, et repli de synchronisation in-place avec rollback en cas de fichier modifié verrouillé puis purge des fichiers obsolètes si un sous-dossier comme `sidecars/live-widget` est verrouillé sous Windows par un processus actif)* ou `--method agy` *(délègue à `agy plugin validate` + `agy plugin install`)*.
+- **Nettoyage de migration (`v0.1.x` → `v0.2.0`) :** lors d'une installation `--scope global --method copy`, supprime automatiquement l'ancien plugin hérité `~/.gemini/config/plugins/gravity` s'il est identifié comme un plugin `gravity` valide (`--keep-legacy` désactive cette suppression).
 - **Adaptation Windows :** sans `--no-fix-python` et en l'absence d'un binaire `python3` réel (l'alias WindowsApps est ignoré), réécrit `python3` vers `python` ou `py -3` uniquement dans la **copie installée** via `validate.py --fix-python-cmd`, laissant le dépôt source portable.
 - **Permissions POSIX :** applique les bits d'exécution équivalents à `0755` sur les 9 scripts déclarés dans `EXEC_SCRIPTS`.
-- **Commandes utiles :** `--check`, `--dry-run`, `--force` (mise à jour), `--init-workspace <dir> [--mode quickstart|full]`, `--uninstall`.
+- **Commandes utiles :** `--check`, `--dry-run`, `--force` (mise à jour), `--keep-legacy`, `--init-workspace <dir> [--mode quickstart|full]`, `--uninstall`.
 
 ---
 
 ## Désinstalleur cross-plateforme (`uninstall.py`)
 
-[`uninstall.py`](../uninstall.py) complète `install.py` (Python 3.8+, 100 % stdlib) pour retirer Gravity proprement sans toucher aux fichiers personnalisés ni modifier automatiquement `config.json` / `settings.json` :
+[`uninstall.py`](../uninstall.py) complète `install.py` (Python 3.8+, 100 % stdlib) pour retirer Gravity Workflow proprement sans toucher aux fichiers personnalisés ni modifier automatiquement `config.json` / `settings.json` :
 
-- **Suppression du plugin :** `--scope global` (`~/.gemini/config/plugins/gravity/`), `--scope workspace --workspace <dir>`, `--target <dir>` ou `--method agy` (`agy plugin uninstall gravity`), avec refus sur toute cible non-Gravity, `$HOME`, racine disque ou répertoire du dépôt source (`gravity-plugin/`, `workspace-template/`).
-- **Nettoyage projet (`--clean-workspace <dir>`) :** supprime `.agents/gravity/` (et `.agents/plugins/gravity/` si valide) et retire l'entrée du projet dans `~/.gravity/live_workspaces.json` sans jamais supprimer `AGENTS.md`, `.agents/rules/*` ni `.agents/mcp_config.json`. L'option opt-in `--purge-workspace-templates` ne supprime les fichiers modèles que s'ils sont **strictement identiques** aux originaux d'[`init_workspace.py`](../gravity-plugin/scripts/init_workspace.py).
-- **Registre & diagnostic :** `--clean-registry` supprime `~/.gravity/live_workspaces.json` (et `~/.gravity/` s'il est vide) ; `--all` combine plugin + registre (+ `--clean-workspace` si fourni) ; `--check` inspecte en lecture seule (y compris la présence éventuelle de `gravity/live-widget` dans `config.json` et `statusLine` dans `settings.json`) et `--dry-run` simule sans écriture.
+- **Suppression du plugin :** `--scope global` (`~/.gemini/config/plugins/gravity-workflow/`), `--scope workspace --workspace <dir>`, `--target <dir>` ou `--method agy` (`agy plugin uninstall gravity-workflow`), avec refus sur toute cible non-Gravity Workflow, `$HOME`, racine disque ou répertoire du dépôt source (`gravity-workflow-plugin/`, `workspace-template/`).
+- **Nettoyage projet (`--clean-workspace <dir>`) :** supprime `.agents/gravity-workflow/` (et `.agents/plugins/gravity-workflow/` si valide) et retire l'entrée du projet dans `~/.gemini/gravity-workflow/live_workspaces.json` sans jamais supprimer `AGENTS.md`, `.agents/rules/*` ni `.agents/mcp_config.json`. L'option opt-in `--purge-workspace-templates` ne supprime les fichiers modèles que s'ils sont **strictement identiques** aux originaux d'[`init_workspace.py`](../gravity-workflow-plugin/scripts/init_workspace.py).
+- **Nettoyage hérité (`--clean-legacy`, activé automatiquement par `--all`) :** détecte et supprime l'ancien registre `~/.gravity/live_workspaces.json` et, avec `--clean-workspace <dir>`, les dossiers hérités `.agents/gravity/` et `.agents/plugins/gravity/`.
+- **Registre & diagnostic :** `--clean-registry` supprime `~/.gemini/gravity-workflow/live_workspaces.json` (et `~/.gemini/gravity-workflow/` s'il est vide) ; `--all` combine plugin + registre + artefacts hérités (+ `--clean-workspace` si fourni) ; `--check` inspecte en lecture seule (y compris la présence éventuelle de `gravity-workflow/live-widget`, du legacy `gravity/live-widget` dans `config.json` et de `statusLine` dans `settings.json`) et `--dry-run` simule sans écriture.

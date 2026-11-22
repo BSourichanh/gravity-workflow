@@ -5,21 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.4] - 2026-11-22
+## [0.2.0] - 2026-11-22
 
 ### Changed
-- **Surgical `deny`-Focused Threat Inspector & Workspace-Scoped `force_ask` (`gravity-plugin/hooks/safety_policy.py`):**
-  - Enforced hard `deny` rules globally across all repositories while scoping heuristic `force_ask` prompts exclusively to Gravity-initialized workspaces (`is_gravity_workspace()`).
+- **BREAKING — Repository & Plugin Rename (`gravity` → `gravity-workflow`):**
+  - Renamed the plugin package directory `gravity-plugin/` → `gravity-workflow-plugin/`, manifest `name` → `"gravity-workflow"`, `displayName` → `"Gravity Workflow"`, `repository`/`homepage` → `https://github.com/BSourichanh/gravity-workflow`, primary skill `/gravity` → `/gravity-workflow` (`skills/gravity-workflow/`), and sidecar identifier → `gravity-workflow/live-widget`.
+  - Moved project runtime state from `.agents/gravity/` → `.agents/gravity-workflow/`, global workspace registry from `~/.gravity/live_workspaces.json` → `~/.gemini/gravity-workflow/live_workspaces.json`, and environment overrides from `GRAVITY_*` → `GRAVITY_WORKFLOW_*` (`GRAVITY_WORKFLOW_WORKSPACE`, `GRAVITY_WORKFLOW_STATE_PATH`, `GRAVITY_WORKFLOW_REGISTRY_PATH`, `GRAVITY_WORKFLOW_SKIP_REGISTRY`, `GRAVITY_WORKFLOW_WIDGET_PORT`).
+  - Removed all runtime legacy shims (`.agents/gravity/` is no longer recognized by hooks, validators, or statusline) and gitignored local `.agents/` at the repository root.
+- **Clean Installer & Uninstaller Migration (`install.py`, `uninstall.py`, `tests/`):**
+  - Updated `install.py` (`--scope global|workspace`, `--method copy|agy`, `--keep-legacy`) to automatically remove a legacy `~/.gemini/config/plugins/gravity` copy installation when verified as a legacy `gravity` plugin (opt-out via `--keep-legacy`) and display `v0.1.x → v0.2.0` migration steps.
+  - Updated `uninstall.py` (`--clean-legacy`, auto-enabled by `--all`) to detect and remove legacy `~/.gravity/live_workspaces.json`, legacy `.agents/gravity/` workspace state, and report legacy `gravity/live-widget` entries in `config.json`.
+- **Surgical `deny`-Focused Threat Inspector & Workspace-Scoped `force_ask` (`gravity-workflow-plugin/hooks/safety_policy.py`):**
+  - Enforced hard `deny` rules globally across all repositories while scoping heuristic `force_ask` prompts exclusively to Gravity Workflow-initialized workspaces (`is_gravity_workspace()`).
   - Replaced the rigid `python -c` AST allowlist with recursive `deny`-focused inspection across `python -c` (multi-branch sequential AST, `list`/`tuple` variables, mutations, unpacking, `IfExp`, `ListComp`, `Slice`, `NamedExpr`, `os.exec*`/`os.spawn*`), PowerShell here-strings (`@'...'@ | python -`, `$code | python -`), POSIX heredocs (`<< 'EOF'`, `<<<`, multi-heredoc and piped heredocs), `node -e`/`-p` (comments, template literals `${...}`, computed brackets, escapes), `perl -e`/`-E`, `ruby -e`, `sh`/`bash`/`zsh`/`dash -c`, `pwsh`/`powershell -Command`, `cmd /c`/`/k`, `git -c` & `ext::` URLs, `curl -d/-F @<secret>`, `xargs`, `find -exec`/`-execdir`/`-ok`, and `run_workflow`.
-  - Added argument-role awareness for search/history/message commands (`git commit -m`, `git log -S`, `git diff -S/-G`, `git grep`, `git merge`/`stash -m`, `rg`, `grep`, `Select-String`, `echo`) and targeted harness self-protection to the resolved active installed plugin (including destructive root deletion) and deployed paths without self-locking the source tree (`gravity-plugin/hooks/`).
+  - Added argument-role awareness for search/history/message commands (`git commit -m`, `git log -S`, `git diff -S/-G`, `git grep`, `git merge`/`stash -m`, `rg`, `grep`, `Select-String`, `echo`) and targeted harness self-protection to the resolved active installed plugin (including destructive root deletion) and deployed paths without self-locking the source tree (`gravity-workflow-plugin/hooks/`).
 - **Transactional Windows In-Place Upgrade Fallback (`install.py`, `tests/test_install.py`):**
   - Added atomic `os.rename` swap with two-phase transactional `_sync_directory_in_place()` fallback (full file/mode rollback before stale-entry pruning, plus NTFS junction and directory symlink support) when an active process such as `sidecars/live-widget` locks the target directory on Windows (`WinError 32`).
-- **Expanded Tests & Living Documentation (`test_unit.py`: 29 tests, `tests/`: 22 tests, `validators/base.py`, `docs/`, `skills/gravity/references/06-safety-hooks.md`, `README.md`, `gravity-plugin/README.md`):**
-  - Added regression coverage for adversarial multi-language/shell/Git bypasses, benign anti-false-positive commands, non-self-locked source editing, and Windows locked-file rollback, and synchronized all living documentation sheets.
+- **Expanded Tests & Living Documentation (`test_unit.py`: 29 tests, `tests/`: 24 tests, `validators/`, `docs/`, `skills/gravity-workflow/references/06-safety-hooks.md`, `README.md`, `gravity-workflow-plugin/README.md`):**
+  - Added regression coverage for adversarial multi-language/shell/Git bypasses, benign anti-false-positive commands, non-self-locked source editing, Windows locked-file rollback, non-shim `.agents/gravity/` rejection, and legacy `gravity` migration cleanup, and synchronized all living documentation sheets.
 
 ### Fixed
-- **Eliminated Recurring `force_ask` Prompts & False Positives Across Gravity and Non-Gravity Projects (`gravity-plugin/hooks/safety_policy.py`):**
-  - Eliminated heuristic `force_ask` interruptions outside Gravity workspaces and on benign `python -c` (`subprocess`, loops, dynamic paths, writes), `node -e`, `perl -e`, `ruby -e`, `sh -c`, `pwsh -Command`, `cmd /c`, `find -exec`, `xargs`, `| base64`, and non-destructive `run_workflow` scripts, as well as false `deny` blocks on search/commit/regex literals (`\.env`, `DROP DATABASE`, `".*"`).
+- **Eliminated Recurring `force_ask` Prompts & False Positives Across Workspaces (`gravity-workflow-plugin/hooks/safety_policy.py`):**
+  - Eliminated heuristic `force_ask` interruptions outside Gravity Workflow workspaces and on benign `python -c` (`subprocess`, loops, dynamic paths, writes), `node -e`, `perl -e`, `ruby -e`, `sh -c`, `pwsh -Command`, `cmd /c`, `find -exec`, `xargs`, `| base64`, and non-destructive `run_workflow` scripts, as well as false `deny` blocks on search/commit/regex literals (`\.env`, `DROP DATABASE`, `".*"`).
 - **Prevented Corrupted Active Plugin Installations on Windows Upgrades (`install.py`):**
   - Prevented `python install.py --force` from partially removing `hooks/pre_tool_guard.py` or pruning stale entries before verifying in-place writes succeed when files or `sidecars/live-widget` are locked.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for the cross-platform Gravity installer (100% Python 3 stdlib)."""
+"""Unit tests for the cross-platform Gravity Workflow installer (100% Python 3 stdlib)."""
 
 import ast
 import contextlib
@@ -31,11 +31,12 @@ class TestGravityInstaller(unittest.TestCase):
     def test_fresh_install_and_strict_validation(self) -> None:
         source_hooks_before = (install.PLUGIN_SOURCE / "hooks.json").read_text(encoding="utf-8")
         with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "plugins" / "gravity"
+            target = Path(tmp) / "plugins" / "gravity-workflow"
             rc = _run_quiet(["--target", str(target)])
             self.assertEqual(rc, 0)
             self.assertTrue((target / "plugin.json").is_file())
             self.assertTrue((target / "hooks.json").is_file())
+            self.assertTrue((target / "skills" / "gravity-workflow" / "SKILL.md").is_file())
             self.assertTrue((target / "skills" / "caveman" / "SKILL.md").is_file())
             self.assertTrue((target / "hooks" / "session_start_caveman.py").is_file())
             self.assertEqual(list(target.rglob("__pycache__")), [])
@@ -56,7 +57,7 @@ class TestGravityInstaller(unittest.TestCase):
 
     def test_reinstall_requires_force_and_force_upgrades(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "gravity"
+            target = Path(tmp) / "gravity-workflow"
             self.assertEqual(_run_quiet(["--target", str(target)]), 0)
 
             marker = target / "stale_marker.txt"
@@ -72,7 +73,7 @@ class TestGravityInstaller(unittest.TestCase):
     def test_rollback_on_validation_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             parent = Path(tmp)
-            target = parent / "gravity"
+            target = parent / "gravity-workflow"
             self.assertEqual(_run_quiet(["--target", str(target)]), 0)
 
             marker = target / "existing_marker.txt"
@@ -93,14 +94,15 @@ class TestGravityInstaller(unittest.TestCase):
             leftovers = [
                 p.name
                 for p in parent.iterdir()
-                if p.name.startswith(".gravity-stage-") or p.name.startswith(".gravity-backup-")
+                if p.name.startswith(".gravity-workflow-stage-")
+                or p.name.startswith(".gravity-workflow-backup-")
             ]
             self.assertEqual(leftovers, [])
 
     def test_upgrade_in_place_fallback_when_directory_locked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             parent = Path(tmp)
-            target = parent / "gravity"
+            target = parent / "gravity-workflow"
             self.assertEqual(_run_quiet(["--target", str(target), "--skip-validate"]), 0)
 
             stale_file = target / "stale_marker.txt"
@@ -136,7 +138,8 @@ class TestGravityInstaller(unittest.TestCase):
             leftovers = [
                 p.name
                 for p in parent.iterdir()
-                if p.name.startswith(".gravity-stage-") or p.name.startswith(".gravity-backup-")
+                if p.name.startswith(".gravity-workflow-stage-")
+                or p.name.startswith(".gravity-workflow-backup-")
             ]
             self.assertEqual(leftovers, [])
 
@@ -173,7 +176,7 @@ class TestGravityInstaller(unittest.TestCase):
     def test_upgrade_rollback_and_locked_file_handling(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             parent = Path(tmp)
-            target = parent / "gravity"
+            target = parent / "gravity-workflow"
             self.assertEqual(_run_quiet(["--target", str(target), "--skip-validate"]), 0)
 
             marker = target / "keep_on_rollback.txt"
@@ -217,7 +220,7 @@ class TestGravityInstaller(unittest.TestCase):
                 self.assertEqual(rc_same, 0)
 
             # Différent -> échec propre (rc=1) avec rollback in-place complet (pas d'état mixte)
-            old_manifest = '{"name": "gravity", "version": "0.0.1"}\n'
+            old_manifest = '{"name": "gravity-workflow", "version": "0.0.1"}\n'
             (target / "plugin.json").write_text(old_manifest, encoding="utf-8")
             (target / "README.md").write_text("DIFFERENT", encoding="utf-8")
             stale_keep = target / "stale_preserve_on_fail.txt"
@@ -235,7 +238,7 @@ class TestGravityInstaller(unittest.TestCase):
             leftovers = [
                 p.name
                 for p in parent.iterdir()
-                if p.name.startswith(".gravity-")
+                if p.name.startswith(".gravity-workflow-")
             ]
             self.assertEqual(leftovers, [])
 
@@ -275,13 +278,67 @@ class TestGravityInstaller(unittest.TestCase):
             ws.mkdir()
             rc = _run_quiet(["--scope", "workspace", "--workspace", str(ws)])
             self.assertEqual(rc, 0)
-            expected = ws / ".agents" / "plugins" / "gravity"
+            expected = ws / ".agents" / "plugins" / "gravity-workflow"
             self.assertTrue((expected / "plugin.json").is_file())
+
+    def test_legacy_gravity_plugin_cleanup_and_keep_legacy_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            plugins_dir = base / "plugins"
+            plugins_dir.mkdir()
+            target = plugins_dir / "gravity-workflow"
+            legacy_dir = plugins_dir / "gravity"
+            legacy_dir.mkdir()
+            (legacy_dir / "plugin.json").write_text(
+                json.dumps({"name": "gravity", "version": "0.1.3"}),
+                encoding="utf-8",
+            )
+
+            # --check et --dry-run ne suppriment rien
+            self.assertEqual(_run_quiet(["--target", str(target), "--check"]), 0)
+            self.assertEqual(_run_quiet(["--target", str(target), "--dry-run"]), 0)
+            self.assertTrue(legacy_dir.is_dir())
+
+            # --keep-legacy préserve l'ancien plugin sibling
+            self.assertEqual(
+                _run_quiet(["--target", str(target), "--keep-legacy", "--skip-validate"]), 0
+            )
+            self.assertTrue((target / "plugin.json").is_file())
+            self.assertTrue(legacy_dir.is_dir())
+
+            # Installation par défaut (ou --force) supprime proprement l'ancien plugin 'gravity'
+            self.assertEqual(_run_quiet(["--target", str(target), "--force", "--skip-validate"]), 0)
+            self.assertTrue((target / "plugin.json").is_file())
+            self.assertFalse(legacy_dir.exists())
+
+            # Ne jamais supprimer un dossier 'gravity' tiers dont le manifeste n'est pas name=='gravity'
+            foreign_dir = plugins_dir / "gravity"
+            foreign_dir.mkdir()
+            (foreign_dir / "plugin.json").write_text(
+                json.dumps({"name": "other-plugin", "version": "1.0.0"}),
+                encoding="utf-8",
+            )
+            self.assertEqual(_run_quiet(["--target", str(target), "--force", "--skip-validate"]), 0)
+            self.assertTrue(foreign_dir.is_dir())
+
+            # En portée workspace, nettoie également .agents/plugins/gravity
+            ws = base / "ws"
+            ws_legacy = ws / ".agents" / "plugins" / "gravity"
+            ws_legacy.mkdir(parents=True)
+            (ws_legacy / "plugin.json").write_text(
+                json.dumps({"name": "gravity", "version": "0.1.3"}),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                _run_quiet(["--scope", "workspace", "--workspace", str(ws), "--skip-validate"]), 0
+            )
+            self.assertTrue((ws / ".agents" / "plugins" / "gravity-workflow" / "plugin.json").is_file())
+            self.assertFalse(ws_legacy.exists())
 
     def test_init_workspace_preserves_existing_agents_md_even_with_plugin_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            target = base / "gravity"
+            target = base / "gravity-workflow"
             ws = base / "project"
             ws.mkdir()
             custom_agents = "# Custom Project AGENTS\nDo not overwrite me.\n"
@@ -301,7 +358,7 @@ class TestGravityInstaller(unittest.TestCase):
             )
             self.assertEqual(rc, 0)
             self.assertEqual((ws / "AGENTS.md").read_text(encoding="utf-8"), custom_agents)
-            self.assertTrue((ws / ".agents" / "gravity" / "PROGRESS.md").is_file())
+            self.assertTrue((ws / ".agents" / "gravity-workflow" / "PROGRESS.md").is_file())
 
             rc_force_ws = _run_quiet(
                 [
@@ -320,7 +377,7 @@ class TestGravityInstaller(unittest.TestCase):
 
     def test_dry_run_and_check_do_not_mutate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "uncreated" / "gravity"
+            target = Path(tmp) / "uncreated" / "gravity-workflow"
             self.assertEqual(_run_quiet(["--target", str(target), "--dry-run"]), 0)
             self.assertFalse(target.parent.exists())
 
@@ -329,7 +386,7 @@ class TestGravityInstaller(unittest.TestCase):
 
     def test_uninstall_removes_installed_gravity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "gravity"
+            target = Path(tmp) / "gravity-workflow"
             self.assertEqual(_run_quiet(["--target", str(target)]), 0)
             self.assertTrue(target.is_dir())
 

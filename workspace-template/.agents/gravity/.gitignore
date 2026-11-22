@@ -1,7 +1,0 @@
-# Fichiers temporaires et télémétrie d'exécution Gravity
-*.lock
-observability/*.lock
-observability/runs.jsonl
-observability/last_verified.patch
-evals/report.json
-evals/report.md

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cross-platform installer and uninstaller for the Gravity Antigravity plugin (100% Python 3 stdlib)."""
+"""Cross-platform installer and uninstaller for the Gravity Workflow Antigravity plugin (100% Python 3 stdlib)."""
 
 import argparse
 import errno
@@ -15,8 +15,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent
-PLUGIN_SOURCE = REPO_ROOT / "gravity-plugin"
-PLUGIN_NAME = "gravity"
+PLUGIN_SOURCE = REPO_ROOT / "gravity-workflow-plugin"
+PLUGIN_NAME = "gravity-workflow"
+LEGACY_PLUGIN_NAME = "gravity"
+LEGACY_REGISTRY_PATH = Path.home() / ".gravity" / "live_workspaces.json"
 
 EXEC_SCRIPTS: Tuple[str, ...] = (
     "scripts/validate.py",
@@ -58,9 +60,39 @@ def read_plugin_manifest(plugin_dir: Path) -> Optional[Dict[str, Any]]:
 
 
 def is_gravity_plugin_dir(plugin_dir: Path) -> bool:
-    """Return True only when plugin_dir contains a Gravity plugin manifest."""
+    """Return True only when plugin_dir contains a Gravity Workflow plugin manifest."""
     manifest = read_plugin_manifest(plugin_dir)
     return bool(manifest is not None and manifest.get("name") == PLUGIN_NAME)
+
+
+def is_legacy_gravity_plugin_dir(plugin_dir: Path) -> bool:
+    """Return True only when plugin_dir contains a legacy v0.1.x 'gravity' plugin manifest."""
+    manifest = read_plugin_manifest(plugin_dir)
+    return bool(manifest is not None and manifest.get("name") == LEGACY_PLUGIN_NAME)
+
+
+def resolve_legacy_plugin_dir(
+    scope: str, workspace: Optional[Path], target: Optional[Path]
+) -> Optional[Path]:
+    """Compute the legacy 'gravity' plugin path corresponding to the requested install target."""
+    if target is not None:
+        resolved_target = Path(os.path.abspath(str(target.expanduser())))
+        if resolved_target.name == PLUGIN_NAME:
+            return resolved_target.parent / LEGACY_PLUGIN_NAME
+        return None
+    if scope == "global":
+        return Path(
+            os.path.abspath(
+                str(Path.home() / ".gemini" / "config" / "plugins" / LEGACY_PLUGIN_NAME)
+            )
+        )
+    if workspace is not None:
+        return Path(
+            os.path.abspath(
+                str(workspace.expanduser().resolve() / ".agents" / "plugins" / LEGACY_PLUGIN_NAME)
+            )
+        )
+    return None
 
 
 def is_unsafe_target(path: Path, plugin_src: Path) -> Optional[str]:
@@ -152,7 +184,7 @@ def _print_process_output(proc: subprocess.CompletedProcess) -> None:
 
 
 def run_plugin_validation(plugin_dir: Path) -> subprocess.CompletedProcess:
-    """Run Gravity's strict validator against a staged or installed plugin directory."""
+    """Run Gravity Workflow's strict validator against a staged or installed plugin directory."""
     validator = plugin_dir / "scripts" / "validate.py"
     return _run_subprocess(
         [sys.executable, "-B", str(validator), "--plugin-root", str(plugin_dir), "--strict"],
@@ -169,17 +201,22 @@ def run_fix_python_cmd(plugin_dir: Path) -> subprocess.CompletedProcess:
     )
 
 
-def print_next_steps(target_dir: Optional[Path], init_ws_dir: Optional[Path]) -> None:
+def print_next_steps(
+    target_dir: Optional[Path],
+    init_ws_dir: Optional[Path],
+    *,
+    legacy_kept: bool = False,
+) -> None:
     """Print concise post-install instructions without touching config.json."""
     print("\nNext steps:")
     if target_dir is not None:
         print(f"  - Installed plugin location: {target_dir}")
-    print("  - In Antigravity App or IDE, verify Gravity under Customizations -> Installed.")
+    print("  - In Antigravity App or IDE, verify Gravity Workflow under Customizations -> Installed.")
     if init_ws_dir is not None:
         print(f"  - Initialized project workspace: {init_ws_dir}")
-        print("  - Open that project in Antigravity and invoke /gravity to start a session.")
+        print("  - Open that project in Antigravity and invoke /gravity-workflow to start a session.")
     else:
-        print("  - Open any project in Antigravity and run /gravity to initialize it,")
+        print("  - Open any project in Antigravity and run /gravity-workflow to initialize it,")
         print("    or run: python install.py --init-workspace <target-project-dir>")
     print(
         "\nOptional (Antigravity App Live Widget sidecar on http://127.0.0.1:4789):\n"
@@ -189,12 +226,21 @@ def print_next_steps(target_dir: Optional[Path], init_ws_dir: Optional[Path]) ->
     print(
         '  {\n'
         '    "sidecars": {\n'
-        '      "gravity/live-widget": {\n'
+        '      "gravity-workflow/live-widget": {\n'
         '        "enabled": true\n'
         '      }\n'
         '    }\n'
         '  }'
     )
+    if legacy_kept or LEGACY_REGISTRY_PATH.is_file():
+        print(
+            "\nMigration note (from v0.1.x 'gravity'):\n"
+            "  - In existing initialized projects, rename .agents/gravity/ -> .agents/gravity-workflow/\n"
+            "    (or re-run /gravity-workflow init).\n"
+            "  - Update any manual 'gravity/live-widget' entry in ~/.gemini/config/config.json to\n"
+            "    'gravity-workflow/live-widget', and optionally run:\n"
+            "      python uninstall.py --workspace-only --clean-legacy"
+        )
 
 
 def check_environment(
@@ -202,6 +248,7 @@ def check_environment(
     target_dir: Optional[Path],
     scope: str,
     method: str,
+    legacy_dir: Optional[Path] = None,
 ) -> int:
     """Inspect prerequisites and current install status without modifying anything."""
     src_manifest = read_plugin_manifest(plugin_src) or {}
@@ -209,7 +256,7 @@ def check_environment(
     agy_bin = shutil.which("agy")
     real_py3 = has_real_python3()
 
-    print("Gravity Environment Check")
+    print("Gravity Workflow Environment Check")
     print(f"  Platform         : {platform.system()} {platform.release()} ({os.name})")
     print(f"  Python           : {sys.version.split()[0]} ({sys.executable})")
     print(f"  Real 'python3'   : {'yes' if real_py3 else 'no (Windows copy install will auto-adapt)'}")
@@ -227,11 +274,22 @@ def check_environment(
                 inst_version = inst_manifest.get("version", "unknown")
                 print(f"  Target status    : installed at {target_dir} (v{inst_version})")
             else:
-                print(f"  Target status    : occupied by non-Gravity directory ({target_dir})")
+                print(f"  Target status    : occupied by non-Gravity Workflow directory ({target_dir})")
         else:
             print(f"  Target status    : not installed ({target_dir})")
     else:
         print("  Target status    : managed by 'agy plugin install'")
+
+    if legacy_dir is not None and (legacy_dir.exists() or legacy_dir.is_symlink()):
+        if is_legacy_gravity_plugin_dir(legacy_dir):
+            leg_manifest = read_plugin_manifest(legacy_dir) or {}
+            leg_ver = leg_manifest.get("version", "unknown")
+            print(
+                f"  Legacy plugin    : detected at {legacy_dir} (v{leg_ver}) "
+                "[will be removed on install unless --keep-legacy]"
+            )
+    if LEGACY_REGISTRY_PATH.is_file():
+        print(f"  Legacy registry  : present ({LEGACY_REGISTRY_PATH})")
     return 0
 
 
@@ -360,7 +418,7 @@ def _sync_directory_in_place(src_dir: Path, dst_dir: Path) -> List[Path]:
         nonlocal conflict_root, conflict_seq
         if conflict_root is None:
             conflict_root = Path(
-                tempfile.mkdtemp(prefix=".gravity-inplace-", dir=str(dst_dir.parent))
+                tempfile.mkdtemp(prefix=".gravity-workflow-inplace-", dir=str(dst_dir.parent))
             )
         conflict_seq += 1
         saved = conflict_root / f"item-{conflict_seq}"
@@ -462,7 +520,7 @@ def install_copy(
     skip_validate: bool = False,
     dry_run: bool = False,
 ) -> int:
-    """Install or upgrade the Gravity plugin using a staged copy, atomic swap, in-place lock fallback, and rollback."""
+    """Install or upgrade the Gravity Workflow plugin using a staged copy, atomic swap, in-place lock fallback, and rollback."""
     unsafe_reason = is_unsafe_target(target_dir, plugin_src)
     if unsafe_reason:
         print(f"[ERROR] {unsafe_reason}", file=sys.stderr)
@@ -477,8 +535,8 @@ def install_copy(
             replacing = True
         elif not is_gravity_plugin_dir(target_dir):
             print(
-                f"[ERROR] Target path exists and is not a Gravity plugin: {target_dir}\n"
-                "Refusing to overwrite non-Gravity files.",
+                f"[ERROR] Target path exists and is not a Gravity Workflow plugin: {target_dir}\n"
+                "Refusing to overwrite non-Gravity Workflow files.",
                 file=sys.stderr,
             )
             return 1
@@ -487,7 +545,7 @@ def install_copy(
             inst_version = str(inst_manifest.get("version", "unknown"))
             if not force:
                 print(
-                    f"[ERROR] Gravity v{inst_version} is already installed at {target_dir} "
+                    f"[ERROR] Gravity Workflow v{inst_version} is already installed at {target_dir} "
                     f"(source is v{src_version}).\n"
                     "Re-run with --force to upgrade or reinstall.",
                     file=sys.stderr,
@@ -508,7 +566,9 @@ def install_copy(
         return 0
 
     target_dir.parent.mkdir(parents=True, exist_ok=True)
-    stage_parent = Path(tempfile.mkdtemp(prefix=".gravity-stage-", dir=str(target_dir.parent)))
+    stage_parent = Path(
+        tempfile.mkdtemp(prefix=".gravity-workflow-stage-", dir=str(target_dir.parent))
+    )
     staged_dir = stage_parent / PLUGIN_NAME
     backup_parent: Optional[Path] = None
 
@@ -537,7 +597,7 @@ def install_copy(
 
         if replacing:
             backup_parent = Path(
-                tempfile.mkdtemp(prefix=".gravity-backup-", dir=str(target_dir.parent))
+                tempfile.mkdtemp(prefix=".gravity-workflow-backup-", dir=str(target_dir.parent))
             )
             backup_dir = backup_parent / PLUGIN_NAME
             try:
@@ -561,14 +621,14 @@ def install_copy(
                 except (OSError, shutil.Error) as sync_exc:
                     print(
                         f"[ERROR] In-place update failed because a target file is locked: {sync_exc}\n"
-                        "Stop any running Gravity sidecar/process and re-run with --force.",
+                        "Stop any running Gravity Workflow sidecar/process and re-run with --force.",
                         file=sys.stderr,
                     )
                     return 1
                 if locked_stale:
                     skipped = ", ".join(str(p.name) for p in locked_stale)
                     print(f"[WARN]  Skipped locked stale entries during in-place sync: {skipped}")
-                print(f"[OK]    Upgraded Gravity v{src_version} at {target_dir} (in-place)")
+                print(f"[OK]    Upgraded Gravity Workflow v{src_version} at {target_dir} (in-place)")
             else:
                 try:
                     os.rename(str(staged_dir), str(target_dir))
@@ -589,10 +649,10 @@ def install_copy(
                     return 1
                 shutil.rmtree(backup_parent, ignore_errors=True)
                 backup_parent = None
-                print(f"[OK]    Upgraded Gravity v{src_version} at {target_dir}")
+                print(f"[OK]    Upgraded Gravity Workflow v{src_version} at {target_dir}")
         else:
             shutil.move(str(staged_dir), str(target_dir))
-            print(f"[OK]    Installed Gravity v{src_version} at {target_dir}")
+            print(f"[OK]    Installed Gravity Workflow v{src_version} at {target_dir}")
     finally:
         shutil.rmtree(stage_parent, ignore_errors=True)
         if backup_parent is not None and is_gravity_plugin_dir(target_dir):
@@ -602,7 +662,7 @@ def install_copy(
 
 
 def install_agy(plugin_src: Path, *, dry_run: bool = False) -> int:
-    """Validate and install Gravity using the Antigravity CLI ('agy')."""
+    """Validate and install Gravity Workflow using the Antigravity CLI ('agy')."""
     agy_bin = shutil.which("agy")
     if not agy_bin:
         print(
@@ -629,11 +689,11 @@ def install_agy(plugin_src: Path, *, dry_run: bool = False) -> int:
         print("[ERROR] 'agy plugin install' failed.", file=sys.stderr)
         return 1
 
-    print("[OK]    Installed Gravity via 'agy plugin install'.")
+    print("[OK]    Installed Gravity Workflow via 'agy plugin install'.")
     if os.name == "nt" and not has_real_python3():
         print(
             "[NOTE]  Windows without real 'python3' detected: if hooks fail, run\n"
-            "        'python gravity-plugin/scripts/validate.py --plugin-root <installed-dir> --fix-python-cmd'\n"
+            "        'python gravity-workflow-plugin/scripts/validate.py --plugin-root <installed-dir> --fix-python-cmd'\n"
             "        against your installed copy."
         )
     return 0
@@ -650,7 +710,7 @@ def bootstrap_workspace(
     skip_validate: bool = False,
     dry_run: bool = False,
 ) -> int:
-    """Initialize and validate a Gravity project workspace."""
+    """Initialize and validate a Gravity Workflow project workspace."""
     resolved_ws = ws_dir.expanduser().resolve()
     base_dir = (
         target_dir
@@ -712,6 +772,40 @@ def _remove_tree_or_symlink(path: Path) -> None:
         shutil.rmtree(path)
 
 
+def cleanup_legacy_plugin(
+    plugin_src: Path,
+    legacy_dir: Optional[Path],
+    *,
+    dry_run: bool = False,
+) -> bool:
+    """Safely remove an obsolete v0.1.x 'gravity' plugin directory after installing gravity-workflow."""
+    if legacy_dir is None:
+        return False
+    if not legacy_dir.exists() and not _is_symlink_or_junction(legacy_dir):
+        return False
+    unsafe_reason = is_unsafe_target(legacy_dir, plugin_src)
+    if unsafe_reason:
+        print(f"[WARN]  Skipping legacy plugin cleanup ({unsafe_reason}).")
+        return False
+    if not is_legacy_gravity_plugin_dir(legacy_dir):
+        return False
+    if dry_run:
+        print(f"[DRY-RUN] Remove legacy Gravity plugin directory: {legacy_dir}")
+        return True
+    try:
+        _remove_tree_or_symlink(legacy_dir)
+        print(f"[OK]    Removed legacy 'gravity' plugin from {legacy_dir}")
+        return True
+    except OSError as exc:
+        if _is_lock_oserror(exc):
+            print(
+                f"[WARN]  Could not remove legacy 'gravity' plugin {legacy_dir} (in use: {exc}).\n"
+                "        Remove it manually or run 'python uninstall.py --clean-legacy --workspace-only'."
+            )
+            return False
+        raise
+
+
 def uninstall_plugin(
     plugin_src: Path,
     target_dir: Optional[Path],
@@ -719,7 +813,7 @@ def uninstall_plugin(
     method: str = "copy",
     dry_run: bool = False,
 ) -> int:
-    """Safely uninstall Gravity from the target location or via 'agy'."""
+    """Safely uninstall Gravity Workflow from the target location or via 'agy'."""
     if method == "agy":
         agy_bin = shutil.which("agy")
         if not agy_bin:
@@ -733,10 +827,10 @@ def uninstall_plugin(
         if proc.returncode != 0:
             print("[ERROR] 'agy plugin uninstall' failed.", file=sys.stderr)
             return 1
-        print("[OK]    Uninstalled Gravity via 'agy plugin uninstall'.")
+        print("[OK]    Uninstalled Gravity Workflow via 'agy plugin uninstall'.")
         print(
             "[NOTE]  Use 'python uninstall.py --clean-workspace <dir> / --clean-registry' to clean "
-            "project state or ~/.gravity/, and remove any manual Gravity entries from "
+            "project state or ~/.gemini/gravity-workflow/, and remove any manual Gravity Workflow entries from "
             "~/.gemini/config/config.json or ~/.gemini/antigravity-cli/settings.json."
         )
         return 0
@@ -748,34 +842,34 @@ def uninstall_plugin(
         return 1
 
     if not target_dir.exists() and not target_dir.is_symlink():
-        print(f"[ERROR] Gravity is not installed at {target_dir}.", file=sys.stderr)
+        print(f"[ERROR] Gravity Workflow is not installed at {target_dir}.", file=sys.stderr)
         return 1
 
     if not is_gravity_plugin_dir(target_dir):
         print(
-            f"[ERROR] Refusing to remove non-Gravity directory: {target_dir}",
+            f"[ERROR] Refusing to remove non-Gravity Workflow directory: {target_dir}",
             file=sys.stderr,
         )
         return 1
 
     if dry_run:
-        print(f"[DRY-RUN] Remove Gravity plugin directory: {target_dir}")
+        print(f"[DRY-RUN] Remove Gravity Workflow plugin directory: {target_dir}")
         return 0
 
     _remove_tree_or_symlink(target_dir)
-    print(f"[OK]    Removed Gravity plugin from {target_dir}")
+    print(f"[OK]    Removed Gravity Workflow plugin from {target_dir}")
     print(
         "[NOTE]  Use 'python uninstall.py --clean-workspace <dir> / --clean-registry' to clean "
-        "project state or ~/.gravity/, and remove any manual Gravity entries from "
+        "project state or ~/.gemini/gravity-workflow/, and remove any manual Gravity Workflow entries from "
         "~/.gemini/config/config.json or ~/.gemini/antigravity-cli/settings.json."
     )
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Construct the CLI argument parser for the Gravity installer."""
+    """Construct the CLI argument parser for the Gravity Workflow installer."""
     parser = argparse.ArgumentParser(
-        description="Install, upgrade, validate, or uninstall the Gravity Antigravity plugin.",
+        description="Install, upgrade, validate, or uninstall the Gravity Workflow Antigravity plugin.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -792,7 +886,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--scope",
         choices=("global", "workspace"),
         default="global",
-        help="Install globally (~/.gemini/config/plugins/gravity) or inside a project (.agents/plugins/gravity).",
+        help="Install globally (~/.gemini/config/plugins/gravity-workflow) or inside a project (.agents/plugins/gravity-workflow).",
     )
     parser.add_argument(
         "--workspace",
@@ -816,7 +910,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--init-workspace",
         type=Path,
         default=None,
-        help="Also initialize Gravity's 13-file project baseline in this workspace after installing.",
+        help="Also initialize Gravity Workflow's 13-file project baseline in this workspace after installing.",
     )
     parser.add_argument(
         "--mode",
@@ -827,12 +921,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Upgrade or reinstall when Gravity already exists at the target plugin directory.",
+        help="Upgrade or reinstall when Gravity Workflow already exists at the target plugin directory.",
     )
     parser.add_argument(
         "--force-workspace",
         action="store_true",
         help="Overwrite existing project files when used with --init-workspace.",
+    )
+    parser.add_argument(
+        "--keep-legacy",
+        action="store_true",
+        help="Keep an existing legacy v0.1.x 'gravity' plugin directory instead of removing it after install.",
     )
     parser.add_argument(
         "--no-fix-python",
@@ -857,7 +956,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--uninstall",
         action="store_true",
-        help="Safely remove an installed Gravity plugin.",
+        help="Safely remove an installed Gravity Workflow plugin.",
     )
     return parser
 
@@ -874,7 +973,7 @@ def _configure_stdio() -> None:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Entry point for the Gravity cross-platform installer CLI."""
+    """Entry point for the Gravity Workflow cross-platform installer CLI."""
     _configure_stdio()
     if sys.version_info < (3, 8):
         print("[ERROR] Python 3.8+ is required to run install.py.", file=sys.stderr)
@@ -906,11 +1005,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     target_dir: Optional[Path] = None
+    legacy_dir: Optional[Path] = None
     if args.method == "copy":
         target_dir = resolve_target_dir(args.scope, args.workspace, args.target)
+        legacy_dir = resolve_legacy_plugin_dir(args.scope, args.workspace, args.target)
 
     if args.check:
-        return check_environment(PLUGIN_SOURCE, target_dir, args.scope, args.method)
+        return check_environment(
+            PLUGIN_SOURCE,
+            target_dir,
+            args.scope,
+            args.method,
+            legacy_dir=legacy_dir,
+        )
 
     if args.uninstall:
         return uninstall_plugin(
@@ -936,6 +1043,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if rc != 0:
         return rc
 
+    legacy_kept = False
+    if args.method == "copy" and legacy_dir is not None:
+        if args.keep_legacy:
+            if (legacy_dir.exists() or legacy_dir.is_symlink()) and is_legacy_gravity_plugin_dir(
+                legacy_dir
+            ):
+                legacy_kept = True
+                print(f"[INFO]  Keeping legacy 'gravity' plugin at {legacy_dir} (--keep-legacy).")
+        else:
+            cleanup_legacy_plugin(PLUGIN_SOURCE, legacy_dir, dry_run=args.dry_run)
+
     if args.init_workspace is not None:
         ws_rc = bootstrap_workspace(
             PLUGIN_SOURCE,
@@ -951,7 +1069,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return ws_rc
 
     if not args.dry_run:
-        print_next_steps(target_dir, args.init_workspace)
+        print_next_steps(target_dir, args.init_workspace, legacy_kept=legacy_kept)
 
     return 0
 

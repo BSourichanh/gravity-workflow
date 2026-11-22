@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for the cross-platform Gravity uninstaller (100% Python 3 stdlib)."""
+"""Unit tests for the cross-platform Gravity Workflow uninstaller (100% Python 3 stdlib)."""
 
 import ast
 import contextlib
@@ -37,22 +37,36 @@ def _run_uninstall_quiet(argv: List[str]) -> tuple:
 
 class TestGravityUninstaller(unittest.TestCase):
     def setUp(self) -> None:
-        self._prev_reg = os.environ.get("GRAVITY_REGISTRY_PATH")
+        self._prev_reg = os.environ.get("GRAVITY_WORKFLOW_REGISTRY_PATH")
+        self._prev_leg_reg = os.environ.get("GRAVITY_WORKFLOW_LEGACY_REGISTRY_PATH")
         self._tmp_reg_dir = tempfile.TemporaryDirectory()
-        self._default_reg = Path(self._tmp_reg_dir.name) / ".gravity" / "live_workspaces.json"
-        os.environ["GRAVITY_REGISTRY_PATH"] = str(self._default_reg)
+        self._default_reg = (
+            Path(self._tmp_reg_dir.name)
+            / ".gemini"
+            / "gravity-workflow"
+            / "live_workspaces.json"
+        )
+        self._default_leg_reg = (
+            Path(self._tmp_reg_dir.name) / ".gravity" / "live_workspaces.json"
+        )
+        os.environ["GRAVITY_WORKFLOW_REGISTRY_PATH"] = str(self._default_reg)
+        os.environ["GRAVITY_WORKFLOW_LEGACY_REGISTRY_PATH"] = str(self._default_leg_reg)
 
     def tearDown(self) -> None:
         if self._prev_reg is None:
-            os.environ.pop("GRAVITY_REGISTRY_PATH", None)
+            os.environ.pop("GRAVITY_WORKFLOW_REGISTRY_PATH", None)
         else:
-            os.environ["GRAVITY_REGISTRY_PATH"] = self._prev_reg
+            os.environ["GRAVITY_WORKFLOW_REGISTRY_PATH"] = self._prev_reg
+        if self._prev_leg_reg is None:
+            os.environ.pop("GRAVITY_WORKFLOW_LEGACY_REGISTRY_PATH", None)
+        else:
+            os.environ["GRAVITY_WORKFLOW_LEGACY_REGISTRY_PATH"] = self._prev_leg_reg
         self._tmp_reg_dir.cleanup()
 
     def test_uninstall_plugin_target_and_workspace_scope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            target = base / "global" / "gravity"
+            target = base / "global" / "gravity-workflow"
             self.assertEqual(_run_install_quiet(["--target", str(target)]), 0)
             self.assertTrue((target / "plugin.json").is_file())
 
@@ -65,7 +79,7 @@ class TestGravityUninstaller(unittest.TestCase):
             self.assertEqual(
                 _run_install_quiet(["--scope", "workspace", "--workspace", str(ws)]), 0
             )
-            ws_plugin = ws / ".agents" / "plugins" / "gravity"
+            ws_plugin = ws / ".agents" / "plugins" / "gravity-workflow"
             self.assertTrue((ws_plugin / "plugin.json").is_file())
 
             rc_ws, _, _ = _run_uninstall_quiet(
@@ -118,13 +132,20 @@ class TestGravityUninstaller(unittest.TestCase):
     def test_dry_run_and_check_do_not_mutate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            target = base / "gravity"
+            target = base / "gravity-workflow"
             ws = base / "proj"
             fake_home = base / "home"
             (fake_home / ".gemini" / "config").mkdir(parents=True)
             (fake_home / ".gemini" / "antigravity-cli").mkdir(parents=True)
             (fake_home / ".gemini" / "config" / "config.json").write_text(
-                json.dumps({"sidecars": {"gravity/live-widget": {"enabled": True}}}),
+                json.dumps(
+                    {
+                        "sidecars": {
+                            "gravity-workflow/live-widget": {"enabled": True},
+                            "gravity/live-widget": {"enabled": True},
+                        }
+                    }
+                ),
                 encoding="utf-8",
             )
             (fake_home / ".gemini" / "antigravity-cli" / "settings.json").write_text(
@@ -145,7 +166,7 @@ class TestGravityUninstaller(unittest.TestCase):
                         "workspaces": [
                             {
                                 "workspace": str(ws.resolve()),
-                                "state_path": str((ws / ".agents/gravity/observability/live_state.json").resolve()),
+                                "state_path": str((ws / ".agents/gravity-workflow/observability/live_state.json").resolve()),
                             }
                         ]
                     }
@@ -155,13 +176,14 @@ class TestGravityUninstaller(unittest.TestCase):
 
             manual = uninstall.detect_manual_config_entries(home_dir=fake_home)
             self.assertTrue(manual["sidecar"])
+            self.assertTrue(manual["legacy_sidecar"])
             self.assertTrue(manual["statusline"])
 
             rc_chk, out_chk, _ = _run_uninstall_quiet(
                 ["--check", "--target", str(target), "--clean-workspace", str(ws)]
             )
             self.assertEqual(rc_chk, 0)
-            self.assertIn("Gravity Uninstall Check", out_chk)
+            self.assertIn("Gravity Workflow Uninstall Check", out_chk)
 
             rc_dry, out_dry, _ = _run_uninstall_quiet(
                 [
@@ -177,7 +199,7 @@ class TestGravityUninstaller(unittest.TestCase):
             self.assertEqual(rc_dry, 0)
             self.assertIn("[DRY-RUN]", out_dry)
             self.assertTrue((target / "plugin.json").is_file())
-            self.assertTrue((ws / ".agents/gravity/profile.json").is_file())
+            self.assertTrue((ws / ".agents/gravity-workflow/profile.json").is_file())
             self.assertTrue((ws / "AGENTS.md").is_file())
             self.assertTrue(self._default_reg.is_file())
 
@@ -201,11 +223,11 @@ class TestGravityUninstaller(unittest.TestCase):
                         "workspaces": [
                             {
                                 "workspace": str(ws.resolve()),
-                                "state_path": str((ws / ".agents/gravity/observability/live_state.json").resolve()),
+                                "state_path": str((ws / ".agents/gravity-workflow/observability/live_state.json").resolve()),
                             },
                             {
                                 "workspace": str(other_ws.resolve()),
-                                "state_path": str((other_ws / ".agents/gravity/observability/live_state.json").resolve()),
+                                "state_path": str((other_ws / ".agents/gravity-workflow/observability/live_state.json").resolve()),
                             },
                         ]
                     }
@@ -217,8 +239,8 @@ class TestGravityUninstaller(unittest.TestCase):
                 ["--workspace-only", "--clean-workspace", str(ws)]
             )
             self.assertEqual(rc, 0)
-            self.assertFalse((ws / ".agents/gravity").exists())
-            self.assertFalse((ws / ".agents/plugins/gravity").exists())
+            self.assertFalse((ws / ".agents/gravity-workflow").exists())
+            self.assertFalse((ws / ".agents/plugins/gravity-workflow").exists())
             self.assertTrue((ws / "AGENTS.md").is_file())
             self.assertTrue((ws / ".agents/rules/01-safety-boundaries.md").is_file())
             self.assertTrue((ws / ".agents/rules/05-git-versioning.md").is_file())
@@ -231,7 +253,7 @@ class TestGravityUninstaller(unittest.TestCase):
     def test_purge_workspace_templates_keeps_modified_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            target = base / "gravity"
+            target = base / "gravity-workflow"
             ws_mod = base / "ws-modified"
             ws_clean = base / "ws-unmodified"
 
@@ -269,7 +291,7 @@ class TestGravityUninstaller(unittest.TestCase):
             self.assertFalse((ws_mod / ".agents/rules/01-safety-boundaries.md").exists())
             self.assertFalse((ws_mod / ".agents/rules/05-git-versioning.md").exists())
             self.assertFalse((ws_mod / ".agents/mcp_config.json").exists())
-            self.assertFalse((ws_mod / ".agents/gravity").exists())
+            self.assertFalse((ws_mod / ".agents/gravity-workflow").exists())
 
             rc_clean, _, _ = _run_uninstall_quiet(
                 [
@@ -287,7 +309,7 @@ class TestGravityUninstaller(unittest.TestCase):
     def test_clean_registry_and_all_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            target = base / "gravity"
+            target = base / "gravity-workflow"
             ws = base / "proj"
 
             self.assertEqual(
@@ -313,8 +335,54 @@ class TestGravityUninstaller(unittest.TestCase):
             )
             self.assertEqual(rc_all, 0)
             self.assertFalse(target.exists())
-            self.assertFalse((ws / ".agents/gravity").exists())
+            self.assertFalse((ws / ".agents/gravity-workflow").exists())
             self.assertFalse(self._default_reg.exists())
+
+    def test_clean_legacy_artifacts_explicit_vs_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            plugins_dir = base / "plugins"
+            target = plugins_dir / "gravity-workflow"
+            legacy_plugin = plugins_dir / "gravity"
+            legacy_plugin.mkdir(parents=True)
+            (legacy_plugin / "plugin.json").write_text(
+                json.dumps({"name": "gravity", "version": "0.1.3"}),
+                encoding="utf-8",
+            )
+
+            ws = base / "ws"
+            (ws / ".agents" / "gravity").mkdir(parents=True)
+            (ws / ".agents" / "gravity" / "profile.json").write_text("{}", encoding="utf-8")
+            ws_legacy_plugin = ws / ".agents" / "plugins" / "gravity"
+            ws_legacy_plugin.mkdir(parents=True)
+            (ws_legacy_plugin / "plugin.json").write_text(
+                json.dumps({"name": "gravity", "version": "0.1.3"}),
+                encoding="utf-8",
+            )
+
+            self._default_leg_reg.parent.mkdir(parents=True, exist_ok=True)
+            self._default_leg_reg.write_text('{"workspaces":[]}', encoding="utf-8")
+
+            # Sans --clean-legacy : préservé avec message d'information
+            rc_no, out_no, _ = _run_uninstall_quiet(
+                ["--workspace-only", "--clean-workspace", str(ws)]
+            )
+            self.assertEqual(rc_no, 0)
+            self.assertIn("--clean-legacy", out_no)
+            self.assertTrue((ws / ".agents" / "gravity" / "profile.json").is_file())
+            self.assertTrue(ws_legacy_plugin.is_dir())
+            self.assertTrue(legacy_plugin.is_dir())
+            self.assertTrue(self._default_leg_reg.is_file())
+
+            # Avec --clean-legacy : tout est nettoyé proprement
+            rc_yes, _, _ = _run_uninstall_quiet(
+                ["--workspace-only", "--clean-legacy", "--target", str(target), "--clean-workspace", str(ws)]
+            )
+            self.assertEqual(rc_yes, 0)
+            self.assertFalse((ws / ".agents" / "gravity").exists())
+            self.assertFalse(ws_legacy_plugin.exists())
+            self.assertFalse(legacy_plugin.exists())
+            self.assertFalse(self._default_leg_reg.exists())
 
     def test_method_agy_validation_and_delegation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -339,7 +407,7 @@ class TestGravityUninstaller(unittest.TestCase):
             rc, _, _ = _run_uninstall_quiet(["--method", "agy"])
             self.assertEqual(rc, 0)
 
-        self.assertEqual(calls, [["/usr/local/bin/agy", "plugin", "uninstall", "gravity"]])
+        self.assertEqual(calls, [["/usr/local/bin/agy", "plugin", "uninstall", "gravity-workflow"]])
 
     def test_cli_argument_errors(self) -> None:
         rc_purge, _, _ = _run_uninstall_quiet(["--purge-workspace-templates"])
@@ -359,8 +427,10 @@ class TestGravityUninstaller(unittest.TestCase):
             base = Path(tmp)
             real_plugin = base / "real_plugin"
             real_plugin.mkdir()
-            (real_plugin / "plugin.json").write_text('{"name": "gravity"}', encoding="utf-8")
-            link_plugin = base / "gravity_link"
+            (real_plugin / "plugin.json").write_text(
+                '{"name": "gravity-workflow"}', encoding="utf-8"
+            )
+            link_plugin = base / "gravity-workflow"
             try:
                 os.symlink(real_plugin, link_plugin, target_is_directory=True)
             except OSError:
@@ -376,7 +446,7 @@ class TestGravityUninstaller(unittest.TestCase):
             real_state = base / "real_state"
             real_state.mkdir()
             (real_state / "PROGRESS.md").write_text("# Progress\n", encoding="utf-8")
-            link_state = ws / ".agents" / "gravity"
+            link_state = ws / ".agents" / "gravity-workflow"
             os.symlink(real_state, link_state, target_is_directory=True)
 
             rc_ws, _, _ = _run_uninstall_quiet(["--workspace-only", "--clean-workspace", str(ws)])

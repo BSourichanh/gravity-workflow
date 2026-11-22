@@ -23,6 +23,9 @@ last_verified.patch
 evals/report.json
 evals/report.md
 
+# Local workspace runtime directory
+/.agents/
+
 # OS & editor artifacts
 .DS_Store
 Thumbs.db
