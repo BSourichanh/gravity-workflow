@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent
-PLUGIN_SOURCE = REPO_ROOT / "gravity-workflow-plugin"
+PLUGIN_SOURCE = REPO_ROOT / "plugin"
 PLUGIN_NAME = "gravity-workflow"
 LEGACY_PLUGIN_NAME = "gravity"
 LEGACY_REGISTRY_PATH = Path.home() / ".gravity" / "live_workspaces.json"
@@ -65,10 +65,32 @@ def is_gravity_plugin_dir(plugin_dir: Path) -> bool:
     return bool(manifest is not None and manifest.get("name") == PLUGIN_NAME)
 
 
+def is_core_gravity_plugin_dir(plugin_dir: Path) -> bool:
+    """Return True when plugin_dir contains the Gravity Core plugin (config/module.json id=='core')."""
+    module_path = plugin_dir / "config" / "module.json"
+    if not module_path.is_file():
+        return False
+    try:
+        data = json.loads(module_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # Fail-safe: never mistake an unreadable config/module.json plugin for a legacy workflow plugin.
+        return True
+    return isinstance(data, dict) and data.get("id") == "core"
+
+
 def is_legacy_gravity_plugin_dir(plugin_dir: Path) -> bool:
-    """Return True only when plugin_dir contains a legacy v0.1.x 'gravity' plugin manifest."""
+    """Return True only for a legacy v0.1.x 'gravity' workflow plugin (never Gravity Core)."""
     manifest = read_plugin_manifest(plugin_dir)
-    return bool(manifest is not None and manifest.get("name") == LEGACY_PLUGIN_NAME)
+    if manifest is None or manifest.get("name") != LEGACY_PLUGIN_NAME:
+        return False
+    if is_core_gravity_plugin_dir(plugin_dir):
+        return False
+    legacy_markers = (
+        plugin_dir / "hooks" / "pre_tool_guard.py",
+        plugin_dir / "hooks" / "safety_policy.py",
+        plugin_dir / "skills" / "gravity",
+    )
+    return any(marker.exists() for marker in legacy_markers)
 
 
 def resolve_legacy_plugin_dir(
@@ -288,6 +310,10 @@ def check_environment(
                 f"  Legacy plugin    : detected at {legacy_dir} (v{leg_ver}) "
                 "[will be removed on install unless --keep-legacy]"
             )
+        elif is_core_gravity_plugin_dir(legacy_dir):
+            core_manifest = read_plugin_manifest(legacy_dir) or {}
+            core_ver = core_manifest.get("version", "unknown")
+            print(f"  Core plugin      : detected at {legacy_dir} (v{core_ver}) [preserved]")
     if LEGACY_REGISTRY_PATH.is_file():
         print(f"  Legacy registry  : present ({LEGACY_REGISTRY_PATH})")
     return 0
@@ -693,7 +719,7 @@ def install_agy(plugin_src: Path, *, dry_run: bool = False) -> int:
     if os.name == "nt" and not has_real_python3():
         print(
             "[NOTE]  Windows without real 'python3' detected: if hooks fail, run\n"
-            "        'python gravity-workflow-plugin/scripts/validate.py --plugin-root <installed-dir> --fix-python-cmd'\n"
+            "        'python plugin/scripts/validate.py --plugin-root <installed-dir> --fix-python-cmd'\n"
             "        against your installed copy."
         )
     return 0
@@ -830,7 +856,7 @@ def uninstall_plugin(
         print("[OK]    Uninstalled Gravity Workflow via 'agy plugin uninstall'.")
         print(
             "[NOTE]  Use 'python uninstall.py --clean-workspace <dir> / --clean-registry' to clean "
-            "project state or ~/.gemini/gravity-workflow/, and remove any manual Gravity Workflow entries from "
+            "project state or ~/.gemini/gravity/workflow/, and remove any manual Gravity Workflow entries from "
             "~/.gemini/config/config.json or ~/.gemini/antigravity-cli/settings.json."
         )
         return 0
@@ -860,7 +886,7 @@ def uninstall_plugin(
     print(f"[OK]    Removed Gravity Workflow plugin from {target_dir}")
     print(
         "[NOTE]  Use 'python uninstall.py --clean-workspace <dir> / --clean-registry' to clean "
-        "project state or ~/.gemini/gravity-workflow/, and remove any manual Gravity Workflow entries from "
+        "project state or ~/.gemini/gravity/workflow/, and remove any manual Gravity Workflow entries from "
         "~/.gemini/config/config.json or ~/.gemini/antigravity-cli/settings.json."
     )
     return 0

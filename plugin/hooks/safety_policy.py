@@ -82,7 +82,7 @@ SENSITIVE_PATH_PATTERNS = [
     re.compile(r"(?:^|/)\.ssh(?:/(?:id_[^/]+|authorized_keys|config))?$", re.IGNORECASE),
 ]
 
-# Auto-protection ciblée sur le plugin actif/installé et le socle projet (jamais le dépôt source gravity-workflow-plugin/).
+# Auto-protection ciblée sur le plugin actif/installé et le socle projet (jamais le dépôt source plugin/).
 HARNESS_SELF_PROTECT_PATTERNS = [
     re.compile(
         r"(?:^hooks\.json$|(?:^|/)(?:\.agents|\.agents/plugins/gravity-workflow|plugins/gravity-workflow)/hooks\.json$)",

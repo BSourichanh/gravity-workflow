@@ -3,15 +3,37 @@
 
 import json
 import os
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
+_OBS_DIR = Path(__file__).resolve().parents[2] / "observability"
+if str(_OBS_DIR) not in sys.path:
+    sys.path.insert(0, str(_OBS_DIR))
+
+import state_writer  # noqa: E402
+
 PORT = int(os.environ.get("GRAVITY_WORKFLOW_WIDGET_PORT", "4789"))
 RELATIVE_STATE = Path(".agents/gravity-workflow/observability/live_state.json")
-REGISTRY_PATH = Path.home() / ".gemini" / "gravity-workflow" / "live_workspaces.json"
+_DEFAULT_REGISTRY_SENTINEL = state_writer.default_workflow_home() / "live_workspaces.json"
+REGISTRY_PATH = _DEFAULT_REGISTRY_SENTINEL
+
+
+def default_workflow_home() -> Path:
+    """Résout le dossier centralisé Gravity Workflow ($GRAVITY_WORKFLOW_HOME > $GRAVITY_HOME/workflow > ~/.gemini/gravity/workflow)."""
+    return state_writer.default_workflow_home()
+
+
+def resolve_registry_path(registry_path: Optional[Path] = None) -> Path:
+    """Résout live_workspaces.json via arg, monkeypatch REGISTRY_PATH ou state_writer.resolve_registry_path()."""
+    if registry_path is not None:
+        return Path(registry_path).expanduser().resolve()
+    if REGISTRY_PATH is not None and REGISTRY_PATH != _DEFAULT_REGISTRY_SENTINEL:
+        return Path(REGISTRY_PATH).expanduser()
+    return state_writer.resolve_registry_path()
 
 
 class GravityHTTPServer(ThreadingHTTPServer):
@@ -29,10 +51,11 @@ def _workspace_from_state_path(state_path: Path) -> str:
 
 
 def _load_registered_workspaces() -> List[Dict[str, str]]:
-    if not REGISTRY_PATH.is_file():
+    reg_path = resolve_registry_path()
+    if not reg_path.is_file():
         return []
     try:
-        data = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+        data = json.loads(reg_path.read_text(encoding="utf-8"))
         entries = data.get("workspaces", []) if isinstance(data, dict) else []
         valid = [
             e
@@ -46,7 +69,7 @@ def _load_registered_workspaces() -> List[Dict[str, str]]:
 
 
 def resolve_state_path(ws_index: Optional[int] = None) -> Path:
-    """Résout live_state.json via env, registre ~/.gemini/gravity-workflow/live_workspaces.json ou cwd."""
+    """Résout live_state.json via env, registre centralisé (~/.gemini/gravity/workflow/live_workspaces.json) ou cwd."""
     env_state = os.environ.get("GRAVITY_WORKFLOW_STATE_PATH", "").strip()
     if env_state and "${" not in env_state:
         return Path(env_state)
@@ -210,7 +233,7 @@ def _state_signature(state_path: Path) -> Tuple[Tuple[str, int, int], Tuple[str,
     return (
         _stat_sig(state_path),
         _stat_sig(_profile_path_for_state(state_path)),
-        _stat_sig(REGISTRY_PATH),
+        _stat_sig(resolve_registry_path()),
     )
 
 

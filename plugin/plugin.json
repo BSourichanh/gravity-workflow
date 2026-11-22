@@ -1,5 +1,4 @@
 {
-  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "gravity-workflow",
   "displayName": "Gravity Workflow",
   "version": "0.2.0",
@@ -14,14 +13,5 @@
     "name": "Gravity Contributors"
   },
   "homepage": "https://github.com/BSourichanh/gravity-workflow",
-  "repository": "https://github.com/BSourichanh/gravity-workflow",
-  "license": "MIT",
-  "keywords": [
-    "multi-agent",
-    "harness",
-    "evals",
-    "hooks",
-    "workflows",
-    "caveman"
-  ]
+  "repository": "https://github.com/BSourichanh/gravity-workflow"
 }

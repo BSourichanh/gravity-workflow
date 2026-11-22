@@ -35,6 +35,7 @@ class TestGravityInstaller(unittest.TestCase):
             rc = _run_quiet(["--target", str(target)])
             self.assertEqual(rc, 0)
             self.assertTrue((target / "plugin.json").is_file())
+            self.assertTrue((target / "config" / "module.json").is_file())
             self.assertTrue((target / "hooks.json").is_file())
             self.assertTrue((target / "skills" / "gravity-workflow" / "SKILL.md").is_file())
             self.assertTrue((target / "skills" / "caveman" / "SKILL.md").is_file())
@@ -288,11 +289,12 @@ class TestGravityInstaller(unittest.TestCase):
             plugins_dir.mkdir()
             target = plugins_dir / "gravity-workflow"
             legacy_dir = plugins_dir / "gravity"
-            legacy_dir.mkdir()
+            (legacy_dir / "hooks").mkdir(parents=True)
             (legacy_dir / "plugin.json").write_text(
                 json.dumps({"name": "gravity", "version": "0.1.3"}),
                 encoding="utf-8",
             )
+            (legacy_dir / "hooks" / "pre_tool_guard.py").write_text("# legacy hook\n", encoding="utf-8")
 
             # --check et --dry-run ne suppriment rien
             self.assertEqual(_run_quiet(["--target", str(target), "--check"]), 0)
@@ -306,34 +308,86 @@ class TestGravityInstaller(unittest.TestCase):
             self.assertTrue((target / "plugin.json").is_file())
             self.assertTrue(legacy_dir.is_dir())
 
-            # Installation par défaut (ou --force) supprime proprement l'ancien plugin 'gravity'
+            # Installation par défaut (ou --force) supprime proprement l'ancien plugin 'gravity' workflow
             self.assertEqual(_run_quiet(["--target", str(target), "--force", "--skip-validate"]), 0)
             self.assertTrue((target / "plugin.json").is_file())
             self.assertFalse(legacy_dir.exists())
 
             # Ne jamais supprimer un dossier 'gravity' tiers dont le manifeste n'est pas name=='gravity'
             foreign_dir = plugins_dir / "gravity"
-            foreign_dir.mkdir()
+            (foreign_dir / "hooks").mkdir(parents=True)
             (foreign_dir / "plugin.json").write_text(
                 json.dumps({"name": "other-plugin", "version": "1.0.0"}),
                 encoding="utf-8",
             )
+            (foreign_dir / "hooks" / "pre_tool_guard.py").write_text("# foreign\n", encoding="utf-8")
             self.assertEqual(_run_quiet(["--target", str(target), "--force", "--skip-validate"]), 0)
             self.assertTrue(foreign_dir.is_dir())
 
-            # En portée workspace, nettoie également .agents/plugins/gravity
+            # En portée workspace, nettoie également .agents/plugins/gravity si marqueurs workflow hérités
             ws = base / "ws"
             ws_legacy = ws / ".agents" / "plugins" / "gravity"
-            ws_legacy.mkdir(parents=True)
+            (ws_legacy / "skills" / "gravity").mkdir(parents=True)
             (ws_legacy / "plugin.json").write_text(
                 json.dumps({"name": "gravity", "version": "0.1.3"}),
                 encoding="utf-8",
+            )
+            (ws_legacy / "skills" / "gravity" / "SKILL.md").write_text(
+                "---\nname: gravity\n---\n", encoding="utf-8"
             )
             self.assertEqual(
                 _run_quiet(["--scope", "workspace", "--workspace", str(ws), "--skip-validate"]), 0
             )
             self.assertTrue((ws / ".agents" / "plugins" / "gravity-workflow" / "plugin.json").is_file())
             self.assertFalse(ws_legacy.exists())
+
+    def test_leaves_gravity_core_plugin_untouched_and_ignores_unmarked_gravity_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            plugins_dir = base / "plugins"
+            plugins_dir.mkdir()
+            target = plugins_dir / "gravity-workflow"
+
+            # 1. Nouveau plugin Core 'gravity' (avec config/module.json id='core' ET skills/gravity/)
+            core_dir = plugins_dir / "gravity"
+            (core_dir / "config").mkdir(parents=True)
+            (core_dir / "skills" / "gravity").mkdir(parents=True)
+            core_manifest = json.dumps({"name": "gravity", "version": "0.1.0"})
+            core_module = json.dumps({"schema_version": 1, "id": "core", "plugin_name": "gravity"})
+            core_skill = "---\nname: gravity\ndescription: Gravity Core\n---\n"
+            (core_dir / "plugin.json").write_text(core_manifest, encoding="utf-8")
+            (core_dir / "config" / "module.json").write_text(core_module, encoding="utf-8")
+            (core_dir / "skills" / "gravity" / "SKILL.md").write_text(core_skill, encoding="utf-8")
+
+            self.assertFalse(install.is_legacy_gravity_plugin_dir(core_dir))
+            self.assertTrue(install.is_core_gravity_plugin_dir(core_dir))
+            self.assertEqual(_run_quiet(["--target", str(target), "--skip-validate"]), 0)
+            self.assertEqual(_run_quiet(["--target", str(target), "--force", "--skip-validate"]), 0)
+            self.assertTrue((target / "plugin.json").is_file())
+            self.assertTrue((core_dir / "config" / "module.json").is_file())
+            self.assertEqual((core_dir / "config" / "module.json").read_text(encoding="utf-8"), core_module)
+            self.assertEqual((core_dir / "skills" / "gravity" / "SKILL.md").read_text(encoding="utf-8"), core_skill)
+
+            # 2. Portée workspace : un plugin Core 'gravity' dans .agents/plugins/gravity reste intact
+            ws = base / "ws"
+            ws_core = ws / ".agents" / "plugins" / "gravity"
+            (ws_core / "config").mkdir(parents=True)
+            (ws_core / "skills" / "gravity").mkdir(parents=True)
+            (ws_core / "plugin.json").write_text(core_manifest, encoding="utf-8")
+            (ws_core / "config" / "module.json").write_text(core_module, encoding="utf-8")
+            (ws_core / "skills" / "gravity" / "SKILL.md").write_text(core_skill, encoding="utf-8")
+            self.assertEqual(
+                _run_quiet(["--scope", "workspace", "--workspace", str(ws), "--skip-validate"]), 0
+            )
+            self.assertTrue((ws_core / "config" / "module.json").is_file())
+
+            # 3. Dossier 'gravity' sans module.json ni marqueurs workflow -> intact
+            unmarked_dir = base / "unmarked_plugins" / "gravity"
+            unmarked_dir.mkdir(parents=True)
+            (unmarked_dir / "plugin.json").write_text(core_manifest, encoding="utf-8")
+            unmarked_target = base / "unmarked_plugins" / "gravity-workflow"
+            self.assertEqual(_run_quiet(["--target", str(unmarked_target), "--skip-validate"]), 0)
+            self.assertTrue((unmarked_dir / "plugin.json").is_file())
 
     def test_init_workspace_preserves_existing_agents_md_even_with_plugin_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

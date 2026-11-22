@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "workflow",
+  "plugin_name": "gravity-workflow",
+  "role": "Harnais multi-agents, workflows orchestrateurs, garde-fous fail-closed, evals et /caveman",
+  "storage": {
+    "subdir": "workflow",
+    "env_override": "GRAVITY_WORKFLOW_HOME"
+  },
+  "commands": [
+    "/gravity-workflow",
+    "/caveman"
+  ],
+  "capabilities": [
+    "orchestrator-workflows",
+    "safety-hooks",
+    "evals",
+    "adaptive-routing"
+  ],
+  "ui": {
+    "mode": "transition-sidecar",
+    "target": "gravity"
+  },
+  "signals": {
+    "produces": [
+      "workflow-state",
+      "routing-profile"
+    ],
+    "consumes": [
+      "session-metrics"
+    ]
+  }
+}

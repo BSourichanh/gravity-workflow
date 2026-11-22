@@ -8,26 +8,27 @@ Gravity Workflow is implemented using **100% Python 3 standard library** across 
 
 ## Key Capabilities
 
-### 1. Plugin-First Architecture ([`gravity-workflow-plugin/`](gravity-workflow-plugin/))
-All runtime machinery lives in [`gravity-workflow-plugin/`](gravity-workflow-plugin/) and stays decoupled from target projects:
+### 1. Plugin-First Architecture ([`plugin/`](plugin/))
+All runtime machinery lives in [`plugin/`](plugin/) and stays decoupled from target projects:
 
+- **Module Contract ([`plugin/config/module.json`](plugin/config/module.json)):** Declares schema v1 metadata (`id: "workflow"`, `storage.subdir: "workflow"`, `env_override: "GRAVITY_WORKFLOW_HOME"`, `ui.mode: "transition-sidecar"`, `signals`) for discovery by [`gravity`](https://github.com/BSourichanh/gravity) Core (`../gravity`).
 - **Unified Interactive Skills (`/gravity-workflow` & `/caveman`)**:
-  - [`/gravity-workflow`](gravity-workflow-plugin/skills/gravity-workflow/SKILL.md) — Main unified entry point with 3 orthogonal axes: adaptive reflection mode (`/gravity-workflow low|medium|high|ultra|evo`, defaulting to `evo` at `medium`), workflow time strategy (`slow` default by responsibility vs `fast` time-optimized without reducing reflection), and workflow verification (`safe` default vs `unsafe` disabling workflow tests/reviews/formatting while keeping `PreToolUse` safety guards ON), plus pre-execution ambiguity scoping via `/grill-me` (`ask_question` / `/plan /grill-me`), `/gravity-workflow status`, `/gravity-workflow evals`, `/gravity-workflow init`, and 10 progressive reference guides in [`gravity-workflow-plugin/skills/gravity-workflow/references/`](gravity-workflow-plugin/skills/gravity-workflow/references/).
-  - [`/caveman`](gravity-workflow-plugin/skills/caveman/SKILL.md) — Companion conciseness skill (`/caveman [lite|full|ultra|off|auto]`, `commit`, `compress`, `status`) backed by [`gravity-workflow-plugin/observability/caveman_protocol.py`](gravity-workflow-plugin/observability/caveman_protocol.py) (defaults to `lite`, auto-adapted by `evo` between `lite` and `full` unless manually locked, propagated by ROI to `planner` [capped at `full`], `reviewer` [1-line independent], `builder` and `swarm`, with `evals/` strictly excluded and mandatory clear prose for security alerts, confirmations, and `/grill-me`).
+  - [`/gravity-workflow`](plugin/skills/gravity-workflow/SKILL.md) — Main unified entry point with 3 orthogonal axes: adaptive reflection mode (`/gravity-workflow low|medium|high|ultra|evo`, defaulting to `evo` at `medium`), workflow time strategy (`slow` default by responsibility vs `fast` time-optimized without reducing reflection), and workflow verification (`safe` default vs `unsafe` disabling workflow tests/reviews/formatting while keeping `PreToolUse` safety guards ON), plus pre-execution ambiguity scoping via `/grill-me` (`ask_question` / `/plan /grill-me`), `/gravity-workflow status`, `/gravity-workflow evals`, `/gravity-workflow init`, and 10 progressive reference guides in [`plugin/skills/gravity-workflow/references/`](plugin/skills/gravity-workflow/references/).
+  - [`/caveman`](plugin/skills/caveman/SKILL.md) — Companion conciseness skill (`/caveman [lite|full|ultra|off|auto]`, `commit`, `compress`, `status`) backed by [`plugin/observability/caveman_protocol.py`](plugin/observability/caveman_protocol.py) (defaults to `lite`, auto-adapted by `evo` between `lite` and `full` unless manually locked, propagated by ROI to `planner` [capped at `full`], `reviewer` [1-line independent], `builder` and `swarm`, with `evals/` strictly excluded and mandatory clear prose for security alerts, confirmations, and `/grill-me`).
 - **Role-Separated Subagents**:
-  - [`planner`](gravity-workflow-plugin/agents/planner.md) — Read-only architecture and task planner (`pro` model tier, sandboxed), surfacing blocking ambiguities before implementation.
-  - [`builder`](gravity-workflow-plugin/agents/builder.md) — Branch-isolated implementer (`flash` model tier, `workspace="branch"`).
-  - [`reviewer`](gravity-workflow-plugin/agents/reviewer.md) — Independent cold-audit reviewer (`pro` tier, read-only, `inheritMcp: false`) enforcing a strict "proof or silence" protocol (`BLOCKER` / `MAJOR` / `UNCERTAIN` / `NIT`).
-- **Fail-Closed Safety Hooks** ([`gravity-workflow-plugin/hooks.json`](gravity-workflow-plugin/hooks.json)):
-  - [`gravity-workflow-plugin/hooks/pre_tool_guard.py`](gravity-workflow-plugin/hooks/pre_tool_guard.py) (`PreToolUse`) — Evaluates shell commands (via quote-aware pipe-chain segmentation, PowerShell here-string support, argument-role awareness for search/Git literals, and recursive `deny`-focused inspection of `python -c`, `node`/`perl`/`ruby`, `sh`/`pwsh`/`cmd`, `xargs`, and `find -exec`), file reads/writes, MCP calls, and `run_workflow` scripts via [`gravity-workflow-plugin/hooks/safety_policy.py`](gravity-workflow-plugin/hooks/safety_policy.py), enforcing hard `deny` rules globally while scoping heuristic `force_ask` prompts strictly to Gravity Workflow-initialized workspaces and protecting the active installed plugin without self-locking the source tree.
-  - [`gravity-workflow-plugin/hooks/session_start_caveman.py`](gravity-workflow-plugin/hooks/session_start_caveman.py) (`SessionStart`), [`gravity-workflow-plugin/hooks/post_tool_format.py`](gravity-workflow-plugin/hooks/post_tool_format.py) (`PostToolUse`), and [`gravity-workflow-plugin/hooks/stop_session_logger.py`](gravity-workflow-plugin/hooks/stop_session_logger.py) (`Stop`) — One-time `SessionStart` Caveman injection in Gravity Workflow workspaces (preserving Gemini Context Caching), post-edit formatting checks, and session telemetry / `evo` adaptation logging, dynamically resolving the target workspace from `stdin`.
+  - [`planner`](plugin/agents/planner.md) — Read-only architecture and task planner (`pro` model tier, sandboxed), surfacing blocking ambiguities before implementation.
+  - [`builder`](plugin/agents/builder.md) — Branch-isolated implementer (`flash` model tier, `workspace="branch"`).
+  - [`reviewer`](plugin/agents/reviewer.md) — Independent cold-audit reviewer (`pro` tier, read-only, `inheritMcp: false`) enforcing a strict "proof or silence" protocol (`BLOCKER` / `MAJOR` / `UNCERTAIN` / `NIT`).
+- **Fail-Closed Safety Hooks** ([`plugin/hooks.json`](plugin/hooks.json)):
+  - [`plugin/hooks/pre_tool_guard.py`](plugin/hooks/pre_tool_guard.py) (`PreToolUse`) — Evaluates shell commands (via quote-aware pipe-chain segmentation, PowerShell here-string support, argument-role awareness for search/Git literals, and recursive `deny`-focused inspection of `python -c`, `node`/`perl`/`ruby`, `sh`/`pwsh`/`cmd`, `xargs`, and `find -exec`), file reads/writes, MCP calls, and `run_workflow` scripts via [`plugin/hooks/safety_policy.py`](plugin/hooks/safety_policy.py), enforcing hard `deny` rules globally while scoping heuristic `force_ask` prompts strictly to Gravity Workflow-initialized workspaces and protecting the active installed plugin without self-locking the source tree.
+  - [`plugin/hooks/session_start_caveman.py`](plugin/hooks/session_start_caveman.py) (`SessionStart`), [`plugin/hooks/post_tool_format.py`](plugin/hooks/post_tool_format.py) (`PostToolUse`), and [`plugin/hooks/stop_session_logger.py`](plugin/hooks/stop_session_logger.py) (`Stop`) — One-time `SessionStart` Caveman injection in Gravity Workflow workspaces (preserving Gemini Context Caching), post-edit formatting checks, and session telemetry / `evo` adaptation logging, dynamically resolving the target workspace from `stdin`.
 - **Automated Review & Parallel Evals**:
-  - [`gravity-workflow-plugin/workflows/review_pipeline.py`](gravity-workflow-plugin/workflows/review_pipeline.py) — End-to-end `plan -> isolated branch build -> independent review` loop with up to two targeted remediation rounds.
-  - [`gravity-workflow-plugin/evals/run_suite.py`](gravity-workflow-plugin/evals/run_suite.py) and [`gravity-workflow-plugin/evals/eval_checks.py`](gravity-workflow-plugin/evals/eval_checks.py) — Runs the 12-case starter suite in [`gravity-workflow-plugin/evals/cases.json`](gravity-workflow-plugin/evals/cases.json) using deterministic assertions followed by an independent judge.
+  - [`plugin/workflows/review_pipeline.py`](plugin/workflows/review_pipeline.py) — End-to-end `plan -> isolated branch build -> independent review` loop with up to two targeted remediation rounds.
+  - [`plugin/evals/run_suite.py`](plugin/evals/run_suite.py) and [`plugin/evals/eval_checks.py`](plugin/evals/eval_checks.py) — Runs the 12-case starter suite in [`plugin/evals/cases.json`](plugin/evals/cases.json) using deterministic assertions followed by an independent judge.
 - **Live Observability, Adaptive Profile & Strict Validation**:
-  - [`gravity-workflow-plugin/observability/profile_engine.py`](gravity-workflow-plugin/observability/profile_engine.py) and [`gravity-workflow-plugin/observability/caveman_protocol.py`](gravity-workflow-plugin/observability/caveman_protocol.py) — Deterministic 3-axis profile engine (`evo`/`low`/`medium`/`high`/`ultra` with ±1 tier/session cap and hysteresis, `slow`/`fast` workflow topology, `safe`/`unsafe` verification switch) plus automatic Caveman ROI adaptation (`lite`/`full` unless locked) evaluated on session `Stop` and powering model/workflow presets.
-  - [`gravity-workflow-plugin/observability/state_writer.py`](gravity-workflow-plugin/observability/state_writer.py), [`gravity-workflow-plugin/observability/statusline.py`](gravity-workflow-plugin/observability/statusline.py), and the HTTP/SSE sidecar [`gravity-workflow-plugin/sidecars/live-widget/server.py`](gravity-workflow-plugin/sidecars/live-widget/server.py) (configured in [`gravity-workflow-plugin/sidecars/live-widget/sidecar.json`](gravity-workflow-plugin/sidecars/live-widget/sidecar.json), default port `4789`).
-  - [`gravity-workflow-plugin/scripts/init_workspace.py`](gravity-workflow-plugin/scripts/init_workspace.py) (non-destructive project initialization in `full` or `quickstart` mode) and [`gravity-workflow-plugin/scripts/validate.py`](gravity-workflow-plugin/scripts/validate.py) (strict plugin and workspace validator).
+  - [`plugin/observability/profile_engine.py`](plugin/observability/profile_engine.py) and [`plugin/observability/caveman_protocol.py`](plugin/observability/caveman_protocol.py) — Deterministic 3-axis profile engine (`evo`/`low`/`medium`/`high`/`ultra` with ±1 tier/session cap and hysteresis, `slow`/`fast` workflow topology, `safe`/`unsafe` verification switch) plus automatic Caveman ROI adaptation (`lite`/`full` unless locked) evaluated on session `Stop` and powering model/workflow presets.
+  - [`plugin/observability/state_writer.py`](plugin/observability/state_writer.py), [`plugin/observability/statusline.py`](plugin/observability/statusline.py), and the HTTP/SSE transition sidecar [`plugin/sidecars/live-widget/server.py`](plugin/sidecars/live-widget/server.py) (configured in [`plugin/sidecars/live-widget/sidecar.json`](plugin/sidecars/live-widget/sidecar.json), default port `4789`, slated to converge into the unified `gravity` Core UI). Shared centralized storage resolves via `default_workflow_home()` (`$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/`).
+  - [`plugin/scripts/init_workspace.py`](plugin/scripts/init_workspace.py) (non-destructive project initialization in `full` or `quickstart` mode) and [`plugin/scripts/validate.py`](plugin/scripts/validate.py) (strict plugin, 9-field manifest + `config/module.json` v1, and workspace validator).
 
 ### 2. Minimal Project Footprint ([`workspace-template/`](workspace-template/))
 Initializing Gravity Workflow in a repository deploys only the 13 project-specific files exemplified in [`workspace-template/`](workspace-template/):
@@ -55,7 +56,7 @@ Session token, cache, and reliability metrics live in [`BSourichanh/gravity-metr
 ## Installation
 
 ### Prerequisites
-- **Python 3.8+** (standard library only — no `pip` install or Node.js build required)
+- **Python 3.10+** (standard library only — no `pip` install or Node.js build required)
 - **Google Antigravity** (App `v2.34.0+`, IDE extension, or `agy` CLI)
 
 ### Option 1 — Automated Installer (Recommended, Linux / macOS / Windows)
@@ -66,7 +67,7 @@ cd gravity-workflow
 python install.py
 ```
 
-[`install.py`](install.py) stages and copies [`gravity-workflow-plugin/`](gravity-workflow-plugin/) into `~/.gemini/config/plugins/gravity-workflow/` (using atomic `os.rename` with backup rollback, plus a two-phase transactional in-place upgrade fallback with rollback when a running process such as `sidecars/live-widget` locks the target directory on Windows), automatically removes a legacy `~/.gemini/config/plugins/gravity` copy installation unless `--keep-legacy` is passed, adapts `python3` references to `python` or `py -3` on Windows in the **installed copy** (leaving the repository untouched), sets executable bits on POSIX scripts, and runs strict validation before committing changes.
+[`install.py`](install.py) stages and copies [`plugin/`](plugin/) into `~/.gemini/config/plugins/gravity-workflow/` (using atomic `os.rename` with backup rollback, plus a two-phase transactional in-place upgrade fallback with rollback when a running process such as `sidecars/live-widget` locks the target directory on Windows), automatically removes a legacy `~/.gemini/config/plugins/gravity` v0.1.x workflow copy (only when it has no `config/module.json` `"id": "core"` AND shows legacy workflow markers — always leaving an installed [`gravity`](https://github.com/BSourichanh/gravity) Core plugin untouched) unless `--keep-legacy` is passed, adapts `python3` references to `python` or `py -3` on Windows in the **installed copy** (leaving the repository untouched), sets executable bits on POSIX scripts, and runs strict validation before committing changes.
 
 Common options:
 
@@ -92,24 +93,24 @@ python install.py --uninstall
 ### Option 2 — Antigravity CLI (`agy`)
 
 ```bash
-agy plugin validate ./gravity-workflow-plugin
-agy plugin install ./gravity-workflow-plugin
+agy plugin validate ./plugin --strict
+agy plugin install ./plugin
 ```
 
-You can also invoke this path through the installer via `python install.py --method agy`. On `agy v1.5+`, `agy plugin validate --strict ./gravity-workflow-plugin` is supported; on Windows without a real `python3` binary on `PATH`, run `python gravity-workflow-plugin/scripts/validate.py --plugin-root <installed-dir> --fix-python-cmd` against the installed copy if hook invocations fail.
+You can also invoke this path through the installer via `python install.py --method agy`. On `agy v1.5+`, `agy plugin validate ./plugin --strict` is supported; on Windows without a real `python3` binary on `PATH`, run `python plugin/scripts/validate.py --plugin-root <installed-dir> --fix-python-cmd` against the installed copy if hook invocations fail.
 
 ### Option 3 — Manual Installation (Antigravity App & IDE)
 
-Copy [`gravity-workflow-plugin/`](gravity-workflow-plugin/) into `~/.gemini/config/plugins/gravity-workflow/` (global scope) or `<target-project-dir>/.agents/plugins/gravity-workflow/` (workspace scope), then manage activation in **Customizations → Installed**. On Windows without `python3` on `PATH`, run:
+Copy [`plugin/`](plugin/) into `~/.gemini/config/plugins/gravity-workflow/` (global scope) or `<target-project-dir>/.agents/plugins/gravity-workflow/` (workspace scope), then manage activation in **Customizations → Installed**. On Windows without `python3` on `PATH`, run:
 
 ```bash
-python gravity-workflow-plugin/scripts/validate.py --plugin-root ~/.gemini/config/plugins/gravity-workflow --fix-python-cmd
+python plugin/scripts/validate.py --plugin-root ~/.gemini/config/plugins/gravity-workflow --fix-python-cmd
 ```
 
 ### After Installing
 
 1. Open any project in Antigravity and invoke `/gravity-workflow` (default `evo` at `medium`, `slow`, `safe`), `/gravity-workflow low|medium|high|ultra|evo [slow|fast] [safe|unsafe] <task>`, `/caveman [lite|full|ultra|off|auto]` (defaults to `lite`), `/gravity-workflow status`, or `/gravity-workflow evals` to start a session and initialize the minimal 13-file project footprint (or bootstrap via CLI with `init_workspace.py`).
-2. **Optional — Enable the Live Widget Sidecar (Antigravity App only):** Manually add the block below to `~/.gemini/config/config.json` (never let an agent edit `config.json` directly), then visit `http://127.0.0.1:4789` (health endpoint: `/health`):
+2. **Optional — Enable the Live Widget Transition Sidecar (Antigravity App only):** Manually add the block below to `~/.gemini/config/config.json` (never let an agent edit `config.json` directly), then visit `http://127.0.0.1:4789` (health endpoint: `/health`). *Transition note: this standalone HTTP/SSE widget (`ui.mode: "transition-sidecar"`) will converge into the unified `gravity` Core UI.*
 
 ```json
 {
@@ -121,12 +122,12 @@ python gravity-workflow-plugin/scripts/validate.py --plugin-root ~/.gemini/confi
 }
 ```
 
-See [`gravity-workflow-plugin/README.md`](gravity-workflow-plugin/README.md) for the plugin's full French documentation.
+See [`plugin/README.md`](plugin/README.md) for the plugin's full French documentation.
 
 ### Migrating from `v0.1.x` (`gravity`) to `v0.2.0` (`gravity-workflow`)
 
 `v0.2.0` removes all runtime legacy shims (`.agents/gravity/` is no longer recognized):
-1. **Plugin:** `python install.py` (`--method copy`) installs `~/.gemini/config/plugins/gravity-workflow/` and automatically removes `~/.gemini/config/plugins/gravity` unless `--keep-legacy` is passed. If you installed via CLI, run `agy plugin uninstall gravity` and `agy plugin install ./gravity-workflow-plugin`.
+1. **Plugin:** `python install.py` (`--method copy`) installs `~/.gemini/config/plugins/gravity-workflow/` and removes a legacy v0.1.x workflow `~/.gemini/config/plugins/gravity` unless `--keep-legacy` is passed (while preserving any [`gravity`](https://github.com/BSourichanh/gravity) Core plugin having `config/module.json` `"id": "core"`). If you installed via CLI, run `agy plugin uninstall gravity` (only for v0.1.x legacy) and `agy plugin install ./plugin`.
 2. **Registry & Workspace State:** Clean legacy `.agents/gravity/` and `~/.gravity/live_workspaces.json` via `python uninstall.py --clean-legacy --workspace-only --clean-workspace <target-project-dir>`, then re-initialize the project with `/gravity-workflow` or `init_workspace.py`.
 3. **App / CLI Configs:** Update `~/.gemini/config/config.json` (`gravity-workflow/live-widget`) and `~/.gemini/antigravity-cli/settings.json` (`~/.gemini/config/plugins/gravity-workflow/observability/statusline.py`).
 
@@ -134,7 +135,7 @@ See [`gravity-workflow-plugin/README.md`](gravity-workflow-plugin/README.md) for
 
 ## Uninstallation
 
-[`uninstall.py`](uninstall.py) safely removes the Gravity Workflow plugin, optional workspace runtime state (`.agents/gravity-workflow/`), and the global Live Widget registry (`~/.gemini/gravity-workflow/live_workspaces.json`) while refusing unsafe targets and preserving user-customized files (`python install.py --uninstall` also remains supported for plugin-only removal):
+[`uninstall.py`](uninstall.py) safely removes the Gravity Workflow plugin, optional workspace runtime state (`.agents/gravity-workflow/`), and the centralized Live Widget registry (`~/.gemini/gravity/workflow/live_workspaces.json`, resolved via `$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/`) while refusing unsafe targets, preserving any installed `gravity` Core plugin, and keeping user-customized files (`python install.py --uninstall` also remains supported for plugin-only removal):
 
 ```bash
 # Inspect plugin, workspace, registry, legacy artifacts, and manual config entries (read-only)
@@ -171,14 +172,14 @@ python uninstall.py --method agy
 
 | Path | Purpose |
 |---|---|
-| [`install.py`](install.py) | Cross-platform installer for `gravity-workflow-plugin/` with Windows adaptation, legacy cleanup, strict validation, and optional workspace bootstrapping |
-| [`uninstall.py`](uninstall.py) | Cross-platform uninstaller for `gravity-workflow-plugin/`, workspace `.agents/gravity-workflow/` cleanup, registry pruning, and `--clean-legacy` |
+| [`install.py`](install.py) | Cross-platform installer for `plugin/` with Windows adaptation, Core-safe legacy cleanup, strict validation, and optional workspace bootstrapping |
+| [`uninstall.py`](uninstall.py) | Cross-platform uninstaller for `plugin/`, workspace `.agents/gravity-workflow/` cleanup, centralized registry pruning, and `--clean-legacy` |
 | [`tests/test_install.py`](tests/test_install.py) | Unit tests for `install.py` |
 | [`tests/test_uninstall.py`](tests/test_uninstall.py) | Unit tests for `uninstall.py` |
-| [`gravity-workflow-plugin/`](gravity-workflow-plugin/) | Standalone Antigravity plugin ([manifest](gravity-workflow-plugin/plugin.json), skills, subagents, hooks, workflows, evals, observability, sidecar, scripts) |
-| [`workspace-template/`](workspace-template/) | Reference 13-file project workspace generated by [`gravity-workflow-plugin/scripts/init_workspace.py`](gravity-workflow-plugin/scripts/init_workspace.py) |
+| [`plugin/`](plugin/) | Standalone Antigravity plugin ([manifest](plugin/plugin.json), [module contract](plugin/config/module.json), skills, subagents, hooks, workflows, evals, observability, sidecar, scripts) |
+| [`workspace-template/`](workspace-template/) | Reference 13-file project workspace generated by [`plugin/scripts/init_workspace.py`](plugin/scripts/init_workspace.py) |
 | [`docs/`](docs/README.md) | Modular living documentation kept in sync with the codebase (French) |
-| [`AGENTS.md`](AGENTS.md) | Repository-level agent instructions and Python stdlib / living docs / integrity invariants |
+| [`AGENTS.md`](AGENTS.md) | Repository-level agent instructions and Python stdlib / KISS-YAGNI-DRY-SOLID-CUPID / living docs / integrity invariants |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release notes (`v0.2.0`) |
 | [`LICENSE`](LICENSE) | MIT License |
 
@@ -191,24 +192,24 @@ All commands below run from the repository root with Python 3 (standard library 
 ### 1. Validate the Plugin & Workspace Template
 
 ```bash
-python gravity-workflow-plugin/scripts/validate.py --strict
-python gravity-workflow-plugin/scripts/validate.py --workspace workspace-template --strict
-agy plugin validate ./gravity-workflow-plugin
+python plugin/scripts/validate.py --strict
+python plugin/scripts/validate.py --workspace workspace-template --strict
+agy plugin validate ./plugin --strict
 ```
 
 ### 2. Run the Unit Test Suites
 
 ```bash
-python gravity-workflow-plugin/scripts/test_unit.py
+python plugin/scripts/test_unit.py
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 ### 3. Bootstrap a Target Project Workspace via CLI
 
 ```bash
-python gravity-workflow-plugin/scripts/init_workspace.py --workspace <target-project-dir>
+python plugin/scripts/init_workspace.py --workspace <target-project-dir>
 # Or initialize the minimal quick-start baseline:
-python gravity-workflow-plugin/scripts/init_workspace.py --workspace <target-project-dir> --mode quickstart
+python plugin/scripts/init_workspace.py --workspace <target-project-dir> --mode quickstart
 # Validate the initialized workspace:
-python gravity-workflow-plugin/scripts/validate.py --workspace <target-project-dir> --strict
+python plugin/scripts/validate.py --workspace <target-project-dir> --strict
 ```

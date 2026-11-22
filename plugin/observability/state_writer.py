@@ -20,10 +20,34 @@ try:
 except ImportError:  # POSIX
     msvcrt = None  # type: ignore[assignment]
 
+def default_workflow_home() -> Path:
+    """Résout le dossier centralisé Gravity Workflow ($GRAVITY_WORKFLOW_HOME > $GRAVITY_HOME/workflow > ~/.gemini/gravity/workflow)."""
+    env_wf = os.environ.get("GRAVITY_WORKFLOW_HOME", "").strip()
+    if env_wf:
+        return Path(env_wf).expanduser().resolve()
+    env_gravity = os.environ.get("GRAVITY_HOME", "").strip()
+    if env_gravity:
+        return (Path(env_gravity).expanduser().resolve() / "workflow").resolve()
+    return (Path.home() / ".gemini" / "gravity" / "workflow").resolve()
+
+
 DEFAULT_STATE_PATH = Path(".agents/gravity-workflow/observability/live_state.json")
-REGISTRY_PATH = Path.home() / ".gemini" / "gravity-workflow" / "live_workspaces.json"
+_DEFAULT_REGISTRY_SENTINEL = default_workflow_home() / "live_workspaces.json"
+REGISTRY_PATH = _DEFAULT_REGISTRY_SENTINEL
 MAX_EVENTS = 50
 MAX_WORKSPACES = 20
+
+
+def resolve_registry_path(registry_path: Optional[Path] = None) -> Path:
+    """Résout live_workspaces.json via arg, monkeypatch REGISTRY_PATH, $GRAVITY_WORKFLOW_REGISTRY_PATH ou default_workflow_home()."""
+    if registry_path is not None:
+        return Path(registry_path).expanduser().resolve()
+    if REGISTRY_PATH is not None and REGISTRY_PATH != _DEFAULT_REGISTRY_SENTINEL:
+        return Path(REGISTRY_PATH).expanduser()
+    env_reg = os.environ.get("GRAVITY_WORKFLOW_REGISTRY_PATH", "").strip()
+    if env_reg:
+        return Path(env_reg).expanduser().resolve()
+    return (default_workflow_home() / "live_workspaces.json").resolve()
 
 LOCK_RETRIES = 50
 LOCK_RETRY_DELAY_S = 0.05
@@ -117,18 +141,19 @@ def _atomic_write_json(target: Path, payload: Dict[str, Any]) -> None:
 
 
 def _register_active_workspace(ws_root: Path, state_file: Path) -> None:
-    """Enregistre le workspace actif dans ~/.gemini/gravity-workflow/live_workspaces.json pour le Sidecar."""
+    """Enregistre le workspace actif dans live_workspaces.json pour le Sidecar."""
     if os.environ.get("GRAVITY_WORKFLOW_SKIP_REGISTRY") == "1":
         return
     try:
-        REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = REGISTRY_PATH.with_suffix(".lock")
+        reg_path = resolve_registry_path()
+        reg_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = reg_path.with_suffix(".lock")
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         with exclusive_file_lock(lock_path):
             entries: List[Dict[str, str]] = []
-            if REGISTRY_PATH.is_file():
+            if reg_path.is_file():
                 try:
-                    raw = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+                    raw = json.loads(reg_path.read_text(encoding="utf-8"))
                     if isinstance(raw, dict) and isinstance(raw.get("workspaces"), list):
                         entries = [
                             e
@@ -148,7 +173,7 @@ def _register_active_workspace(ws_root: Path, state_file: Path) -> None:
                     "updated_at": now_iso,
                 },
             )
-            _atomic_write_json(REGISTRY_PATH, {"workspaces": filtered[:MAX_WORKSPACES]})
+            _atomic_write_json(reg_path, {"workspaces": filtered[:MAX_WORKSPACES]})
     except Exception:
         pass
 

@@ -2,8 +2,10 @@
 """Suite de tests unitaires interne Gravity (100 % bibliothèque standard Python 3)."""
 
 import base64
+import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,7 +25,17 @@ import init_workspace  # noqa: E402
 import profile_engine  # noqa: E402
 import safety_policy  # noqa: E402
 import state_writer  # noqa: E402
+from validators import Report, plugin_validator, validate_plugin  # noqa: E402
 from validators.base import parse_frontmatter  # noqa: E402
+
+
+def _load_live_widget_server():
+    server_path = PLUGIN_ROOT / "sidecars/live-widget/server.py"
+    spec = importlib.util.spec_from_file_location("live_widget_server", server_path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 class TestEvalChecks(unittest.TestCase):
@@ -168,6 +180,168 @@ class TestStateWriter(unittest.TestCase):
             else:
                 os.environ["GRAVITY_WORKFLOW_SKIP_REGISTRY"] = prev_skip
 
+    def test_centralized_storage_precedence_and_monkeypatch_compat(self) -> None:
+        server = _load_live_widget_server()
+        env_keys = (
+            "GRAVITY_WORKFLOW_HOME",
+            "GRAVITY_HOME",
+            "GRAVITY_WORKFLOW_REGISTRY_PATH",
+            "GRAVITY_WORKFLOW_SKIP_REGISTRY",
+        )
+        saved_env = {k: os.environ.get(k) for k in env_keys}
+        try:
+            for k in env_keys:
+                os.environ.pop(k, None)
+
+            with tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                fake_home = base / "fake_home"
+                gravity_home = base / "gravity_home"
+                wf_home = base / "wf_home"
+                explicit_reg = base / "explicit" / "live_workspaces.json"
+
+                with mock.patch("pathlib.Path.home", return_value=fake_home):
+                    self.assertEqual(
+                        state_writer.default_workflow_home(),
+                        (fake_home / ".gemini" / "gravity" / "workflow").resolve(),
+                    )
+                    self.assertEqual(
+                        state_writer.resolve_registry_path(),
+                        (fake_home / ".gemini" / "gravity" / "workflow" / "live_workspaces.json").resolve(),
+                    )
+                    self.assertEqual(server.default_workflow_home(), state_writer.default_workflow_home())
+                    self.assertEqual(server.resolve_registry_path(), state_writer.resolve_registry_path())
+
+                    os.environ["GRAVITY_HOME"] = str(gravity_home)
+                    self.assertEqual(
+                        state_writer.default_workflow_home(),
+                        (gravity_home / "workflow").resolve(),
+                    )
+                    self.assertEqual(
+                        server.resolve_registry_path(),
+                        (gravity_home / "workflow" / "live_workspaces.json").resolve(),
+                    )
+
+                    os.environ["GRAVITY_WORKFLOW_HOME"] = str(wf_home)
+                    self.assertEqual(state_writer.default_workflow_home(), wf_home.resolve())
+                    self.assertEqual(
+                        state_writer.resolve_registry_path(),
+                        (wf_home / "live_workspaces.json").resolve(),
+                    )
+                    self.assertEqual(
+                        server.resolve_registry_path(),
+                        (wf_home / "live_workspaces.json").resolve(),
+                    )
+
+                    ws = base / "ws"
+                    ws.mkdir()
+                    state_file = ws / ".agents/gravity-workflow/observability/live_state.json"
+                    state_writer.update_live_state(
+                        stage="testing",
+                        state_path=state_file,
+                        workspace_root=ws,
+                    )
+                    reg_file = wf_home / "live_workspaces.json"
+                    self.assertTrue(reg_file.is_file())
+                    registered = server._load_registered_workspaces()
+                    self.assertEqual(len(registered), 1)
+                    self.assertEqual(Path(registered[0]["state_path"]).resolve(), state_file.resolve())
+
+                    # Explicit REGISTRY_PATH monkeypatch remains supported in both state_writer and server
+                    patched_reg = base / "patched" / "live_workspaces.json"
+                    with mock.patch.object(state_writer, "REGISTRY_PATH", patched_reg):
+                        self.assertEqual(state_writer.resolve_registry_path(), patched_reg)
+                        self.assertEqual(server.resolve_registry_path(), patched_reg)
+                        state_writer.update_live_state(
+                            stage="patched",
+                            state_path=state_file,
+                            workspace_root=ws,
+                        )
+                        self.assertTrue(patched_reg.is_file())
+
+                    server_reg = base / "server_only" / "live_workspaces.json"
+                    with mock.patch.object(server, "REGISTRY_PATH", server_reg):
+                        self.assertEqual(server.resolve_registry_path(), server_reg)
+
+                    os.environ["GRAVITY_WORKFLOW_REGISTRY_PATH"] = str(explicit_reg)
+                    self.assertEqual(state_writer.resolve_registry_path(), explicit_reg.resolve())
+        finally:
+            for k, val in saved_env.items():
+                if val is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = val
+
+
+class TestPluginValidator(unittest.TestCase):
+    def _build_minimal_plugin(self, root: Path) -> None:
+        shutil.copytree(
+            PLUGIN_ROOT,
+            root,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+        )
+
+    def test_rejects_extra_manifest_keys_bom_and_invalid_module_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp) / "plugin"
+            self._build_minimal_plugin(plugin_dir)
+
+            with mock.patch.object(plugin_validator, "run_hook_dry_runs"):
+                # 1. Valid baseline with optional disabled=True
+                manifest_path = plugin_dir / "plugin.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["disabled"] = False
+                manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+                rep_ok = Report()
+                validate_plugin(plugin_dir, rep_ok)
+                self.assertTrue(rep_ok.ok(strict=True), f"Erreurs inattendues: {rep_ok.errors} {rep_ok.warnings}")
+
+                # 2. Reject forbidden legacy keys ($schema, license, keywords)
+                for bad_key in ("$schema", "license", "keywords"):
+                    bad_manifest = dict(manifest)
+                    bad_manifest[bad_key] = "bad"
+                    manifest_path.write_text(json.dumps(bad_manifest) + "\n", encoding="utf-8")
+                    rep_bad_key = Report()
+                    validate_plugin(plugin_dir, rep_bad_key)
+                    self.assertFalse(rep_bad_key.ok(strict=True), f"Devrait rejeter la clé {bad_key}")
+
+                # 3. Reject missing official field
+                missing_repo = dict(manifest)
+                missing_repo.pop("repository", None)
+                manifest_path.write_text(json.dumps(missing_repo) + "\n", encoding="utf-8")
+                rep_missing = Report()
+                validate_plugin(plugin_dir, rep_missing)
+                self.assertFalse(rep_missing.ok(strict=True))
+
+                # 4. Reject UTF-8 BOM in plugin.json
+                manifest_path.write_bytes(b"\xef\xbb\xbf" + json.dumps(manifest).encode("utf-8"))
+                rep_bom = Report()
+                validate_plugin(plugin_dir, rep_bom)
+                self.assertFalse(rep_bom.ok(strict=True))
+                manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+                # 5. Validate config/module.json v1
+                module_path = plugin_dir / "config" / "module.json"
+                module_data = json.loads(module_path.read_text(encoding="utf-8"))
+                bad_mod = dict(module_data)
+                bad_mod["schema_version"] = 2
+                module_path.write_text(json.dumps(bad_mod) + "\n", encoding="utf-8")
+                rep_sv = Report()
+                validate_plugin(plugin_dir, rep_sv)
+                self.assertFalse(rep_sv.ok(strict=True))
+
+                bad_name = dict(module_data)
+                bad_name["plugin_name"] = "wrong-plugin"
+                module_path.write_text(json.dumps(bad_name) + "\n", encoding="utf-8")
+                rep_name = Report()
+                validate_plugin(plugin_dir, rep_name)
+                self.assertFalse(rep_name.ok(strict=True))
+
+                module_path.unlink()
+                rep_no_mod = Report()
+                validate_plugin(plugin_dir, rep_no_mod)
+                self.assertFalse(rep_no_mod.ok(strict=True))
+
 
 class TestFrontmatterParser(unittest.TestCase):
     def test_scalars_blocks_and_lists(self) -> None:
@@ -293,9 +467,9 @@ class TestSafetyPolicy(unittest.TestCase):
 
     def test_scoped_hooks_protection_and_hardening(self) -> None:
         for allowed_target in (
-            "gravity-metrics-plugin/hooks/hook_runtime.py",
-            "gravity-metrics-plugin/hooks/pre_invocation_metrics.py",
-            "gravity-metrics-plugin/hooks.json",
+            "gravity-metrics/plugin/hooks/hook_runtime.py",
+            "gravity-metrics/plugin/hooks/pre_invocation_metrics.py",
+            "gravity-metrics/plugin/hooks.json",
             "src/hooks/useAuth.ts",
         ):
             dec, reason = safety_policy.evaluate_tool_call(
@@ -425,18 +599,18 @@ class TestSafetyPolicy(unittest.TestCase):
             (installed_hooks / "safety_policy.py").write_text("# installed\n", encoding="utf-8")
 
             source_repo = base / "src_gravity"
-            source_hooks = source_repo / "gravity-workflow-plugin" / "hooks"
+            source_hooks = source_repo / "plugin" / "hooks"
             source_hooks.mkdir(parents=True)
-            (source_repo / "gravity-workflow-plugin" / "hooks.json").write_text("{}", encoding="utf-8")
+            (source_repo / "plugin" / "hooks.json").write_text("{}", encoding="utf-8")
             (source_hooks / "safety_policy.py").write_text("# source\n", encoding="utf-8")
 
             with mock.patch.object(safety_policy, "HOOKS_DIR", installed_hooks):
-                # Édition du dépôt source gravity-workflow-plugin/ autorisée (pas d'auto-verrouillage)
+                # Édition du dépôt source plugin/ autorisée (pas d'auto-verrouillage)
                 for src_path in (
                     str(source_hooks / "safety_policy.py"),
-                    str(source_repo / "gravity-workflow-plugin" / "hooks.json"),
-                    "gravity-workflow-plugin/hooks/safety_policy.py",
-                    "gravity-workflow-plugin/hooks.json",
+                    str(source_repo / "plugin" / "hooks.json"),
+                    "plugin/hooks/safety_policy.py",
+                    "plugin/hooks.json",
                 ):
                     dec, reason = safety_policy.evaluate_tool_call(
                         {"toolCall": {"name": "edit_file", "args": {"Path": src_path}}},
@@ -604,10 +778,10 @@ class TestSafetyPolicy(unittest.TestCase):
                 "bash scripts/build.sh; git -C repo status",
                 'node build.js; grep -E "TODO" README.md',
                 "git push origin dev; rm -f /tmp/cache",
-                'git -C "d:\\Work\\repo" diff -- gravity-workflow-plugin/hooks/stop_session_logger.py',
-                "python scripts/sync_tracking.py; git diff -- gravity-workflow-plugin/hooks/safety_policy.py",
-                "Get-Content gravity-workflow-plugin/hooks/safety_policy.py",
-                "git diff -- gravity-workflow-plugin/hooks/safety_policy.py 2>&1",
+                'git -C "d:\\Work\\repo" diff -- plugin/hooks/stop_session_logger.py',
+                "python scripts/sync_tracking.py; git diff -- plugin/hooks/safety_policy.py",
+                "Get-Content plugin/hooks/safety_policy.py",
+                "git diff -- plugin/hooks/safety_policy.py 2>&1",
                 # Inline Python, shells et interpréteurs bénins -> allow
                 'python -c "print(1)"',
                 'python.exe -c "print(1)"',
@@ -643,7 +817,7 @@ class TestSafetyPolicy(unittest.TestCase):
                 'git grep "Invoke-Expression"',
                 'git grep "eval"',
                 'git grep "FromBase64String"',
-                'rg -n "\\.env" gravity-workflow-plugin/',
+                'rg -n "\\.env" plugin/',
                 'Select-String -Pattern "\\.env" -Path README.md',
                 'grep ".*" README.md',
                 'echo "never run DROP DATABASE"',

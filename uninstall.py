@@ -21,8 +21,20 @@ PLUGIN_NAME = install.PLUGIN_NAME
 LEGACY_PLUGIN_NAME = install.LEGACY_PLUGIN_NAME
 PLUGIN_SOURCE = install.PLUGIN_SOURCE
 WORKSPACE_TEMPLATE_DIR = REPO_ROOT / "workspace-template"
-DEFAULT_REGISTRY_PATH = Path.home() / ".gemini" / "gravity-workflow" / "live_workspaces.json"
+
+_OBS_DIR = PLUGIN_SOURCE / "observability"
+if str(_OBS_DIR) not in sys.path:
+    sys.path.insert(0, str(_OBS_DIR))
+
+import state_writer  # noqa: E402
+
+DEFAULT_REGISTRY_PATH = state_writer.default_workflow_home() / "live_workspaces.json"
 LEGACY_REGISTRY_PATH = Path.home() / ".gravity" / "live_workspaces.json"
+
+
+def default_workflow_home() -> Path:
+    """Resolve centralized Gravity Workflow storage ($GRAVITY_WORKFLOW_HOME > $GRAVITY_HOME/workflow > ~/.gemini/gravity/workflow)."""
+    return state_writer.default_workflow_home()
 
 
 def is_unsafe_workspace_target(ws_dir: Path) -> Optional[str]:
@@ -41,7 +53,7 @@ def is_unsafe_workspace_target(ws_dir: Path) -> Optional[str]:
 
 
 def _load_canonical_templates() -> Dict[str, str]:
-    """Load canonical starter file contents from gravity-workflow-plugin/scripts/init_workspace.py."""
+    """Load canonical starter file contents from plugin/scripts/init_workspace.py."""
     init_path = PLUGIN_SOURCE / "scripts" / "init_workspace.py"
     spec = importlib.util.spec_from_file_location("gravity_workflow_init_workspace_tpl", init_path)
     if spec is None or spec.loader is None:
@@ -60,13 +72,8 @@ def _load_canonical_templates() -> Dict[str, str]:
 
 
 def resolve_registry_path(registry_path: Optional[Path] = None) -> Path:
-    """Resolve the Live Widget workspace registry path (~/.gemini/gravity-workflow/live_workspaces.json)."""
-    if registry_path is not None:
-        return Path(registry_path).expanduser().resolve()
-    env_reg = os.environ.get("GRAVITY_WORKFLOW_REGISTRY_PATH", "").strip()
-    if env_reg:
-        return Path(env_reg).expanduser().resolve()
-    return (Path.home() / ".gemini" / "gravity-workflow" / "live_workspaces.json").resolve()
+    """Resolve the Live Widget workspace registry path (~/.gemini/gravity/workflow/live_workspaces.json)."""
+    return state_writer.resolve_registry_path(registry_path).expanduser().resolve()
 
 
 def resolve_legacy_registry_path(legacy_registry_path: Optional[Path] = None) -> Path:
@@ -149,7 +156,7 @@ def prune_workspace_from_registry(
     registry_path: Optional[Path] = None,
     dry_run: bool = False,
 ) -> bool:
-    """Remove ws_dir entries from ~/.gemini/gravity-workflow/live_workspaces.json without deleting others."""
+    """Remove ws_dir entries from ~/.gemini/gravity/workflow/live_workspaces.json without deleting others."""
     reg_path = resolve_registry_path(registry_path)
     if not reg_path.is_file():
         return False
@@ -212,7 +219,7 @@ def clean_registry(
     registry_path: Optional[Path] = None,
     dry_run: bool = False,
 ) -> int:
-    """Safely remove the global Live Widget workspace registry (~/.gemini/gravity-workflow/live_workspaces.json)."""
+    """Safely remove the global Live Widget workspace registry (~/.gemini/gravity/workflow/live_workspaces.json)."""
     reg_path = resolve_registry_path(registry_path)
     lock_path = reg_path.with_suffix(".lock")
     exists = (
@@ -253,13 +260,15 @@ def clean_legacy_artifacts(
         if unsafe_reason:
             print(f"[ERROR] {unsafe_reason}", file=sys.stderr)
             return 1
-        if not install.is_legacy_gravity_plugin_dir(legacy_dir):
+        if install.is_core_gravity_plugin_dir(legacy_dir):
+            print(f"[INFO]  Preserving Gravity Core plugin at {legacy_dir}")
+        elif not install.is_legacy_gravity_plugin_dir(legacy_dir):
             print(
                 f"[ERROR] Refusing to remove non-legacy-Gravity directory: {legacy_dir}",
                 file=sys.stderr,
             )
             return 1
-        if dry_run:
+        elif dry_run:
             print(f"[DRY-RUN] Remove legacy Gravity plugin directory: {legacy_dir}")
         else:
             install._remove_tree_or_symlink(legacy_dir)
@@ -316,7 +325,9 @@ def clean_workspace(
 
     legacy_ws_plugin_dir = resolved_ws / ".agents" / "plugins" / LEGACY_PLUGIN_NAME
     if clean_legacy and (legacy_ws_plugin_dir.exists() or legacy_ws_plugin_dir.is_symlink()):
-        if not install.is_legacy_gravity_plugin_dir(legacy_ws_plugin_dir):
+        if not install.is_core_gravity_plugin_dir(
+            legacy_ws_plugin_dir
+        ) and not install.is_legacy_gravity_plugin_dir(legacy_ws_plugin_dir):
             print(
                 f"[ERROR] Refusing to remove non-legacy-Gravity directory: {legacy_ws_plugin_dir}",
                 file=sys.stderr,
@@ -358,7 +369,10 @@ def clean_workspace(
             )
 
     if legacy_ws_plugin_dir.exists() or legacy_ws_plugin_dir.is_symlink():
-        if clean_legacy:
+        if install.is_core_gravity_plugin_dir(legacy_ws_plugin_dir):
+            if clean_legacy:
+                print(f"[INFO]  Preserving Gravity Core workspace plugin at {legacy_ws_plugin_dir}")
+        elif clean_legacy:
             changed = True
             if dry_run:
                 print(f"[DRY-RUN] Remove legacy workspace Gravity plugin: {legacy_ws_plugin_dir}")
@@ -444,6 +458,10 @@ def check_uninstall_status(
             leg_manifest = install.read_plugin_manifest(legacy_dir) or {}
             leg_ver = leg_manifest.get("version", "unknown")
             print(f"  Legacy plugin    : present at {legacy_dir} (v{leg_ver})")
+        elif install.is_core_gravity_plugin_dir(legacy_dir):
+            core_manifest = install.read_plugin_manifest(legacy_dir) or {}
+            core_ver = core_manifest.get("version", "unknown")
+            print(f"  Core plugin      : present at {legacy_dir} (v{core_ver}, preserved)")
 
     reg_path = resolve_registry_path(registry_path)
     if reg_path.is_file():
@@ -569,7 +587,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--clean-registry",
         action="store_true",
-        help="Remove ~/.gemini/gravity-workflow/live_workspaces.json (and empty parent directory).",
+        help="Remove ~/.gemini/gravity/workflow/live_workspaces.json (and empty parent directory).",
     )
     parser.add_argument(
         "--clean-legacy",

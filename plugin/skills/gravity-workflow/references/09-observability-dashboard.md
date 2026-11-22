@@ -1,16 +1,16 @@
 # Tableau de bord & Observabilité (Bonus)
 
 ## Objectif
-Exploiter les 4 surfaces complémentaires de suivi fournies par `gravity-workflow-plugin/` pour offrir une visibilité temps réel et à la demande sur l'équipe d'agents, la santé des règles et les garde-fous du projet.
+Exploiter les 4 surfaces complémentaires de suivi fournies par `plugin/` pour offrir une visibilité temps réel et à la demande sur l'équipe d'agents, la santé des règles et les garde-fous du projet.
 
 ## Les 4 surfaces d'observabilité Gravity Workflow
 
 | Surface | Environnement | Rôle & source de données |
 | :--- | :--- | :--- |
 | **Micro-carte** (3 lignes) | App & CLI (`agy`) | Affichée automatiquement à chaque appel `/gravity-workflow` depuis `.agents/gravity-workflow/PROGRESS.md` et `.agents/gravity-workflow/profile.json` (mode/palier, stratégie `slow`/`fast`, vérification `safe`/`unsafe`, niveau `Caveman` et motif `evo`). |
-| **Live Widget (Sidecar)** | **Antigravity App uniquement** (`http://127.0.0.1:4789`) | Serveur SSE Python stdlib anti-XSS (`sidecars/live-widget/server.py`, `daemon_threads=True`) affichant les 3 axes actifs (`mode`, `pace`, `verification`) ainsi que `caveman` (`auto`/`[lock]`), et découvrant les workspaces via `~/.gemini/gravity-workflow/live_workspaces.json` alimenté atomiquement par `state_writer.py`. |
+| **Live Widget (Sidecar)** | **Antigravity App uniquement** (`http://127.0.0.1:4789`, transition) | Serveur SSE Python stdlib anti-XSS (`sidecars/live-widget/server.py`, `daemon_threads=True`) affichant les 3 axes actifs (`mode`, `pace`, `verification`) ainsi que `caveman` (`auto`/`[lock]`), et découvrant les workspaces via `~/.gemini/gravity/workflow/live_workspaces.json` (`$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow`) alimenté atomiquement par `state_writer.py`. *(Surface transitoire appelée à converger dans l'UI unifiée du plugin Core `gravity`.)* |
 | **`/gravity-workflow status`** | App (artifact `generative_ui`) / CLI (Markdown) | Photo à la demande en 4 blocs : avancement, mode/palier, axes `pace`/`verification` & `caveman`, santé des règles, métriques d'évaluations, recommandations (en App, lire la skill `generative_ui` et émettre un artifact HTML + `<agent-embed>`). |
-| **`/statusline`** | **CLI `agy` uniquement** | Barre persistante générée par `gravity-workflow-plugin/observability/statusline.py` lisant le payload JSON `stdin` d'Antigravity (`model`, `effort`, `context_window`, `quota`, `sandbox`, `cost`, `workspace.project_dir`) + `.agents/gravity-workflow/PROGRESS.md`, `profile.json` (`evo:medium/slow/safe · caveman:lite` ou `high[lock]/fast/unsafe · caveman:full[lock]`) et `evals/report.json`. |
+| **`/statusline`** | **CLI `agy` uniquement** | Barre persistante générée par `plugin/observability/statusline.py` lisant le payload JSON `stdin` d'Antigravity (`model`, `effort`, `context_window`, `quota`, `sandbox`, `cost`, `workspace.project_dir`) + `.agents/gravity-workflow/PROGRESS.md`, `profile.json` (`evo:medium/slow/safe · caveman:lite` ou `high[lock]/fast/unsafe · caveman:full[lock]`) et `evals/report.json`. |
 
 ## Activation du Sidecar Live Widget (Antigravity App)
 Un sidecar est **global à l'application** et n'accepte pas de variables d'éditeur type `${workspaceFolder}`. L'utilisateur l'active une fois dans `~/.gemini/config/config.json` (ne jamais demander à un agent d'éditer ce fichier) :
@@ -38,9 +38,9 @@ Configurer dans `~/.gemini/antigravity-cli/settings.json` en pointant vers le sc
 ```
 
 ## Composants & état projet
-1. `gravity-workflow-plugin/observability/state_writer.py` (écrivain atomique avec verrou portable `exclusive_file_lock` + registre `~/.gemini/gravity-workflow/live_workspaces.json`), `gravity-workflow-plugin/observability/profile_engine.py` et `.agents/gravity-workflow/{profile.json, observability/live_state.json}` initialisés dans le projet.
-2. `gravity-workflow-plugin/skills/gravity-workflow/SKILL.md` (procédure `/gravity-workflow status`).
-3. `gravity-workflow-plugin/observability/statusline.py` exécutable (`chmod 0755` sous POSIX, lecture JSON `stdin` + badge mode/palier + `exit 0` garanti).
+1. `plugin/observability/state_writer.py` (écrivain atomique avec verrou portable `exclusive_file_lock` + registre `~/.gemini/gravity/workflow/live_workspaces.json`), `plugin/observability/profile_engine.py` et `.agents/gravity-workflow/{profile.json, observability/live_state.json}` initialisés dans le projet.
+2. `plugin/skills/gravity-workflow/SKILL.md` (procédure `/gravity-workflow status`).
+3. `plugin/observability/statusline.py` exécutable (`chmod 0755` sous POSIX, lecture JSON `stdin` + badge mode/palier + `exit 0` garanti).
 
 ## Checkpoint déterministe & validation finale
 1. Vérifier la sortie de `python3 <plugin_root>/observability/statusline.py` (avec et sans JSON `stdin`).

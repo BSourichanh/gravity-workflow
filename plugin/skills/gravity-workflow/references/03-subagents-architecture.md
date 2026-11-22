@@ -1,7 +1,7 @@
 # Équipe & Reviewer indépendant (Modèles Gemini & Sous-agents)
 
 ## Objectif
-Exploiter l'équipe de sous-agents spécialisés embarquée dans `gravity-workflow-plugin/agents/` aux permissions minimales (principe du moindre privilège), choisir les modèles et niveaux d'effort adaptés à chaque rôle, et instituer une revue indépendante à froid sans biais de complaisance (sans historique de conversation).
+Exploiter l'équipe de sous-agents spécialisés embarquée dans `plugin/agents/` aux permissions minimales (principe du moindre privilège), choisir les modèles et niveaux d'effort adaptés à chaque rôle, et instituer une revue indépendante à froid sans biais de complaisance (sans historique de conversation).
 
 ## Catalogue modèles Antigravity & stratégie Gemini (2026)
 
@@ -22,7 +22,7 @@ Exploiter l'équipe de sous-agents spécialisés embarquée dans `gravity-workfl
 - **Coût du raisonnement (`/effort`, `--effort`) & cache :** les tokens de *thinking* sont facturés au tarif **`output`** (~5× l'input). Utilise `low`/`medium` pour les exécutions bornées et evals de routine, et réserve `high`/`xhigh` à la planification complexe ou aux revues bloquantes.
 - **Vérification cross-model :** dans `/swarm`, demande explicitement d'épingler `@verifier` sur un autre modèle que les workers (ex. workers sur `Hydrogen`/`3.8 Flash`, vérifieur sur `Neon` ou `Claude Opus 5.5`).
 
-## Conception des sous-agents du plugin (`gravity-workflow-plugin/agents/<role>.md`)
+## Conception des sous-agents du plugin (`plugin/agents/<role>.md`)
 Les 3 sous-agents (`planner`, `builder`, `reviewer`) sont fournis par le plugin (sans dupliquer `.agents/agents/` dans le projet cible, sauf si le projet souhaite surcharger un agent localement). Chaque sous-agent utilise un frontmatter YAML précisant :
 - `name` et `description` claire du périmètre.
 - `model`: **`pro`** (ou `inherit` sur Free/Plus) pour la planification (`planner.md`) et l'audit critique (`reviewer.md`) — en cohérence avec le mode natif `Orchestrator` — ; **`flash`** pour l'exécution en branche isolée (`builder.md`) ; **`flash_lite`** pour les tris haute volumétrie.
@@ -32,7 +32,7 @@ Les 3 sous-agents (`planner`, `builder`, `reviewer`) sont fournis par le plugin 
 - `tools`: allowlist stricte limitée aux outils réellement nécessaires.
   > **Avertissement Antigravity (`docs/subagents.md`) :** un nom d'outil mal orthographié ou inexistant dans `tools:` peut faire geler le sous-agent à l'exécution. Vérifie les noms exacts supportés par ta surface (`view_file`, `read_file`, `grep_search`, `find_by_name`, `list_dir`, `write_to_file`, `write_file`, `replace_file_content`, `edit_file`, `multi_replace_file_content`, `run_command`, `send_message`).
 
-## Le Reviewer indépendant (`gravity-workflow-plugin/agents/reviewer.md`)
+## Le Reviewer indépendant (`plugin/agents/reviewer.md`)
 L'auditeur inspecte le livrable **sans aucun historique de conversation**, uniquement à partir des fichiers produits et du `git diff` transmis explicitement par le workflow ou l'appelant (le Reviewer n'ayant pas d'outil shell).
 - **Outils autorisés (lecture seule uniquement)** : `view_file`, `read_file`, `grep_search`, `find_by_name`, `list_dir`, `send_message`. Aucun outil d'écriture (`write_to_file`, `write_file`, `replace_file_content`, `edit_file`, `multi_replace_file_content`), d'exécution shell (`run_command`, `execute_command`, `bash`, `shell`) ni `run_workflow`.
 - **Modèle** : `model: pro` (repli `inherit` sur Free/Plus).

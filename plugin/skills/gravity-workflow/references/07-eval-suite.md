@@ -12,7 +12,7 @@ Tableau JSON à la racine où chaque objet contient :
 - `auto_checks` : liste de prédicats déterministes évalués sans LLM dans le worktree réel (`workspace_path`) du candidat (`file_exists(...)`, `not_exists(...)`, `json_valid(...)`, `schema_contains(...)`, `file_contains(...)`, `not_contains(...)`, `python_syntax_valid(...)`, `rule_frontmatter_valid(...)`, `agent_frontmatter_readonly(...)`, `expect_refusal()`).
 - `manual_checks` : liste de critères qualitatifs humains préfixés par `[manual]`.
 
-## Architecture à double filtre (`gravity-workflow-plugin/evals/eval_checks.py` + `run_suite.py`)
+## Architecture à double filtre (`plugin/evals/eval_checks.py` + `run_suite.py`)
 Exécutée par l'agent via `/gravity-workflow evals` qui appelle l'outil **`run_workflow(ScriptPath="<plugin_root>/evals/run_suite.py", Description="...")`** (tous plans ; `Args` optionnels : `candidate_model`, `judge_model`, `level`, `case_ids` ; par défaut alignés sur `profile_engine.get_active_preset`) :
 1. **Candidats isolés (`type_name="builder"`, `model=candidate_model`, défaut issu du palier actif)** : exécution via `await parallel(cases, evaluate_case)` avec **capture d'exception `try/except` par cas** (évite qu'un échec isolé n'annule tout le lot dans `parallel()`). Chaque candidat utilise un agent multi-tour (`cand = agent(..., workspace="branch")`) maintenu vivant dans un bloc `finally: del cand` jusqu'après l'audit, afin que son worktree ne soit pas nettoyé prématurément.
 2. **Pré-filtre Python déterministe (`eval_checks.run_deterministic_checks`)** : évaluation sûre par AST whitelist (sans `eval()`) sur le `workspace_path` réel du candidat. Tout échec rejette immédiatement le cas à **0 token de juge**. Module pur importable sans `run_workflow` pour tests unitaires.
@@ -22,10 +22,10 @@ Exécutée par l'agent via `/gravity-workflow evals` qui appelle l'outil **`run_
 > **Quotas & CI/CD :** 12 cas parallèles lancent jusqu'à 24 sessions d'agents (attention aux fenêtres de quota 5h/hebdo ; filtrer avec `Args={"case_ids": [...]}` en développement et préférer `effort` modéré). Pour l'automatisation CI headless sans UI, combiner avec **`agy -p --json-schema <schema> --output-format json`** ou le **SDK Python Antigravity**.
 
 ## Composants & livrables
-1. `.agents/gravity-workflow/evals/cases.json` dans le projet (initialisé depuis `gravity-workflow-plugin/evals/cases.json`).
-2. `gravity-workflow-plugin/evals/eval_checks.py` (prédicats AST whitelist et rendu Markdown 100 % stdlib).
-3. `gravity-workflow-plugin/evals/run_suite.py` (orchestrateur `run_workflow` 100 % stdlib Python 3).
-4. `gravity-workflow-plugin/skills/gravity-workflow/SKILL.md` (commande `/gravity-workflow evals` appelant directement l'outil `run_workflow`).
+1. `.agents/gravity-workflow/evals/cases.json` dans le projet (initialisé depuis `plugin/evals/cases.json`).
+2. `plugin/evals/eval_checks.py` (prédicats AST whitelist et rendu Markdown 100 % stdlib).
+3. `plugin/evals/run_suite.py` (orchestrateur `run_workflow` 100 % stdlib Python 3).
+4. `plugin/skills/gravity-workflow/SKILL.md` (commande `/gravity-workflow evals` appelant directement l'outil `run_workflow`).
 
 ## Checkpoint déterministe
 - `.agents/gravity-workflow/evals/cases.json` est un tableau JSON valide de 10 à 15 cas séparant `auto_checks` et `manual_checks`.

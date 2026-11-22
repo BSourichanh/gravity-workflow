@@ -426,9 +426,9 @@ def run_hook_dry_runs(hooks_dir: Path, hook_cwd_dir: Path, report: Report) -> No
             ("{json_malforme", "force_ask"),
             # Allow — opérations légitimes dans Gravity et hors Gravity
             ('{"toolCall":{"name":"view_file","args":{"AbsolutePath":"src/ui/keyboard.py"}}}', "allow"),
-            ('{"toolCall":{"name":"write_to_file","args":{"TargetFile":"gravity-metrics-plugin/hooks/hook_runtime.py"}}}', "allow"),
+            ('{"toolCall":{"name":"write_to_file","args":{"TargetFile":"gravity-metrics/plugin/hooks/hook_runtime.py"}}}', "allow"),
             ('{"toolCall":{"name":"write_to_file","args":{"TargetFile":"src/hooks/useAuth.ts"}}}', "allow"),
-            (_payload({"name": "edit_file", "args": {"path": "other-repo/gravity-workflow-plugin/hooks/safety_policy.py"}}, plain_ws), "allow"),
+            (_payload({"name": "edit_file", "args": {"path": "other-repo/plugin/hooks/safety_policy.py"}}, plain_ws), "allow"),
             (_payload({"name": "run_command", "args": {"CommandLine": "pytest -q"}}, gravity_ws), "allow"),
             (_payload({"name": "run_command", "args": {"CommandLine": "rm -rf /tmp/build_cache"}}, gravity_ws), "allow"),
             (_payload({"name": "run_command", "args": {"CommandLine": "git commit -m \"harden .env protection\""}}, gravity_ws), "allow"),
