@@ -1,0 +1,17 @@
+{
+  "name": "gravity-workflow",
+  "displayName": "Gravity Workflow",
+  "version": "0.2.0",
+  "description": "Ground your Antigravity agents — harnais multi-agents, garde-fous fail-closed et suite d'évaluations 100 % natifs Antigravity App & CLI.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Lancer /gravity-workflow pour initialiser le projet et démarrer en mode evo (medium)",
+    "Exécuter /gravity-workflow high fast, /gravity-workflow unsafe ou /caveman [lite|full|ultra|off|auto]",
+    "Afficher le bilan /gravity-workflow status ou lancer la suite /gravity-workflow evals"
+  ],
+  "author": {
+    "name": "Gravity Contributors"
+  },
+  "homepage": "https://github.com/BSourichanh/gravity-workflow",
+  "repository": "https://github.com/BSourichanh/gravity-workflow"
+}

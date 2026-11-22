@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-22
+
+### Added
+- **Ecosystem Module Contract (`plugin/config/module.json` v1):**
+  - Added `plugin/config/module.json` (`schema_version: 1`, `id: "workflow"`, `plugin_name: "gravity-workflow"`, `storage.subdir: "workflow"`, `env_override: "GRAVITY_WORKFLOW_HOME"`, `commands: ["/gravity-workflow", "/caveman"]`, `ui: {"mode": "transition-sidecar", "target": "gravity"}`, `signals`) for discovery by the `gravity` Core plugin.
+
+### Changed
+- **BREAKING — Standardized `plugin/` Layout, Official 9-Field Manifest & Centralized Storage (`gravity` → `gravity-workflow`):**
+  - Standardized the plugin package directory to `plugin/` (from `gravity-plugin/` / `gravity-workflow-plugin/`), cleaned `plugin/plugin.json` to strictly the 9 official Antigravity fields (removing `$schema`, `license`, `keywords`; UTF-8 without BOM), set `name` → `"gravity-workflow"`, `displayName` → `"Gravity Workflow"`, `repository`/`homepage` → `https://github.com/BSourichanh/gravity-workflow`, primary skill `/gravity` → `/gravity-workflow` (`skills/gravity-workflow/`), and sidecar identifier → `gravity-workflow/live-widget` (transition UI targeting `gravity` Core).
+  - Moved project runtime state from `.agents/gravity/` → `.agents/gravity-workflow/`, unified centralized workspace registry resolution via `default_workflow_home()` and `resolve_registry_path()` across `plugin/observability/state_writer.py`, `plugin/sidecars/live-widget/server.py`, and `uninstall.py` (`$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/live_workspaces.json`, preserving `state_writer.REGISTRY_PATH` monkeypatch compatibility), and updated environment overrides (`GRAVITY_WORKFLOW_WORKSPACE`, `GRAVITY_WORKFLOW_STATE_PATH`, `GRAVITY_WORKFLOW_HOME`, `GRAVITY_WORKFLOW_REGISTRY_PATH`, `GRAVITY_WORKFLOW_SKIP_REGISTRY`, `GRAVITY_WORKFLOW_WIDGET_PORT`).
+  - Removed all runtime legacy shims (`.agents/gravity/` is no longer recognized by hooks, validators, or statusline) and gitignored local `.agents/` at the repository root.
+- **Strict 9-Field Manifest & Module Contract Validation (`plugin/scripts/validators/plugin_validator.py`):**
+  - Removed `$schema` requirement and enforced strictly the 9 official Antigravity fields (+ optional `disabled`, rejecting unknown keys and UTF-8 BOM) alongside `validate_module_contract()` for `plugin/config/module.json` v1.
+- **Core-Safe Installer & Uninstaller Migration (`install.py`, `uninstall.py`, `tests/`):**
+  - Updated `install.py` (`PLUGIN_SOURCE = REPO_ROOT / "plugin"`, `--scope global|workspace`, `--method copy|agy`, `--keep-legacy`) to remove a legacy v0.1.x `plugins/gravity` workflow plugin **only** when it has no `config/module.json` `"id": "core"` AND shows legacy workflow markers (`hooks/pre_tool_guard.py`, `hooks/safety_policy.py`, or `skills/gravity/`), ensuring any installed `gravity` Core plugin is never removed.
+  - Updated `uninstall.py` (`--clean-legacy`, auto-enabled by `--all`) to detect and remove legacy `~/.gravity/live_workspaces.json`, legacy `.agents/gravity/` workspace state, and legacy workflow `plugins/gravity` while preserving `gravity` Core plugins and using centralized `default_workflow_home()` / `resolve_registry_path()`.
+- **Surgical `deny`-Focused Threat Inspector & Workspace-Scoped `force_ask` (`plugin/hooks/safety_policy.py`):**
+  - Enforced hard `deny` rules globally across all repositories while scoping heuristic `force_ask` prompts exclusively to Gravity Workflow-initialized workspaces (`is_gravity_workspace()`).
+  - Replaced the rigid `python -c` AST allowlist with recursive `deny`-focused inspection across `python -c` (multi-branch sequential AST, `list`/`tuple` variables, mutations, unpacking, `IfExp`, `ListComp`, `Slice`, `NamedExpr`, `os.exec*`/`os.spawn*`), PowerShell here-strings (`@'...'@ | python -`, `$code | python -`), POSIX heredocs (`<< 'EOF'`, `<<<`, multi-heredoc and piped heredocs), `node -e`/`-p` (comments, template literals `${...}`, computed brackets, escapes), `perl -e`/`-E`, `ruby -e`, `sh`/`bash`/`zsh`/`dash -c`, `pwsh`/`powershell -Command`, `cmd /c`/`/k`, `git -c` & `ext::` URLs, `curl -d/-F @<secret>`, `xargs`, `find -exec`/`-execdir`/`-ok`, and `run_workflow`.
+  - Added argument-role awareness for search/history/message commands (`git commit -m`, `git log -S`, `git diff -S/-G`, `git grep`, `git merge`/`stash -m`, `rg`, `grep`, `Select-String`, `echo`) and targeted harness self-protection to the resolved active installed plugin (including destructive root deletion) and deployed paths without self-locking the source tree (`plugin/hooks/`).
+- **Transactional Windows In-Place Upgrade Fallback (`install.py`, `tests/test_install.py`):**
+  - Added atomic `os.rename` swap with two-phase transactional `_sync_directory_in_place()` fallback (full file/mode rollback before stale-entry pruning, plus NTFS junction and directory symlink support) when an active process such as `sidecars/live-widget` locks the target directory on Windows (`WinError 32`).
+- **Expanded Tests & Living Documentation (`plugin/scripts/test_unit.py`, `tests/`, `validators/`, `docs/`, `plugin/skills/gravity-workflow/references/06-safety-hooks.md`, `README.md`, `plugin/README.md`, `AGENTS.md`):**
+  - Added regression coverage for centralized storage precedence (`$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow`), `REGISTRY_PATH` monkeypatch compatibility, strict 9-field + `config/module.json` v1 validation, Core-safe legacy cleanup, adversarial multi-language/shell/Git bypasses, benign anti-false-positive commands, non-self-locked source editing, Windows locked-file rollback, and non-shim `.agents/gravity/` rejection, and synchronized `AGENTS.md` (KISS/YAGNI/DRY/SOLID/CUPID) and all living documentation sheets.
+
+### Fixed
+- **Eliminated Recurring `force_ask` Prompts & False Positives Across Workspaces (`plugin/hooks/safety_policy.py`):**
+  - Eliminated heuristic `force_ask` interruptions outside Gravity Workflow workspaces and on benign `python -c` (`subprocess`, loops, dynamic paths, writes), `node -e`, `perl -e`, `ruby -e`, `sh -c`, `pwsh -Command`, `cmd /c`, `find -exec`, `xargs`, `| base64`, and non-destructive `run_workflow` scripts, as well as false `deny` blocks on search/commit/regex literals (`\.env`, `DROP DATABASE`, `".*"`).
+- **Prevented Corrupted Active Plugin Installations on Windows Upgrades (`install.py`):**
+  - Prevented `python install.py --force` from partially removing `hooks/pre_tool_guard.py` or pruning stale entries before verifying in-place writes succeed when files or `sidecars/live-widget` are locked.
+
 ## [0.1.3] - 2026-11-22
 
 ### Changed

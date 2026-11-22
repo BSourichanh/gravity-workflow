@@ -5,7 +5,7 @@ description: Conventions Git et versioning (branches, Conventional Commits, SemV
 
 # Conventions Git & Versioning (Chef d'orchestre uniquement)
 
-> **Portée stricte :** Cette règle s'applique **exclusivement au chef d'orchestre** (agent principal / session `/gravity`). Les sous-agents (`planner`, `builder`, `reviewer`) et les workers `swarm` ne doivent **jamais** exécuter `git commit`, `git push`, `git tag`, ni modifier les numéros de version ou `CHANGELOG.md` à titre de release.
+> **Portée stricte :** Cette règle s'applique **exclusivement au chef d'orchestre** (agent principal / session `/gravity-workflow`). Les sous-agents (`planner`, `builder`, `reviewer`) et les workers `swarm` ne doivent **jamais** exécuter `git commit`, `git push`, `git tag`, ni modifier les numéros de version ou `CHANGELOG.md` à titre de release.
 
 Avant tout `git commit` et `git push` (toujours après demande ou validation explicite de l'utilisateur) :
 
