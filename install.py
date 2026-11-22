@@ -2,6 +2,7 @@
 """Cross-platform installer and uninstaller for the Gravity Antigravity plugin (100% Python 3 stdlib)."""
 
 import argparse
+import errno
 import json
 import os
 import platform
@@ -234,6 +235,224 @@ def check_environment(
     return 0
 
 
+def _is_symlink_or_junction(path: Path) -> bool:
+    """Return True when path is a symlink or a Windows NTFS junction."""
+    if path.is_symlink():
+        return True
+    is_junc = getattr(path, "is_junction", None)
+    return bool(callable(is_junc) and is_junc())
+
+
+def _unlink_or_rmdir_link(path: Path) -> None:
+    """Remove a symlink or Windows junction without following its target."""
+    try:
+        path.unlink()
+    except OSError:
+        path.rmdir()
+
+
+def _is_empty_dir(path: Path) -> bool:
+    """Return True when path is a regular empty directory."""
+    return path.is_dir() and not _is_symlink_or_junction(path) and not any(path.iterdir())
+
+
+def _is_lock_oserror(exc: OSError) -> bool:
+    """Return True when an OSError indicates a locked directory/file (Windows WinError 5/32/33 or EBUSY)."""
+    if isinstance(exc, PermissionError):
+        return True
+    winerr = getattr(exc, "winerror", None)
+    if winerr in (5, 32, 33):
+        return True
+    return exc.errno in (errno.EACCES, errno.EPERM, errno.EBUSY)
+
+
+def _best_effort_remove_tree(path: Path) -> bool:
+    """Remove a directory tree, skipping locked entries; return True if path was fully removed."""
+    if _is_symlink_or_junction(path):
+        try:
+            _unlink_or_rmdir_link(path)
+            return True
+        except OSError:
+            return False
+    if not path.is_dir():
+        try:
+            path.unlink(missing_ok=True)
+            return True
+        except OSError:
+            return False
+    all_removed = True
+    for child in list(path.iterdir()):
+        if not _best_effort_remove_tree(child):
+            all_removed = False
+    try:
+        path.rmdir()
+        return all_removed
+    except OSError:
+        return False
+
+
+def _prune_stale_entries(src_dir: Path, dst_dir: Path) -> List[Path]:
+    """Remove entries in dst_dir that do not exist in src_dir (best-effort on locked entries)."""
+    locked_stale: List[Path] = []
+    src_entries = {entry.name: entry for entry in src_dir.iterdir()}
+    for entry in list(dst_dir.iterdir()):
+        src_match = src_entries.get(entry.name)
+        entry_is_link = _is_symlink_or_junction(entry)
+        entry_is_dir = entry.is_dir() and not entry_is_link
+        src_is_dir = (
+            src_match is not None
+            and src_match.is_dir()
+            and not _is_symlink_or_junction(src_match)
+        )
+        if src_match is None or (entry_is_dir != src_is_dir) or entry_is_link:
+            if entry_is_dir:
+                if not _best_effort_remove_tree(entry):
+                    locked_stale.append(entry)
+            elif entry_is_link:
+                try:
+                    _unlink_or_rmdir_link(entry)
+                except OSError as exc:
+                    if _is_lock_oserror(exc):
+                        locked_stale.append(entry)
+                    else:
+                        raise
+            else:
+                try:
+                    entry.unlink(missing_ok=True)
+                except OSError as exc:
+                    if _is_lock_oserror(exc):
+                        locked_stale.append(entry)
+                    else:
+                        raise
+        elif entry_is_dir and src_is_dir and src_match is not None:
+            locked_stale.extend(_prune_stale_entries(src_match, entry))
+    return locked_stale
+
+
+def _copy_file_in_place(src_path: str, dst_path: str) -> str:
+    """Copy a file in place, tolerating a locked destination only if its bytes are already identical."""
+    src_file = Path(src_path)
+    dst_file = Path(dst_path)
+    dst_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        return shutil.copy2(str(src_file), str(dst_file))
+    except OSError as exc:
+        if _is_lock_oserror(exc) and dst_file.is_file():
+            try:
+                if src_file.read_bytes() == dst_file.read_bytes():
+                    return str(dst_file)
+            except OSError:
+                pass
+        raise
+
+
+def _sync_directory_in_place(src_dir: Path, dst_dir: Path) -> List[Path]:
+    """Update dst_dir contents in-place with rollback on copy failure, pruning stale entries only on success."""
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    modified_backups: List[Tuple[Path, bytes, Optional[int]]] = []
+    created_files: List[Path] = []
+    created_dirs: List[Path] = []
+    moved_conflicts: List[Tuple[Path, Path]] = []
+    conflict_root: Optional[Path] = None
+    conflict_seq = 0
+
+    def _stash_conflict(entry: Path) -> None:
+        nonlocal conflict_root, conflict_seq
+        if conflict_root is None:
+            conflict_root = Path(
+                tempfile.mkdtemp(prefix=".gravity-inplace-", dir=str(dst_dir.parent))
+            )
+        conflict_seq += 1
+        saved = conflict_root / f"item-{conflict_seq}"
+        os.rename(str(entry), str(saved))
+        moved_conflicts.append((entry, saved))
+
+    def _sync_tree(cur_src: Path, cur_dst: Path) -> None:
+        for src_entry in sorted(cur_src.iterdir(), key=lambda p: p.name):
+            dst_entry = cur_dst / src_entry.name
+            src_is_dir = src_entry.is_dir() and not _is_symlink_or_junction(src_entry)
+            if src_is_dir:
+                if dst_entry.exists() or _is_symlink_or_junction(dst_entry):
+                    if not (dst_entry.is_dir() and not _is_symlink_or_junction(dst_entry)):
+                        _stash_conflict(dst_entry)
+                        dst_entry.mkdir(parents=True, exist_ok=True)
+                        created_dirs.append(dst_entry)
+                else:
+                    dst_entry.mkdir(parents=True, exist_ok=True)
+                    created_dirs.append(dst_entry)
+                _sync_tree(src_entry, dst_entry)
+                continue
+
+            if dst_entry.exists() or _is_symlink_or_junction(dst_entry):
+                if _is_symlink_or_junction(dst_entry) or dst_entry.is_dir():
+                    _stash_conflict(dst_entry)
+                    _copy_file_in_place(str(src_entry), str(dst_entry))
+                    created_files.append(dst_entry)
+                    continue
+
+                src_bytes = src_entry.read_bytes()
+                orig_bytes: Optional[bytes] = None
+                orig_mode: Optional[int] = None
+                try:
+                    orig_bytes = dst_entry.read_bytes()
+                    orig_mode = stat.S_IMODE(dst_entry.stat().st_mode)
+                except OSError:
+                    orig_bytes = None
+                if orig_bytes is not None and orig_bytes == src_bytes:
+                    if os.name != "nt":
+                        try:
+                            shutil.copymode(str(src_entry), str(dst_entry))
+                        except OSError:
+                            pass
+                    continue
+                if orig_bytes is not None:
+                    modified_backups.append((dst_entry, orig_bytes, orig_mode))
+                _copy_file_in_place(str(src_entry), str(dst_entry))
+            else:
+                _copy_file_in_place(str(src_entry), str(dst_entry))
+                created_files.append(dst_entry)
+
+    try:
+        try:
+            _sync_tree(src_dir, dst_dir)
+        except Exception:
+            for created_file in reversed(created_files):
+                try:
+                    created_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            for created_dir in reversed(created_dirs):
+                try:
+                    created_dir.rmdir()
+                except OSError:
+                    pass
+            for mod_path, orig_bytes, orig_mode in reversed(modified_backups):
+                try:
+                    if mod_path.is_file() and mod_path.read_bytes() == orig_bytes:
+                        continue
+                except OSError:
+                    pass
+                try:
+                    mod_path.write_bytes(orig_bytes)
+                    if os.name != "nt" and orig_mode is not None:
+                        mod_path.chmod(orig_mode)
+                except OSError:
+                    pass
+            for orig_dst, saved_path in reversed(moved_conflicts):
+                try:
+                    if orig_dst.exists() or _is_symlink_or_junction(orig_dst):
+                        _best_effort_remove_tree(orig_dst)
+                    if saved_path.exists() or _is_symlink_or_junction(saved_path):
+                        os.rename(str(saved_path), str(orig_dst))
+                except OSError:
+                    pass
+            raise
+        return _prune_stale_entries(src_dir, dst_dir)
+    finally:
+        if conflict_root is not None:
+            shutil.rmtree(conflict_root, ignore_errors=True)
+
+
 def install_copy(
     plugin_src: Path,
     target_dir: Path,
@@ -243,7 +462,7 @@ def install_copy(
     skip_validate: bool = False,
     dry_run: bool = False,
 ) -> int:
-    """Install or upgrade the Gravity plugin using a staged copy and rollback."""
+    """Install or upgrade the Gravity plugin using a staged copy, atomic swap, in-place lock fallback, and rollback."""
     unsafe_reason = is_unsafe_target(target_dir, plugin_src)
     if unsafe_reason:
         print(f"[ERROR] {unsafe_reason}", file=sys.stderr)
@@ -254,24 +473,27 @@ def install_copy(
 
     replacing = False
     if target_dir.exists() or target_dir.is_symlink():
-        if not is_gravity_plugin_dir(target_dir):
+        if _is_empty_dir(target_dir):
+            replacing = True
+        elif not is_gravity_plugin_dir(target_dir):
             print(
                 f"[ERROR] Target path exists and is not a Gravity plugin: {target_dir}\n"
                 "Refusing to overwrite non-Gravity files.",
                 file=sys.stderr,
             )
             return 1
-        inst_manifest = read_plugin_manifest(target_dir) or {}
-        inst_version = str(inst_manifest.get("version", "unknown"))
-        if not force:
-            print(
-                f"[ERROR] Gravity v{inst_version} is already installed at {target_dir} "
-                f"(source is v{src_version}).\n"
-                "Re-run with --force to upgrade or reinstall.",
-                file=sys.stderr,
-            )
-            return 1
-        replacing = True
+        else:
+            inst_manifest = read_plugin_manifest(target_dir) or {}
+            inst_version = str(inst_manifest.get("version", "unknown"))
+            if not force:
+                print(
+                    f"[ERROR] Gravity v{inst_version} is already installed at {target_dir} "
+                    f"(source is v{src_version}).\n"
+                    "Re-run with --force to upgrade or reinstall.",
+                    file=sys.stderr,
+                )
+                return 1
+            replacing = True
 
     will_fix_py = os.name == "nt" and not no_fix_python and not has_real_python3()
 
@@ -318,26 +540,62 @@ def install_copy(
                 tempfile.mkdtemp(prefix=".gravity-backup-", dir=str(target_dir.parent))
             )
             backup_dir = backup_parent / PLUGIN_NAME
-            shutil.move(str(target_dir), str(backup_dir))
             try:
-                shutil.move(str(staged_dir), str(target_dir))
-            except Exception as exc:
+                os.rename(str(target_dir), str(backup_dir))
+            except OSError as exc:
+                if not _is_lock_oserror(exc):
+                    raise
+                shutil.rmtree(backup_parent, ignore_errors=True)
+                backup_parent = None
+                if _is_symlink_or_junction(target_dir):
+                    print(
+                        f"[ERROR] Target symlink/junction is locked and cannot be replaced safely: {target_dir} ({exc})",
+                        file=sys.stderr,
+                    )
+                    return 1
                 print(
-                    f"[ERROR] Failed to move staged plugin into {target_dir}: {exc}",
-                    file=sys.stderr,
+                    "[INFO]  Target directory is in use by a running process; updating files in place."
                 )
-                if not target_dir.exists() and backup_dir.exists():
-                    shutil.move(str(backup_dir), str(target_dir))
-                return 1
-            shutil.rmtree(backup_parent, ignore_errors=True)
-            backup_parent = None
-            print(f"[OK]    Upgraded Gravity v{src_version} at {target_dir}")
+                try:
+                    locked_stale = _sync_directory_in_place(staged_dir, target_dir)
+                except (OSError, shutil.Error) as sync_exc:
+                    print(
+                        f"[ERROR] In-place update failed because a target file is locked: {sync_exc}\n"
+                        "Stop any running Gravity sidecar/process and re-run with --force.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                if locked_stale:
+                    skipped = ", ".join(str(p.name) for p in locked_stale)
+                    print(f"[WARN]  Skipped locked stale entries during in-place sync: {skipped}")
+                print(f"[OK]    Upgraded Gravity v{src_version} at {target_dir} (in-place)")
+            else:
+                try:
+                    os.rename(str(staged_dir), str(target_dir))
+                except Exception as exc:
+                    print(
+                        f"[ERROR] Failed to move staged plugin into {target_dir}: {exc}",
+                        file=sys.stderr,
+                    )
+                    if (
+                        not target_dir.exists()
+                        and not _is_symlink_or_junction(target_dir)
+                        and (backup_dir.exists() or _is_symlink_or_junction(backup_dir))
+                    ):
+                        try:
+                            os.rename(str(backup_dir), str(target_dir))
+                        except OSError:
+                            shutil.move(str(backup_dir), str(target_dir))
+                    return 1
+                shutil.rmtree(backup_parent, ignore_errors=True)
+                backup_parent = None
+                print(f"[OK]    Upgraded Gravity v{src_version} at {target_dir}")
         else:
             shutil.move(str(staged_dir), str(target_dir))
             print(f"[OK]    Installed Gravity v{src_version} at {target_dir}")
     finally:
         shutil.rmtree(stage_parent, ignore_errors=True)
-        if backup_parent is not None and target_dir.exists():
+        if backup_parent is not None and is_gravity_plugin_dir(target_dir):
             shutil.rmtree(backup_parent, ignore_errors=True)
 
     return 0
@@ -447,12 +705,9 @@ def bootstrap_workspace(
 
 
 def _remove_tree_or_symlink(path: Path) -> None:
-    """Remove a directory tree or symlink cleanly without failing on symlinks."""
-    if path.is_symlink():
-        try:
-            path.unlink()
-        except OSError:
-            path.rmdir()
+    """Remove a directory tree, symlink, or Windows junction cleanly."""
+    if _is_symlink_or_junction(path):
+        _unlink_or_rmdir_link(path)
     elif path.exists():
         shutil.rmtree(path)
 
@@ -607,8 +862,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_stdio() -> None:
+    """Force stdout/stderr to UTF-8 so Windows cp1252 consoles never crash."""
+    for stream in (sys.stdout, sys.stderr):
+        reconf = getattr(stream, "reconfigure", None)
+        if callable(reconf):
+            try:
+                reconf(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Entry point for the Gravity cross-platform installer CLI."""
+    _configure_stdio()
     if sys.version_info < (3, 8):
         print("[ERROR] Python 3.8+ is required to run install.py.", file=sys.stderr)
         return 1

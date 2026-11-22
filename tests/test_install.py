@@ -97,6 +97,148 @@ class TestGravityInstaller(unittest.TestCase):
             ]
             self.assertEqual(leftovers, [])
 
+    def test_upgrade_in_place_fallback_when_directory_locked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            target = parent / "gravity"
+            self.assertEqual(_run_quiet(["--target", str(target), "--skip-validate"]), 0)
+
+            stale_file = target / "stale_marker.txt"
+            stale_file.write_text("stale-root", encoding="utf-8")
+            stale_sub = target / "stale_dir" / "old.txt"
+            stale_sub.parent.mkdir(parents=True)
+            stale_sub.write_text("stale-nested", encoding="utf-8")
+            readme = target / "README.md"
+            readme.write_text("OUTDATED CONTENT", encoding="utf-8")
+
+            real_rename = os.rename
+
+            def locked_rename(src: str, dst: str) -> None:
+                if Path(src).resolve() == target.resolve():
+                    err = PermissionError(13, "Directory locked by running sidecar")
+                    err.winerror = 32  # type: ignore[attr-defined]
+                    raise err
+                real_rename(src, dst)
+
+            with mock.patch("install.os.rename", side_effect=locked_rename):
+                rc = _run_quiet(["--target", str(target), "--force"])
+                self.assertEqual(rc, 0)
+
+            self.assertTrue((target / "plugin.json").is_file())
+            self.assertTrue((target / "hooks" / "pre_tool_guard.py").is_file())
+            self.assertTrue((target / "sidecars" / "live-widget" / "server.py").is_file())
+            self.assertFalse(stale_file.exists())
+            self.assertFalse(stale_sub.parent.exists())
+            self.assertEqual(
+                readme.read_bytes(),
+                (install.PLUGIN_SOURCE / "README.md").read_bytes(),
+            )
+            leftovers = [
+                p.name
+                for p in parent.iterdir()
+                if p.name.startswith(".gravity-stage-") or p.name.startswith(".gravity-backup-")
+            ]
+            self.assertEqual(leftovers, [])
+
+            # Sur Windows, valider aussi avec un vrai verrou OS sur sidecars/live-widget
+            if os.name == "nt":
+                stale_win = target / "stale_win.txt"
+                stale_win.write_text("stale-win", encoding="utf-8")
+                readme.write_text("OUTDATED WIN", encoding="utf-8")
+                sidecar_dir = target / "sidecars" / "live-widget"
+                holder = subprocess.Popen(
+                    [sys.executable, "-c", "import time; time.sleep(60)"],
+                    cwd=str(sidecar_dir),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                try:
+                    rc_win = _run_quiet(["--target", str(target), "--force", "--skip-validate"])
+                    self.assertEqual(rc_win, 0)
+                    self.assertTrue((target / "plugin.json").is_file())
+                    self.assertTrue((sidecar_dir / "server.py").is_file())
+                    self.assertFalse(stale_win.exists())
+                    self.assertEqual(
+                        readme.read_bytes(),
+                        (install.PLUGIN_SOURCE / "README.md").read_bytes(),
+                    )
+                finally:
+                    holder.terminate()
+                    try:
+                        holder.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        holder.kill()
+                        holder.wait(timeout=5)
+
+    def test_upgrade_rollback_and_locked_file_handling(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            target = parent / "gravity"
+            self.assertEqual(_run_quiet(["--target", str(target), "--skip-validate"]), 0)
+
+            marker = target / "keep_on_rollback.txt"
+            marker.write_text("v-old", encoding="utf-8")
+
+            # 1. Rollback sûr si le second rename (staged -> target) échoue après backup
+            real_rename = os.rename
+            call_count = {"n": 0}
+
+            def fail_second_rename(src: str, dst: str) -> None:
+                call_count["n"] += 1
+                if call_count["n"] == 2:
+                    raise OSError("Simulated move failure")
+                real_rename(src, dst)
+
+            with mock.patch("install.os.rename", side_effect=fail_second_rename):
+                rc_rb = _run_quiet(["--target", str(target), "--force", "--skip-validate"])
+                self.assertEqual(rc_rb, 1)
+
+            self.assertTrue(marker.is_file())
+            self.assertEqual(marker.read_text(encoding="utf-8"), "v-old")
+
+            # 2. En repli in-place : un fichier verrouillé identique est toléré, un fichier différent renvoie rc=1
+            real_copy2 = install.shutil.copy2
+
+            def deny_first_rename(src: str, dst: str) -> None:
+                if Path(src).resolve() == target.resolve():
+                    raise PermissionError(13, "Target locked")
+                real_rename(src, dst)
+
+            def locked_readme_copy2(src: str, dst: str) -> str:
+                if Path(dst).name == "README.md":
+                    raise PermissionError(13, "README.md locked")
+                return real_copy2(src, dst)
+
+            # Identique -> succès
+            with mock.patch("install.os.rename", side_effect=deny_first_rename), mock.patch(
+                "install.shutil.copy2", side_effect=locked_readme_copy2
+            ):
+                rc_same = _run_quiet(["--target", str(target), "--force", "--skip-validate"])
+                self.assertEqual(rc_same, 0)
+
+            # Différent -> échec propre (rc=1) avec rollback in-place complet (pas d'état mixte)
+            old_manifest = '{"name": "gravity", "version": "0.0.1"}\n'
+            (target / "plugin.json").write_text(old_manifest, encoding="utf-8")
+            (target / "README.md").write_text("DIFFERENT", encoding="utf-8")
+            stale_keep = target / "stale_preserve_on_fail.txt"
+            stale_keep.write_text("keep-me", encoding="utf-8")
+            (target / "hooks" / "hook_runtime.py").unlink()
+            with mock.patch("install.os.rename", side_effect=deny_first_rename), mock.patch(
+                "install.shutil.copy2", side_effect=locked_readme_copy2
+            ):
+                rc_diff = _run_quiet(["--target", str(target), "--force", "--skip-validate"])
+                self.assertEqual(rc_diff, 1)
+            self.assertEqual((target / "plugin.json").read_text(encoding="utf-8"), old_manifest)
+            self.assertEqual((target / "README.md").read_text(encoding="utf-8"), "DIFFERENT")
+            self.assertTrue(stale_keep.is_file())
+            self.assertFalse((target / "hooks" / "hook_runtime.py").exists())
+            leftovers = [
+                p.name
+                for p in parent.iterdir()
+                if p.name.startswith(".gravity-")
+            ]
+            self.assertEqual(leftovers, [])
+
     def test_refuses_non_gravity_dir_and_source_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

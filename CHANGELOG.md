@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-11-22
+
+### Changed
+- **Surgical `deny`-Focused Threat Inspector & Workspace-Scoped `force_ask` (`gravity-plugin/hooks/safety_policy.py`):**
+  - Enforced hard `deny` rules globally across all repositories while scoping heuristic `force_ask` prompts exclusively to Gravity-initialized workspaces (`is_gravity_workspace()`).
+  - Replaced the rigid `python -c` AST allowlist with recursive `deny`-focused inspection across `python -c` (multi-branch sequential AST, `list`/`tuple` variables, mutations, unpacking, `IfExp`, `ListComp`, `Slice`, `NamedExpr`, `os.exec*`/`os.spawn*`), PowerShell here-strings (`@'...'@ | python -`, `$code | python -`), POSIX heredocs (`<< 'EOF'`, `<<<`, multi-heredoc and piped heredocs), `node -e`/`-p` (comments, template literals `${...}`, computed brackets, escapes), `perl -e`/`-E`, `ruby -e`, `sh`/`bash`/`zsh`/`dash -c`, `pwsh`/`powershell -Command`, `cmd /c`/`/k`, `git -c` & `ext::` URLs, `curl -d/-F @<secret>`, `xargs`, `find -exec`/`-execdir`/`-ok`, and `run_workflow`.
+  - Added argument-role awareness for search/history/message commands (`git commit -m`, `git log -S`, `git diff -S/-G`, `git grep`, `git merge`/`stash -m`, `rg`, `grep`, `Select-String`, `echo`) and targeted harness self-protection to the resolved active installed plugin (including destructive root deletion) and deployed paths without self-locking the source tree (`gravity-plugin/hooks/`).
+- **Transactional Windows In-Place Upgrade Fallback (`install.py`, `tests/test_install.py`):**
+  - Added atomic `os.rename` swap with two-phase transactional `_sync_directory_in_place()` fallback (full file/mode rollback before stale-entry pruning, plus NTFS junction and directory symlink support) when an active process such as `sidecars/live-widget` locks the target directory on Windows (`WinError 32`).
+- **Expanded Tests & Living Documentation (`test_unit.py`: 29 tests, `tests/`: 22 tests, `validators/base.py`, `docs/`, `skills/gravity/references/06-safety-hooks.md`, `README.md`, `gravity-plugin/README.md`):**
+  - Added regression coverage for adversarial multi-language/shell/Git bypasses, benign anti-false-positive commands, non-self-locked source editing, and Windows locked-file rollback, and synchronized all living documentation sheets.
+
+### Fixed
+- **Eliminated Recurring `force_ask` Prompts & False Positives Across Gravity and Non-Gravity Projects (`gravity-plugin/hooks/safety_policy.py`):**
+  - Eliminated heuristic `force_ask` interruptions outside Gravity workspaces and on benign `python -c` (`subprocess`, loops, dynamic paths, writes), `node -e`, `perl -e`, `ruby -e`, `sh -c`, `pwsh -Command`, `cmd /c`, `find -exec`, `xargs`, `| base64`, and non-destructive `run_workflow` scripts, as well as false `deny` blocks on search/commit/regex literals (`\.env`, `DROP DATABASE`, `".*"`).
+- **Prevented Corrupted Active Plugin Installations on Windows Upgrades (`install.py`):**
+  - Prevented `python install.py --force` from partially removing `hooks/pre_tool_guard.py` or pruning stale entries before verifying in-place writes succeed when files or `sidecars/live-widget` are locked.
+
 ## [0.1.3] - 2026-11-22
 
 ### Changed

@@ -53,7 +53,7 @@ gravity-plugin/
 └── scripts/
     ├── init_workspace.py               # Bootstrapper projet full/quickstart (chmod 0755)
     ├── validate.py                     # CLI validation --strict (chmod 0755)
-    ├── test_unit.py                    # 27 tests unitaires internes (100 % stdlib)
+    ├── test_unit.py                    # 29 tests unitaires internes (100 % stdlib)
     └── validators/                     # base.py, plugin_validator.py, workspace_validator.py
 ```
 
@@ -102,7 +102,7 @@ workspace-template/
 [`install.py`](../install.py) installe, met à niveau, valide et désinstalle `gravity-plugin/` (Python 3.8+, 100 % stdlib) :
 
 - **Portées :** `--scope global` (`~/.gemini/config/plugins/gravity/`, défaut) ou `--scope workspace --workspace <dir>` (`<dir>/.agents/plugins/gravity/`).
-- **Méthodes :** `--method copy` *(défaut — copie mise en zone de staging avec sauvegarde et rollback automatique en cas d'échec)* ou `--method agy` *(délègue à `agy plugin validate` + `agy plugin install`)*.
+- **Méthodes :** `--method copy` *(défaut — copie mise en zone de staging, swap atomique par `os.rename` avec sauvegarde et rollback automatique en cas d'échec, et repli de synchronisation in-place avec rollback en cas de fichier modifié verrouillé puis purge des fichiers obsolètes si un sous-dossier comme `sidecars/live-widget` est verrouillé sous Windows par un processus actif)* ou `--method agy` *(délègue à `agy plugin validate` + `agy plugin install`)*.
 - **Adaptation Windows :** sans `--no-fix-python` et en l'absence d'un binaire `python3` réel (l'alias WindowsApps est ignoré), réécrit `python3` vers `python` ou `py -3` uniquement dans la **copie installée** via `validate.py --fix-python-cmd`, laissant le dépôt source portable.
 - **Permissions POSIX :** applique les bits d'exécution équivalents à `0755` sur les 9 scripts déclarés dans `EXEC_SCRIPTS`.
 - **Commandes utiles :** `--check`, `--dry-run`, `--force` (mise à jour), `--init-workspace <dir> [--mode quickstart|full]`, `--uninstall`.

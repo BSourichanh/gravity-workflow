@@ -25,7 +25,7 @@ agy plugin install ./gravity/gravity-plugin
 ```
 
 ### Installation & désinstallation automatisées (racine du dépôt)
-Utiliser [`../install.py`](../install.py) pour l'installation/mise à niveau (avec adaptation `python3` sur Windows) et [`../uninstall.py`](../uninstall.py) pour désinstaller proprement le plugin, nettoyer `.agents/gravity/` sans toucher aux fichiers personnalisés et purger `~/.gravity/live_workspaces.json`.
+Utiliser [`../install.py`](../install.py) pour l'installation/mise à niveau (adaptation `python3` sur Windows et repli transactionnel *in-place* avec rollback sous verrou Windows `sidecars/live-widget`) et [`../uninstall.py`](../uninstall.py) pour désinstaller proprement le plugin, nettoyer `.agents/gravity/` sans toucher aux fichiers personnalisés et purger `~/.gravity/live_workspaces.json`.
 
 ### Installation manuelle (Antigravity App & IDE)
 Copier le dossier du plugin dans `~/.gemini/config/plugins/gravity/` (portée globale) ou `.agents/plugins/gravity/` (portée workspace), puis gérer son activation dans **Customizations → Installed**.
