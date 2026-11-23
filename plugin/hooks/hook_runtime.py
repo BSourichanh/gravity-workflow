@@ -116,12 +116,8 @@ def record_live_event(
     workspace_root: Path,
     conversation_id: Optional[str] = None,
 ) -> None:
-    """Enregistre les décisions bloquantes/escaladées dans live_state.json sans jamais échouer."""
+    """Enregistre les décisions bloquantes/escaladées dans live_state.json centralisé sans jamais échouer."""
     if decision not in ("deny", "ask", "force_ask"):
-        return
-    if not os.environ.get("GRAVITY_WORKFLOW_STATE_PATH", "").strip() and not is_gravity_workspace(
-        workspace_root
-    ):
         return
     try:
         obs_dir = Path(__file__).resolve().parent.parent / "observability"

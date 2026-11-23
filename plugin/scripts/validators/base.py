@@ -381,7 +381,9 @@ def run_hook_dry_runs(hooks_dir: Path, hook_cwd_dir: Path, report: Report) -> No
         plain_ws = tmp_root / "plain_ws"
         plain_ws.mkdir(parents=True, exist_ok=True)
 
+        wf_home = tmp_root / "workflow_home"
         dry_env = dict(os.environ)
+        dry_env["GRAVITY_WORKFLOW_HOME"] = str(wf_home)
         dry_env["GRAVITY_WORKFLOW_STATE_PATH"] = str(tmp_root / "live_state.json")
         dry_env["GRAVITY_WORKFLOW_SKIP_REGISTRY"] = "1"
 
@@ -525,33 +527,8 @@ def run_hook_dry_runs(hooks_dir: Path, hook_cwd_dir: Path, report: Report) -> No
                 )
 
         if stop_hook.is_file():
-            profile_file = tmp_root / ".agents/gravity-workflow/profile.json"
-            profile_file.parent.mkdir(parents=True, exist_ok=True)
-            profile_file.write_text(
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "mode": "evo",
-                        "current_level": "medium",
-                        "locked": False,
-                        "pace": "slow",
-                        "verification": "safe",
-                        "suggested_level": "medium",
-                        "allow_pro": True,
-                        "model_overrides": {},
-                        "sessions_analyzed": 0,
-                        "clean_streak": 0,
-                        "last_score": 40,
-                        "last_reason": "Init dry-run",
-                        "last_evaluated_conversation_id": None,
-                        "last_updated": None,
-                        "signals": {},
-                        "history": [],
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
+            stop_ws = tmp_root / "stop_plain_ws"
+            stop_ws.mkdir(parents=True, exist_ok=True)
             stop_payload = json.dumps(
                 {
                     "conversationId": "conv-dry-run",
@@ -561,8 +538,8 @@ def run_hook_dry_runs(hooks_dir: Path, hook_cwd_dir: Path, report: Report) -> No
                     "fullyIdle": True,
                     "continuationActive": False,
                     "transcriptPath": str(tmp_root / "transcript.jsonl"),
-                    "workspacePaths": [str(tmp_root)],
-                    "cwd": str(tmp_root),
+                    "workspacePaths": [str(stop_ws)],
+                    "cwd": str(stop_ws),
                 }
             )
             proc = subprocess.run(
@@ -582,25 +559,51 @@ def run_hook_dry_runs(hooks_dir: Path, hook_cwd_dir: Path, report: Report) -> No
                     f"stop_session_logger.py doit retourner exit=0 et '{{}}' "
                     f"(obtenu exit={proc.returncode}, stdout={proc.stdout!r})."
                 )
-            runs_file = tmp_root / ".agents/gravity-workflow/observability/runs.jsonl"
+            if (stop_ws / ".agents").exists():
+                report.error("stop_session_logger.py ne doit écrire aucun fichier d'état dans le workspace cible.")
+            obs_dir = str((hooks_dir.parent / "observability").resolve())
+            if obs_dir not in sys.path:
+                sys.path.insert(0, obs_dir)
+            from state_writer import resolve_profile_storage_path, resolve_runs_log_path  # type: ignore[import-not-found]
+
+            prev_wf = os.environ.get("GRAVITY_WORKFLOW_HOME")
+            os.environ["GRAVITY_WORKFLOW_HOME"] = str(wf_home)
+            try:
+                runs_file = resolve_runs_log_path(stop_ws)
+                profile_file = resolve_profile_storage_path(stop_ws)
+            finally:
+                if prev_wf is None:
+                    os.environ.pop("GRAVITY_WORKFLOW_HOME", None)
+                else:
+                    os.environ["GRAVITY_WORKFLOW_HOME"] = prev_wf
+
             if not runs_file.is_file():
-                report.error("stop_session_logger.py n'a pas journalisé runs.jsonl dans le workspace cible.")
+                report.error("stop_session_logger.py n'a pas journalisé runs.jsonl dans le stockage centralisé.")
             else:
                 try:
                     entry = json.loads(runs_file.read_text(encoding="utf-8").splitlines()[-1])
-                    if entry.get("conversation_id") != "conv-dry-run" or entry.get("termination_reason") != "NO_TOOL_CALL":
-                        report.error("stop_session_logger.py : champs Antigravity Stop manquants dans runs.jsonl.")
+                    if (
+                        entry.get("conversation_id") != "conv-dry-run"
+                        or entry.get("termination_reason") != "NO_TOOL_CALL"
+                        or "preset_profile" not in entry
+                        or "role_models" not in entry
+                    ):
+                        report.error("stop_session_logger.py : champs attendus manquants dans runs.jsonl.")
                 except Exception as exc:
                     report.error(f"stop_session_logger.py : JSON invalide dans runs.jsonl ({exc}).")
-            try:
-                pdata = json.loads(profile_file.read_text(encoding="utf-8"))
-                if (
-                    int(pdata.get("sessions_analyzed") or 0) < 1
-                    or pdata.get("last_evaluated_conversation_id") != "conv-dry-run"
-                ):
-                    report.error("stop_session_logger.py : mise à jour profile.json evo manquante après Stop.")
-            except Exception as exc:
-                report.error(f"stop_session_logger.py : profile.json invalide après Stop ({exc}).")
+            if not profile_file.is_file():
+                report.error("stop_session_logger.py : profile.json centralisé manquant après Stop.")
+            else:
+                try:
+                    pdata = json.loads(profile_file.read_text(encoding="utf-8"))
+                    if (
+                        int(pdata.get("sessions_analyzed") or 0) < 1
+                        or pdata.get("last_evaluated_conversation_id") != "conv-dry-run"
+                        or pdata.get("suggested_profile") not in ("standard", "deep")
+                    ):
+                        report.error("stop_session_logger.py : mise à jour profile.json evo manquante après Stop.")
+                except Exception as exc:
+                    report.error(f"stop_session_logger.py : profile.json invalide après Stop ({exc}).")
 
         if session_hook.is_file():
             plain_ws = tmp_root / "cav_plain_ws"
@@ -609,7 +612,7 @@ def run_hook_dry_runs(hooks_dir: Path, hook_cwd_dir: Path, report: Report) -> No
             cav_profile = cav_ws / ".agents/gravity-workflow/profile.json"
             cav_profile.parent.mkdir(parents=True, exist_ok=True)
 
-            # 1. Workspace vierge -> {}
+            # 1. Workspace vierge (actif partout par défaut avec caveman=lite) -> injectSteps.systemMessage
             proc_plain = subprocess.run(
                 [sys.executable, str(session_hook)],
                 input=json.dumps({"cwd": str(plain_ws)}),
@@ -622,13 +625,22 @@ def run_hook_dry_runs(hooks_dir: Path, hook_cwd_dir: Path, report: Report) -> No
                 timeout=5,
                 check=False,
             )
-            if proc_plain.returncode != 0 or proc_plain.stdout.strip() != "{}":
+            if proc_plain.returncode != 0:
                 report.error(
-                    f"session_start_caveman.py (hors Gravity) doit retourner exit=0 et '{{}}' "
-                    f"(obtenu exit={proc_plain.returncode}, stdout={proc_plain.stdout!r})."
+                    f"session_start_caveman.py (dépôt vierge) a échoué (exit={proc_plain.returncode})."
                 )
+            else:
+                try:
+                    out_plain = json.loads(proc_plain.stdout.strip())
+                    msg_plain = out_plain["injectSteps"][0]["systemMessage"]["systemMessage"]
+                    if not isinstance(msg_plain, str) or "niveau=lite" not in msg_plain:
+                        report.error("session_start_caveman.py (dépôt vierge) : systemMessage Caveman lite attendu.")
+                except Exception as exc:
+                    report.error(
+                        f"session_start_caveman.py (dépôt vierge) : JSON injectSteps invalide ({exc})."
+                    )
 
-            # 2. Workspace Gravity avec caveman="off" -> {}
+            # 2. Workspace avec repli lecture seule caveman="off" -> {}
             cav_profile.write_text(json.dumps({"caveman": "off", "caveman_locked": True}), encoding="utf-8")
             proc_off = subprocess.run(
                 [sys.executable, str(session_hook)],
@@ -648,7 +660,7 @@ def run_hook_dry_runs(hooks_dir: Path, hook_cwd_dir: Path, report: Report) -> No
                     f"(obtenu exit={proc_off.returncode}, stdout={proc_off.stdout!r})."
                 )
 
-            # 3. Workspace Gravity avec caveman="lite" -> injectSteps.systemMessage
+            # 3. Workspace avec caveman="lite" -> injectSteps.systemMessage
             cav_profile.write_text(json.dumps({"caveman": "lite", "caveman_locked": False}), encoding="utf-8")
             proc_lite = subprocess.run(
                 [sys.executable, str(session_hook)],

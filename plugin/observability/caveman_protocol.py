@@ -41,7 +41,7 @@ def choose_evo_caveman(
     signals: Dict[str, Any],
     clean_streak: int,
 ) -> Tuple[str, str]:
-    """Calcule le niveau Caveman automatique (`lite` ou `full`, jamais `ultra`/`off`)."""
+    """Retourne le niveau Caveman par défaut (`lite` sur les 3 profils ; `full` auto réservé Phase 3)."""
     sig = signals if isinstance(signals, dict) else {}
     eval_rate = sig.get("eval_pass_rate")
     eval_failing = eval_rate is not None and float(eval_rate) < 1.0
@@ -51,14 +51,7 @@ def choose_evo_caveman(
     if session_error or guard_deny or eval_failing:
         return "lite", "caveman lite (clarté prioritaire suite à erreur, alerte deny ou éval)"
 
-    level_norm = str(current_level or "").strip().lower()
-    if level_norm in ("high", "ultra"):
-        return "full", f"caveman full (ROI modèles palier {level_norm})"
-
-    if int(clean_streak or 0) >= 2:
-        return "full", f"caveman full (régime stable {int(clean_streak)} sessions)"
-
-    return "lite", "caveman lite (défaut nominal)"
+    return "lite", "caveman lite (défaut nominal sur tous les profils)"
 
 
 def build_session_start_prompt(level: str, *, locked: bool = False) -> str:

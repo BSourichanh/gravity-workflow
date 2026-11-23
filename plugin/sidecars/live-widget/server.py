@@ -41,7 +41,15 @@ class GravityHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
-def _workspace_from_state_path(state_path: Path) -> str:
+def _workspace_from_state_path(
+    state_path: Path, registered: Optional[List[Dict[str, str]]] = None
+) -> str:
+    resolved_target = str(state_path.resolve())
+    for entry in registered or _load_registered_workspaces():
+        if str(Path(entry["state_path"]).resolve()) == resolved_target:
+            ws_val = entry.get("workspace_path") or entry.get("workspace")
+            if isinstance(ws_val, str) and ws_val.strip():
+                return ws_val.strip()
     for parent in state_path.parents:
         if parent.name == ".agents":
             return str(parent.parent)
@@ -76,7 +84,7 @@ def resolve_state_path(ws_index: Optional[int] = None) -> Path:
 
     env_ws = os.environ.get("GRAVITY_WORKFLOW_WORKSPACE", "").strip()
     if env_ws and "${" not in env_ws:
-        return Path(env_ws) / RELATIVE_STATE
+        return state_writer.resolve_state_path(workspace_root=Path(env_ws))
 
     registered = _load_registered_workspaces()
     if registered:
@@ -85,12 +93,15 @@ def resolve_state_path(ws_index: Optional[int] = None) -> Path:
         return Path(registered[0]["state_path"])
 
     cwd = Path.cwd().resolve()
+    central_cwd = state_writer.resolve_state_path(workspace_root=cwd)
+    if central_cwd.is_file():
+        return central_cwd
     for candidate_root in (cwd, *cwd.parents):
         candidate = candidate_root / RELATIVE_STATE
         if candidate.is_file():
             return candidate
 
-    return cwd / RELATIVE_STATE
+    return central_cwd
 
 
 HTML_PAGE = """<!doctype html>
@@ -151,14 +162,13 @@ es.onmessage = (e) => {
   const s = JSON.parse(e.data);
   const wsLabel = s.workspace ? `Workspace: ${s.workspace} | ` : '';
   const modeVal = s.mode || 'evo';
-  const lvlVal = s.level || 'medium';
-  const paceVal = s.pace || 'slow';
-  const verifyVal = s.verification || 'safe';
+  const lvlVal = s.level || 'standard';
+  const sugVal = s.suggested_profile || 'standard';
   const cavVal = s.caveman || 'lite';
   const cavLock = s.caveman_locked ? '[lock]' : '(auto)';
-  const modeText = modeVal === 'evo' ? `evo (${lvlVal})` : `${lvlVal} [verrouillé]`;
+  const modeText = modeVal === 'evo' ? `evo (${lvlVal}, sugg:${sugVal})` : `${lvlVal} [verrouillé]`;
   document.getElementById('meta').textContent =
-    `${wsLabel}Mode: ${modeText} · ${paceVal} · ${verifyVal} · caveman:${cavVal} ${cavLock} | Étape: ${s.stage || 'idle'} | Progression: ${s.progress || '0/8'} | Guard: ${s.guard_status || 'ON'}`;
+    `${wsLabel}Mode: ${modeText} · caveman:${cavVal} ${cavLock} | Étape: ${s.stage || 'idle'} | Progression: ${s.progress || '0/8'} | Guard: ${s.guard_status || 'ON'}`;
 
   if (Array.isArray(s.workspaces) && s.workspaces.length > 1) {
     picker.style.display = 'inline-block';
@@ -169,7 +179,7 @@ es.onmessage = (e) => {
       s.workspaces.forEach((ws, idx) => {
         const opt = document.createElement('option');
         opt.value = String(idx);
-        opt.textContent = String(ws.workspace || ws.state_path || idx);
+        opt.textContent = String(ws.workspace_path || ws.workspace || ws.state_path || idx);
         if (wsParam !== null ? String(idx) === wsParam : idx === 0) {
           opt.selected = true;
         }
@@ -224,6 +234,9 @@ def _stat_sig(path: Path) -> Tuple[str, int, int]:
 
 
 def _profile_path_for_state(state_path: Path) -> Path:
+    sibling = state_path.parent / "profile.json"
+    if sibling.is_file():
+        return sibling
     if state_path.parent.name == "observability":
         return state_path.parent.parent / "profile.json"
     return Path(_workspace_from_state_path(state_path)) / ".agents/gravity-workflow/profile.json"
@@ -240,14 +253,14 @@ def _state_signature(state_path: Path) -> Tuple[Tuple[str, int, int], Tuple[str,
 def read_state(ws_index: Optional[int] = None) -> str:
     state_path = resolve_state_path(ws_index)
     workspaces = _load_registered_workspaces()
-    ws_dir = _workspace_from_state_path(state_path)
+    ws_dir = _workspace_from_state_path(state_path, workspaces)
     payload: Dict[str, object] = {
         "stage": "idle",
         "progress": "0/8",
         "mode": "evo",
-        "level": "medium",
-        "pace": "slow",
-        "verification": "safe",
+        "level": "standard",
+        "preset_profile": "standard",
+        "suggested_profile": "standard",
         "caveman": "lite",
         "caveman_locked": False,
         "locked": False,
@@ -265,11 +278,7 @@ def read_state(ws_index: Optional[int] = None) -> str:
                 payload["workspaces"] = workspaces
         except Exception:
             pass
-    profile_path = (
-        state_path.parent.parent / "profile.json"
-        if state_path.parent.name == "observability"
-        else Path(ws_dir) / ".agents/gravity-workflow/profile.json"
-    )
+    profile_path = _profile_path_for_state(state_path)
     if profile_path.is_file():
         try:
             pdata = json.loads(profile_path.read_text(encoding="utf-8"))
@@ -278,10 +287,8 @@ def read_state(ws_index: Optional[int] = None) -> str:
                     payload["mode"] = pdata["mode"]
                 if isinstance(pdata.get("current_level"), str):
                     payload["level"] = pdata["current_level"]
-                if isinstance(pdata.get("pace"), str):
-                    payload["pace"] = pdata["pace"]
-                if isinstance(pdata.get("verification"), str):
-                    payload["verification"] = pdata["verification"]
+                if isinstance(pdata.get("suggested_profile"), str):
+                    payload["suggested_profile"] = pdata["suggested_profile"]
                 if isinstance(pdata.get("caveman"), str):
                     payload["caveman"] = pdata["caveman"]
                 if isinstance(pdata.get("caveman_locked"), bool):

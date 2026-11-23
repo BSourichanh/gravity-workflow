@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **3 Executed Profiles (`quick` / `standard` / `deep`) & A/B Model Experiment Logging (`plugin/observability/profile_engine.py`, `plugin/observability/state_writer.py`, `docs/modes-and-routing.md`):**
+  - Replaced the 4-tier matrix and 14 dead preset keys with 3 executed profiles (`quick`, `standard` default, `deep`) plus backward-compatible aliases (`low→quick`, `medium→standard`, `high/ultra→deep`) and `"allow_pro": false` fallback to `"flash"` (instead of `"inherit"`).
+  - Exposed `--plan-model`, `--build-model`, `--review-model` (`inherit` | `flash_lite` | `flash` | `pro` | `reset`) in `profile_engine.py set` and `review_pipeline.py`, logged effective `preset_profile` and `role_models` into `live_state.json` and `runs.jsonl`, and documented the A/B comparison protocol with `gravity-metrics` in `docs/modes-and-routing.md`.
+- **Pre-Collected Repo Tree, `validation_summary` & Safe Diff Fallback (`AUD-02-01`) (`plugin/workflows/review_pipeline.py`, `plugin/agents/{planner,builder,reviewer}.md`):**
+  - Collected a bounded repository file tree in pure Python (excluding `.git`, `__pycache__`, `node_modules`, `.venv`) and injected it into `Planner` and `Reviewer` prompts without adding `run_command` to read-only agents (`FORBIDDEN_READONLY_TOOLS` intact).
+  - Added `validation_summary` to `BUILD_SCHEMA` and safe modified-file snippet fallback when `.gravity_verified.patch` / `git_diff` is empty or `Non-Workspace File Access` restricts external worktree reads.
+
+### Changed
+- **Centralized Per-Workspace Runtime Storage & Global Lifecycle Without `init` (`plugin/observability/state_writer.py`, `plugin/observability/profile_engine.py`, `plugin/hooks/{session_start_caveman,stop_session_logger,hook_runtime}.py`, `plugin/sidecars/live-widget/server.py`, `plugin/observability/statusline.py`):**
+  - Centralized `profile.json`, `live_state.json`, `runs.jsonl`, `last_verified.patch`, and `evals/report.{json,md}` under `resolve_workflow_home() / "workspaces" / "<slug>-<sha256_8>/"` (`$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/`), recording `workspace_path` + `state_path` in `live_workspaces.json` with read-only fallback to `<ws>/.agents/gravity-workflow/profile.json` and zero state files written in target workspaces.
+  - Enabled `SessionStart`, `Stop`, `Live` event recording, and `profile_engine.evolve_on_stop()` on all repositories without requiring `/gravity-workflow init`.
+- **Behavioral Consultative `evo`, Ephemeral `--no-verify` & `caveman lite` Default (`plugin/observability/{profile_engine,caveman_protocol}.py`, `plugin/hooks/post_tool_format.py`, `plugin/skills/{gravity-workflow,caveman}/SKILL.md`):**
+  - Removed the `< 80` file-count heuristic and any downscaling to `low`/`flash_lite`; `evo` now evaluates only `Reviewer` rejections, tool/test/session errors, `guard_deny_recent`, and `eval_pass_rate` to expose `suggested_profile` (`standard` | `deep`) + reason in `status` and `live_state.json` without silently mutating the active profile.
+  - Removed the `slow`/`fast` axis (accepted as deprecated no-op aliases), enforced ephemeral-only `unsafe` / `--no-verify` (never persisted in `profile.json`), and standardized `caveman` default to `"lite"` across all 3 profiles.
+- **Validators, Templates & Living Documentation (`plugin/scripts/{init_workspace,validate,test_unit}.py`, `plugin/scripts/validators/{base,workspace_validator}.py`, `workspace-template/`, `docs/`, `README.md`, `plugin/README.md`):**
+  - Isolated `validators/base.py` dry-runs via `GRAVITY_WORKFLOW_HOME`, updated `workspace-template/` and `workspace_validator.py` for v2 profile schema, and synchronized all living docs.
+
+### Fixed
+- **P0 Runtime Imports & Planner Skip in `review_pipeline.py` and `run_suite.py` (`plugin/workflows/review_pipeline.py`, `plugin/evals/run_suite.py`):**
+  - Fixed `PLUGIN_ROOT` resolution in `run_workflow` environments lacking `__file__` and `os.environ` (`__file__` -> `args["plugin_root"]` -> `WS_ROOT/plugin` -> `WS_ROOT/.agents/plugins/gravity-workflow` -> `~/.gemini/config/plugins/gravity-workflow`), injected `observability/` and `evals/` into `sys.path`, replaced silent fallbacks with explicit `log()` diagnostics, and automatically skipped the separate `Planner` whenever non-empty `args.get("plan")` is supplied.
+
 ## [0.2.1] - 2026-11-22
 
 ### Added

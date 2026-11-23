@@ -6,18 +6,95 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
-WS_ROOT = Path(WORKSPACES[0]) if WORKSPACES else Path.cwd()
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent if "__file__" in globals() else WS_ROOT
-EVALS_DIR = (PLUGIN_ROOT / "evals").resolve()
-if str(EVALS_DIR) not in sys.path:
-    sys.path.insert(0, str(EVALS_DIR))
+try:
+    _WORKSPACES = WORKSPACES  # type: ignore[name-defined]
+except NameError:
+    _WORKSPACES = None
 
-from eval_checks import render_markdown_report, run_deterministic_checks  # type: ignore[import-not-found]
+try:
+    _ARGS: Dict[str, Any] = args if isinstance(args, dict) else {}  # type: ignore[name-defined]
+except NameError:
+    _ARGS = {}
+
+WS_ROOT = Path(_WORKSPACES[0]).resolve() if _WORKSPACES else Path.cwd().resolve()
+
+
+def _log_warn(message: str) -> None:
+    try:
+        log(message)  # type: ignore[name-defined]
+    except NameError:
+        print(message, file=sys.stderr)
+
+
+def _is_workflow_runtime() -> bool:
+    try:
+        _ = agent  # type: ignore[name-defined]
+        _ = phase  # type: ignore[name-defined]
+        _ = parallel  # type: ignore[name-defined]
+        return True
+    except NameError:
+        return False
+
+
+def _resolve_plugin_root() -> Path:
+    candidates: List[Path] = []
+    try:
+        dunder_file = __file__
+    except NameError:
+        dunder_file = None
+    if isinstance(dunder_file, str) and dunder_file.strip():
+        candidates.append(Path(dunder_file).resolve().parent.parent)
+    arg_root = _ARGS.get("plugin_root")
+    if isinstance(arg_root, str) and arg_root.strip():
+        candidates.append(Path(arg_root).expanduser().resolve())
+    candidates.extend(
+        [
+            WS_ROOT / "plugin",
+            WS_ROOT / ".agents" / "plugins" / "gravity-workflow",
+            Path.home() / ".gemini" / "config" / "plugins" / "gravity-workflow",
+        ]
+    )
+    for cand in candidates:
+        if (cand / "evals").is_dir() and (cand / "observability").is_dir():
+            return cand
+    _log_warn(
+        "[WARN] PLUGIN_ROOT introuvable (evals/ + observability/ absents) parmi : "
+        + ", ".join(str(c) for c in candidates)
+    )
+    return candidates[0] if candidates else WS_ROOT
+
+
+PLUGIN_ROOT = _resolve_plugin_root()
+for _sub in ("evals", "observability"):
+    _sub_dir = (PLUGIN_ROOT / _sub).resolve()
+    if _sub_dir.is_dir() and str(_sub_dir) not in sys.path:
+        sys.path.insert(0, str(_sub_dir))
+
+try:
+    from eval_checks import render_markdown_report, run_deterministic_checks  # type: ignore[import-not-found]
+except Exception as exc:
+    _log_warn(f"[ERROR] Import eval_checks impossible depuis {PLUGIN_ROOT / 'evals'} : {type(exc).__name__}: {exc}")
+    raise
 
 WS_CASES_PATH = WS_ROOT / ".agents/gravity-workflow/evals/cases.json"
 CASES_PATH = WS_CASES_PATH if WS_CASES_PATH.is_file() else (PLUGIN_ROOT / "evals/cases.json")
-REPORT_JSON = WS_ROOT / ".agents/gravity-workflow/evals/report.json"
-REPORT_MD = WS_ROOT / ".agents/gravity-workflow/evals/report.md"
+
+
+def _resolve_report_paths() -> tuple:
+    try:
+        from state_writer import resolve_eval_dir  # type: ignore[import-not-found]
+
+        eval_dir = resolve_eval_dir(WS_ROOT)
+        return eval_dir / "report.json", eval_dir / "report.md"
+    except Exception as exc:
+        _log_warn(
+            f"[WARN] Résolution dossier centralisé evals échouée ({type(exc).__name__}: {exc}) — repli workspace."
+        )
+        fallback_dir = WS_ROOT / ".agents/gravity-workflow/evals"
+        return fallback_dir / "report.json", fallback_dir / "report.md"
+
+
+REPORT_JSON, REPORT_MD = _resolve_report_paths()
 
 CANDIDATE_SCHEMA = {
     "type": "object",
@@ -56,42 +133,33 @@ JUDGE_SCHEMA = {
 
 def _safe_update_live(**kwargs: Any) -> None:
     try:
-        obs_dir = (PLUGIN_ROOT / "observability").resolve()
-        if str(obs_dir) not in sys.path:
-            sys.path.insert(0, str(obs_dir))
         from state_writer import update_live_state  # type: ignore[import-not-found]
 
         update_live_state(workspace_root=WS_ROOT, **kwargs)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log_warn(f"[WARN] update_live_state échoué ({type(exc).__name__}: {exc})")
 
 
 def _load_level_preset(level_override: Any) -> Dict[str, Any]:
     fallback: Dict[str, Any] = {
         "eval_candidate": "flash",
         "eval_judge": "pro",
-        "level": "high",
+        "level": "standard",
         "mode": "evo",
     }
     try:
-        obs_dir = (PLUGIN_ROOT / "observability").resolve()
-        if str(obs_dir) not in sys.path:
-            sys.path.insert(0, str(obs_dir))
         from profile_engine import get_active_preset  # type: ignore[import-not-found]
 
         override_str = str(level_override).strip() if level_override else None
         return get_active_preset(WS_ROOT, level_override=override_str)
-    except Exception:
+    except Exception as exc:
+        _log_warn(
+            f"[WARN] Chargement preset profile_engine échoué ({type(exc).__name__}: {exc}) — repli sur preset standard."
+        )
         return fallback
 
 
-preset = _load_level_preset(args.get("level"))
-candidate_model = args.get("candidate_model", preset["eval_candidate"])
-judge_model = args.get("judge_model", preset["eval_judge"])
-selected_ids = args.get("case_ids")
-
-
-async def evaluate_case(case: Dict[str, Any]) -> Dict[str, Any]:
+async def evaluate_case(case: Dict[str, Any], candidate_model: str, judge_model: str) -> Dict[str, Any]:
     """Exécution candidat isolé -> pré-filtre déterministe -> juge indépendant (isolation d'erreur)."""
     cand = agent(
         role=f"Candidate {case['id']}",
@@ -201,48 +269,56 @@ async def evaluate_case(case: Dict[str, Any]) -> Dict[str, Any]:
         del cand
 
 
-all_cases: List[Dict[str, Any]] = json.loads(CASES_PATH.read_text(encoding="utf-8"))
-cases = (
-    [c for c in all_cases if c.get("id") in set(selected_ids)]
-    if isinstance(selected_ids, list) and selected_ids
-    else all_cases
-)
+if _is_workflow_runtime():
+    preset = _load_level_preset(_ARGS.get("level"))
+    candidate_model = str(_ARGS.get("candidate_model") or preset["eval_candidate"])
+    judge_model = str(_ARGS.get("judge_model") or preset["eval_judge"])
+    selected_ids = _ARGS.get("case_ids")
 
-_safe_update_live(
-    stage="evals:running",
-    nodes={"planner": "done", "builder": "active", "reviewer": ""},
-    event={"type": "EVALS", "decision": "allow", "message": f"Lancement de {len(cases)} cas."},
-)
+    all_cases: List[Dict[str, Any]] = json.loads(CASES_PATH.read_text(encoding="utf-8"))
+    cases = (
+        [c for c in all_cases if c.get("id") in set(selected_ids)]
+        if isinstance(selected_ids, list) and selected_ids
+        else all_cases
+    )
 
-phase("1. Exécution parallèle & double filtre (candidat -> déterministe -> juge indépendant)")
-results = await parallel(cases, lambda case: evaluate_case(case))
+    _safe_update_live(
+        stage="evals:running",
+        preset_profile=str(preset.get("level") or "standard"),
+        nodes={"planner": "done", "builder": "active", "reviewer": ""},
+        event={"type": "EVALS", "decision": "allow", "message": f"Lancement de {len(cases)} cas."},
+    )
 
-phase("2. Consolidation double sortie (report.json + report.md)")
-passed_count = sum(1 for r in results if r["verdict"] == "PASS")
-prefilter_rejected = sum(1 for r in results if r["deterministic_failures"])
+    phase("1. Exécution parallèle & double filtre (candidat -> déterministe -> juge indépendant)")
+    results = await parallel(cases, lambda case: evaluate_case(case, candidate_model, judge_model))
 
-summary = {
-    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    "passed": passed_count,
-    "total": len(results),
-    "prefilter_rejected": prefilter_rejected,
-    "results": results,
-}
+    phase("2. Consolidation double sortie (report.json + report.md)")
+    passed_count = sum(1 for r in results if r["verdict"] == "PASS")
+    prefilter_rejected = sum(1 for r in results if r["deterministic_failures"])
 
-REPORT_JSON.parent.mkdir(parents=True, exist_ok=True)
-REPORT_JSON.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-REPORT_MD.write_text(render_markdown_report(summary), encoding="utf-8")
+    summary = {
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "passed": passed_count,
+        "total": len(results),
+        "prefilter_rejected": prefilter_rejected,
+        "results": results,
+    }
 
-all_pass = passed_count == len(results)
-_safe_update_live(
-    stage="evals:done",
-    nodes={"planner": "done", "builder": "done", "reviewer": "done" if all_pass else "fail"},
-    event={
-        "type": "EVALS",
-        "decision": "allow" if all_pass else "deny",
-        "message": f"Score : {passed_count}/{len(results)} PASS (pré-filtre: {prefilter_rejected}).",
-    },
-)
+    REPORT_JSON.parent.mkdir(parents=True, exist_ok=True)
+    REPORT_JSON.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    REPORT_MD.write_text(render_markdown_report(summary), encoding="utf-8")
 
-log(f"Évaluation terminée : {passed_count}/{len(results)} PASS (rejets pré-filtre : {prefilter_rejected}).")
-log(f"Rapports générés : {REPORT_MD} et {REPORT_JSON}")
+    all_pass = passed_count == len(results)
+    _safe_update_live(
+        stage="evals:done",
+        preset_profile=str(preset.get("level") or "standard"),
+        nodes={"planner": "done", "builder": "done", "reviewer": "done" if all_pass else "fail"},
+        event={
+            "type": "EVALS",
+            "decision": "allow" if all_pass else "deny",
+            "message": f"Score : {passed_count}/{len(results)} PASS (pré-filtre: {prefilter_rejected}).",
+        },
+    )
+
+    log(f"Évaluation terminée : {passed_count}/{len(results)} PASS (rejets pré-filtre : {prefilter_rejected}).")
+    log(f"Rapports générés : {REPORT_MD} et {REPORT_JSON}")

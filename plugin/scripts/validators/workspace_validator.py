@@ -198,31 +198,26 @@ def _validate_gravity_project_state(ws: Path, report: Report) -> None:
                 mode_val = pdata.get("mode")
                 level_val = pdata.get("current_level")
                 locked_val = pdata.get("locked")
-                pace_val = pdata.get("pace")
-                verif_val = pdata.get("verification")
-                valid_modes = {"evo", "low", "medium", "high", "ultra"}
-                valid_levels = {"low", "medium", "high", "ultra"}
-                valid_paces = {"slow", "fast"}
-                valid_verifs = {"safe", "unsafe"}
+                level_aliases = {"low": "quick", "medium": "standard", "high": "deep", "ultra": "deep"}
+                valid_levels = {"quick", "standard", "deep"} | set(level_aliases.keys())
+                valid_modes = {"evo"} | valid_levels
                 if mode_val not in valid_modes:
                     report.error(
                         f".agents/gravity-workflow/profile.json : 'mode' ({mode_val!r}) invalide "
-                        f"(attendu : {sorted(valid_modes)})."
+                        f"(attendu : {sorted({'evo', 'quick', 'standard', 'deep'})})."
                     )
                 if level_val not in valid_levels:
                     report.error(
                         f".agents/gravity-workflow/profile.json : 'current_level' ({level_val!r}) invalide "
-                        f"(attendu : {sorted(valid_levels)})."
+                        f"(attendu : {sorted({'quick', 'standard', 'deep'})})."
                     )
-                if pace_val not in valid_paces:
+                if "pace" in pdata and pdata.get("pace") not in {"slow", "fast"}:
                     report.error(
-                        f".agents/gravity-workflow/profile.json : 'pace' ({pace_val!r}) invalide "
-                        f"(attendu : {sorted(valid_paces)})."
+                        f".agents/gravity-workflow/profile.json : 'pace' ({pdata.get('pace')!r}) invalide."
                     )
-                if verif_val not in valid_verifs:
+                if pdata.get("verification") == "unsafe":
                     report.error(
-                        f".agents/gravity-workflow/profile.json : 'verification' ({verif_val!r}) invalide "
-                        f"(attendu : {sorted(valid_verifs)})."
+                        ".agents/gravity-workflow/profile.json : 'verification: unsafe' ne doit jamais être persisté."
                     )
                 if not isinstance(locked_val, bool):
                     report.error(".agents/gravity-workflow/profile.json : 'locked' doit être un booléen.")
@@ -231,11 +226,14 @@ def _validate_gravity_project_state(ws: Path, report: Report) -> None:
                         f".agents/gravity-workflow/profile.json : incohérence entre mode={mode_val!r} "
                         f"et locked={locked_val!r}."
                     )
-                if mode_val in valid_levels and level_val != mode_val:
-                    report.error(
-                        f".agents/gravity-workflow/profile.json : en mode verrouillé {mode_val!r}, "
-                        f"'current_level' ({level_val!r}) doit correspondre à 'mode'."
-                    )
+                if mode_val in valid_levels:
+                    norm_mode = level_aliases.get(str(mode_val), str(mode_val))
+                    norm_level = level_aliases.get(str(level_val), str(level_val))
+                    if norm_level != norm_mode:
+                        report.error(
+                            f".agents/gravity-workflow/profile.json : en mode verrouillé {mode_val!r}, "
+                            f"'current_level' ({level_val!r}) doit correspondre à 'mode'."
+                        )
                 if "caveman" in pdata:
                     cav_val = pdata.get("caveman")
                     valid_caveman = {"off", "lite", "full", "ultra"}

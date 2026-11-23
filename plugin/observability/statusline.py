@@ -70,15 +70,15 @@ def _read_mode_badge(root: Path) -> str:
                 data = json.loads(profile_path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
                     mode = str(data.get("mode", "evo"))
-                    level = str(data.get("current_level", "medium"))
-                    pace = str(data.get("pace", "slow"))
-                    verif = str(data.get("verification", "safe"))
+                    level = str(data.get("current_level", "standard"))
+                    aliases = {"low": "quick", "medium": "standard", "high": "deep", "ultra": "deep"}
+                    level = aliases.get(level, level)
                     if mode == "evo":
-                        return f"evo:{level}/{pace}/{verif}"
-                    return f"{level}[lock]/{pace}/{verif}"
+                        return f"evo:{level}"
+                    return f"{level}[lock]"
             except Exception:
                 pass
-        return "evo:medium/slow/safe"
+        return "evo:standard"
 
 
 def _read_caveman_badge(root: Path) -> str:
@@ -170,6 +170,17 @@ def main() -> int:
 
         eval_str = "Evals N/A"
         report = root / ".agents/gravity-workflow/evals/report.json"
+        try:
+            obs_dir = str((PLUGIN_ROOT / "observability").resolve())
+            if obs_dir not in sys.path:
+                sys.path.insert(0, obs_dir)
+            from state_writer import resolve_eval_dir  # type: ignore[import-not-found]
+
+            central_report = resolve_eval_dir(root) / "report.json"
+            if central_report.is_file():
+                report = central_report
+        except Exception:
+            pass
         if report.is_file():
             try:
                 data = json.loads(report.read_text(encoding="utf-8"))

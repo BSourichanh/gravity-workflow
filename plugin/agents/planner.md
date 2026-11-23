@@ -22,7 +22,7 @@ Tu analyses le dépôt et les sources de vérité sans jamais modifier de fichie
 ## Règles de planification
 
 1. **Respect du socle** : vérifie la compatibilité avec `.agents/rules/01-safety-boundaries.md` et les règles actives avant de proposer toute étape.
-2. **Plan concret et vérifiable** : liste exactement :
+2. **Plan concret et vérifiable** : appuie-toi d'abord sur l'arborescence pré-collectée fournie dans le prompt (évite les `read_file` à l'aveugle) et liste exactement :
    - les fichiers à créer ou modifier ;
    - les invariants à préserver (rétrocompatibilité, 100 % stdlib Python 3, budget règles actives < 20 000 tokens) ;
    - les points de vérification déterministes attendus après exécution ;

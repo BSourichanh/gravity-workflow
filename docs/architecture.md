@@ -76,21 +76,24 @@ workspace-template/
         ├── .gitignore                  # Ignore *.lock, runs.jsonl, last_verified.patch, reports
         ├── PROGRESS.md                 # Suivi des 8 étapes + Bonus
         ├── BACKLOG.md                  # Arbitrages différés & nouveaux cas /learn
-        ├── profile.json                # Profil 3 axes (evo/medium, slow, safe) + caveman (lite, auto)
+        ├── profile.json                # Profil v2 (evo consultatif, standard, caveman: lite)
         ├── evals/cases.json            # Copie locale des 12 cas d'évaluation
         └── observability/live_state.json
 ```
 
 ---
 
-## Initialisation & détection d'état
+## Initialisation, cycle de vie global & stockage centralisé
 
-À l'appel de `/gravity-workflow` (voir [`SKILL.md`](../plugin/skills/gravity-workflow/SKILL.md)) ou via [`init_workspace.py`](../plugin/scripts/init_workspace.py) :
+- **Cycle de vie actif partout :** `SessionStart`, `Stop`, `Live` et `profile_engine` s'exécutent sur tous les dépôts sans nécessiter `/gravity-workflow init`.
+- **Zéro écriture cible par défaut :** tout l'état runtime (`profile.json`, `live_state.json`, `runs.jsonl`, `last_verified.patch`, `evals/report.*`) est centralisé sous `$GRAVITY_WORKFLOW_HOME/workspaces/<slug>-<sha256_8>/` (`$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/`), avec repli lecture seule sur `<ws>/.agents/gravity-workflow/profile.json` si présent.
+
+À l'appel explicite de `/gravity-workflow init` ou via [`init_workspace.py`](../plugin/scripts/init_workspace.py) :
 
 - **Détection automatique dans l'ordre :**
-  1. **Reprise de session** (`.agents/gravity-workflow/PROGRESS.md` présent) : lit `PROGRESS.md` + `profile.json`, vérifie/déploie `.agents/rules/05-git-versioning.md` via `init_workspace.py --ensure-git-rule` s'il est absent, affiche la micro-carte 3 lignes et poursuit la tâche. *(Zéro shim hérité : l'ancien dossier `.agents/gravity/` n'est plus reconnu au runtime.)*
+  1. **Reprise de session** (`.agents/gravity-workflow/PROGRESS.md` présent) : lit `PROGRESS.md` + profil centralisé, vérifie/déploie `.agents/rules/05-git-versioning.md` via `init_workspace.py --ensure-git-rule` s'il est absent, affiche la micro-carte 3 lignes et poursuit la tâche. *(Zéro shim hérité : l'ancien dossier `.agents/gravity/` n'est plus reconnu au runtime.)*
   2. **Mode Audit** (`.agents/` ou `AGENTS.md` présent sans `PROGRESS.md`) : contrôle `trigger:` et le budget `< 20 000` tokens, puis complète `.agents/gravity-workflow/` et `.agents/rules/05-git-versioning.md` (si absent) sans écraser les fichiers existants.
-  3. **Démarrage à froid** (workspace vierge) : `low` lance `--mode quickstart`, `high`/`ultra` lance `--mode full`, `medium` laisse le choix.
+  3. **Démarrage à froid** (workspace vierge) : `quick` lance `--mode quickstart`, `deep` lance `--mode full`, `standard` laisse le choix.
 - **Modes de `init_workspace.py` :**
   - `full` *(défaut)* : déploie les 13 fichiers (`PROGRESS.md` à `0/8` + les 5 modèles de règles).
   - `quickstart` : déploie le socle minimal viable (`AGENTS.md`, `mcp_config.json`, `01-safety-boundaries.md`, `05-git-versioning.md` + `.agents/gravity-workflow/`, `PROGRESS.md` à `Quick Start [~] 3/8`).

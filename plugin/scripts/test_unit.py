@@ -246,6 +246,12 @@ class TestStateWriter(unittest.TestCase):
                     registered = server._load_registered_workspaces()
                     self.assertEqual(len(registered), 1)
                     self.assertEqual(Path(registered[0]["state_path"]).resolve(), state_file.resolve())
+                    self.assertEqual(Path(registered[0]["workspace_path"]).resolve(), ws.resolve())
+
+                    # Stockage centralisé par défaut sous workspaces/<slug>-<sha256_8>/
+                    default_state = state_writer.resolve_state_path(workspace_root=ws)
+                    self.assertEqual(default_state.parent.parent, wf_home.resolve() / "workspaces")
+                    self.assertIn(state_writer.workspace_slug_hash(ws), str(default_state))
 
                     # Explicit REGISTRY_PATH monkeypatch remains supported in both state_writer and server
                     patched_reg = base / "patched" / "live_workspaces.json"
@@ -701,6 +707,7 @@ class TestSafetyPolicy(unittest.TestCase):
             plain_ws = Path(tmp) / "plain_repo"
             plain_ws.mkdir()
             env = dict(os.environ)
+            env["GRAVITY_WORKFLOW_HOME"] = str(Path(tmp) / "wf_home")
             env.pop("GRAVITY_WORKFLOW_STATE_PATH", None)
             env["GRAVITY_WORKFLOW_SKIP_REGISTRY"] = "1"
             payload = json.dumps(
@@ -1289,19 +1296,23 @@ class TestInitWorkspace(unittest.TestCase):
             self.assertEqual(live_state["progress"], "3/8")
             self.assertEqual(live_state["stage"], "quickstart")
             self.assertEqual(live_state["mode"], "evo")
-            self.assertEqual(live_state["level"], "medium")
-            self.assertEqual(live_state["pace"], "slow")
-            self.assertEqual(live_state["verification"], "safe")
+            self.assertEqual(live_state["level"], "standard")
+            self.assertEqual(live_state["preset_profile"], "standard")
+            self.assertEqual(live_state["suggested_profile"], "standard")
+            self.assertNotIn("pace", live_state)
+            self.assertNotIn("verification", live_state)
             self.assertEqual(live_state["caveman"], "lite")
             self.assertFalse(live_state["caveman_locked"])
 
             profile_path = ws / ".agents/gravity-workflow/profile.json"
             self.assertTrue(profile_path.is_file())
             profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            self.assertEqual(profile["schema_version"], 2)
             self.assertEqual(profile["mode"], "evo")
-            self.assertEqual(profile["current_level"], "medium")
-            self.assertEqual(profile["pace"], "slow")
-            self.assertEqual(profile["verification"], "safe")
+            self.assertEqual(profile["current_level"], "standard")
+            self.assertEqual(profile["suggested_profile"], "standard")
+            self.assertNotIn("pace", profile)
+            self.assertNotIn("verification", profile)
             self.assertEqual(profile["caveman"], "lite")
             self.assertFalse(profile["caveman_locked"])
             self.assertFalse(profile["locked"])
@@ -1378,326 +1389,236 @@ class TestInitWorkspace(unittest.TestCase):
 
 class TestProfileEngine(unittest.TestCase):
     def setUp(self) -> None:
-        self._prev_skip = os.environ.get("GRAVITY_WORKFLOW_SKIP_REGISTRY")
-        self._prev_state_path = os.environ.get("GRAVITY_WORKFLOW_STATE_PATH")
+        self._tmp_home = tempfile.TemporaryDirectory()
+        self._env_keys = (
+            "GRAVITY_WORKFLOW_HOME",
+            "GRAVITY_HOME",
+            "GRAVITY_WORKFLOW_SKIP_REGISTRY",
+            "GRAVITY_WORKFLOW_STATE_PATH",
+        )
+        self._saved_env = {k: os.environ.get(k) for k in self._env_keys}
+        os.environ["GRAVITY_WORKFLOW_HOME"] = str(Path(self._tmp_home.name) / "wf_home")
         os.environ["GRAVITY_WORKFLOW_SKIP_REGISTRY"] = "1"
         os.environ.pop("GRAVITY_WORKFLOW_STATE_PATH", None)
+        os.environ.pop("GRAVITY_HOME", None)
 
     def tearDown(self) -> None:
-        if self._prev_skip is None:
-            os.environ.pop("GRAVITY_WORKFLOW_SKIP_REGISTRY", None)
-        else:
-            os.environ["GRAVITY_WORKFLOW_SKIP_REGISTRY"] = self._prev_skip
-        if self._prev_state_path is None:
-            os.environ.pop("GRAVITY_WORKFLOW_STATE_PATH", None)
-        else:
-            os.environ["GRAVITY_WORKFLOW_STATE_PATH"] = self._prev_state_path
+        for k, val in self._saved_env.items():
+            if val is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = val
+        self._tmp_home.cleanup()
 
-    def test_default_profile_and_lock_unlock_flow(self) -> None:
+    def test_default_profile_centralized_and_lock_unlock_aliases(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ws = Path(tmp)
+            ws = Path(tmp) / "plain_repo"
+            ws.mkdir()
+
             default_prof = profile_engine.load_profile(ws)
             self.assertEqual(default_prof["mode"], "evo")
-            self.assertEqual(default_prof["current_level"], "medium")
-            self.assertEqual(default_prof["pace"], "slow")
-            self.assertEqual(default_prof["verification"], "safe")
+            self.assertEqual(default_prof["current_level"], "standard")
+            self.assertEqual(default_prof["suggested_profile"], "standard")
             self.assertFalse(default_prof["locked"])
-            self.assertEqual(
-                profile_engine.format_mode_badge(default_prof), "evo:medium/slow/safe"
-            )
+            self.assertEqual(profile_engine.format_mode_badge(default_prof), "evo:standard")
 
-            locked_prof = profile_engine.set_mode(ws, "high")
-            self.assertEqual(locked_prof["mode"], "high")
-            self.assertEqual(locked_prof["current_level"], "high")
-            self.assertEqual(locked_prof["pace"], "slow")
-            self.assertEqual(locked_prof["verification"], "safe")
+            locked_prof = profile_engine.set_mode(ws, "deep")
+            self.assertEqual(locked_prof["mode"], "deep")
+            self.assertEqual(locked_prof["current_level"], "deep")
             self.assertTrue(locked_prof["locked"])
-            self.assertEqual(
-                profile_engine.format_mode_badge(locked_prof), "high[lock]/slow/safe"
-            )
+            self.assertEqual(profile_engine.format_mode_badge(locked_prof), "deep[lock]")
 
-            live = json.loads(
-                (ws / ".agents/gravity-workflow/observability/live_state.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(live["mode"], "high")
-            self.assertEqual(live["level"], "high")
+            # Zéro écriture dans le workspace cible : tout est centralisé
+            self.assertFalse((ws / ".agents").exists())
+            central_live = state_writer.resolve_state_path(workspace_root=ws)
+            self.assertTrue(central_live.is_file())
+            live = json.loads(central_live.read_text(encoding="utf-8"))
+            self.assertEqual(live["mode"], "deep")
+            self.assertEqual(live["level"], "deep")
+            self.assertEqual(live["preset_profile"], "deep")
 
             unlocked_evo = profile_engine.set_mode(ws, "evo")
             self.assertEqual(unlocked_evo["mode"], "evo")
             self.assertFalse(unlocked_evo["locked"])
-            self.assertEqual(unlocked_evo["current_level"], "high")
+            self.assertEqual(unlocked_evo["current_level"], "deep")
 
-            profile_engine.set_mode(ws, "low")
+            # Alias rétrocompatibles low->quick, medium->standard, high/ultra->deep, evolutive->evo
+            self.assertEqual(profile_engine.set_mode(ws, "low")["current_level"], "quick")
+            self.assertEqual(profile_engine.set_mode(ws, "medium")["current_level"], "standard")
+            self.assertEqual(profile_engine.set_mode(ws, "high")["current_level"], "deep")
+            self.assertEqual(profile_engine.set_mode(ws, "ultra")["current_level"], "deep")
             unlocked_alias = profile_engine.set_mode(ws, "evolutive")
             self.assertEqual(unlocked_alias["mode"], "evo")
             self.assertFalse(unlocked_alias["locked"])
-            self.assertEqual(unlocked_alias["current_level"], "low")
 
-    def test_presets_overrides_and_allow_pro_fallback(self) -> None:
+    def test_three_profiles_no_dead_keys_ab_overrides_and_allow_pro_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ws = Path(tmp)
-            init_workspace.init_workspace(ws, mode="quickstart", force=False)
+            ws = Path(tmp) / "repo"
+            ws.mkdir()
 
-            p_low = profile_engine.get_active_preset(ws, level_override="low")
-            self.assertEqual(p_low["build_model"], "flash_lite")
-            self.assertEqual(p_low["max_remediation_rounds"], 0)
+            expected_keys = {
+                "mode",
+                "level",
+                "locked",
+                "suggested_profile",
+                "last_reason",
+                "plan_model",
+                "build_model",
+                "review_model",
+                "eval_candidate",
+                "eval_judge",
+                "max_remediation_rounds",
+                "skip_separate_planner",
+                "skip_verification",
+                "caveman",
+                "caveman_planner",
+                "caveman_evals",
+            }
 
-            p_med = profile_engine.get_active_preset(ws)
-            self.assertEqual(p_med["level"], "medium")
-            self.assertEqual(p_med["plan_model"], "inherit")
-            self.assertEqual(p_med["build_model"], "flash")
-            self.assertEqual(p_med["review_model"], "pro")
-            self.assertEqual(p_med["max_remediation_rounds"], 1)
+            p_quick = profile_engine.get_active_preset(ws, level_override="quick")
+            self.assertEqual(set(p_quick.keys()), expected_keys)
+            self.assertEqual(p_quick["build_model"], "flash")
+            self.assertEqual(p_quick["plan_model"], "flash")
+            self.assertEqual(p_quick["review_model"], "flash")
+            self.assertEqual(p_quick["max_remediation_rounds"], 0)
+            self.assertTrue(p_quick["skip_separate_planner"])
 
-            p_high = profile_engine.get_active_preset(ws, level_override="high")
-            self.assertEqual(p_high["plan_model"], "pro")
-            self.assertEqual(p_high["max_remediation_rounds"], 2)
+            p_std = profile_engine.get_active_preset(ws)
+            self.assertEqual(set(p_std.keys()), expected_keys)
+            self.assertEqual(p_std["level"], "standard")
+            self.assertEqual(p_std["plan_model"], "flash")
+            self.assertEqual(p_std["build_model"], "flash")
+            self.assertEqual(p_std["review_model"], "pro")
+            self.assertEqual(p_std["max_remediation_rounds"], 1)
+            self.assertFalse(p_std["skip_separate_planner"])
 
-            p_ultra = profile_engine.get_active_preset(ws, level_override="ultra")
-            self.assertEqual(p_ultra["build_model"], "pro")
-            self.assertTrue(p_ultra["swarm_cross_model"])
+            p_deep = profile_engine.get_active_preset(ws, level_override="deep")
+            self.assertEqual(p_deep["plan_model"], "pro")
+            self.assertEqual(p_deep["build_model"], "flash")
+            self.assertEqual(p_deep["review_model"], "pro")
+            self.assertEqual(p_deep["max_remediation_rounds"], 2)
 
-            prof_path = profile_engine.resolve_profile_path(ws)
-            pdata = json.loads(prof_path.read_text(encoding="utf-8"))
-            pdata["allow_pro"] = False
-            pdata["model_overrides"] = {"build_model": "flash_lite"}
-            prof_path.write_text(json.dumps(pdata), encoding="utf-8")
-
-            p_free = profile_engine.get_active_preset(ws, level_override="ultra")
-            self.assertEqual(p_free["plan_model"], "inherit")
-            self.assertEqual(p_free["review_model"], "inherit")
-            self.assertEqual(p_free["build_model"], "flash_lite")
-
-    def test_evolve_upscale_capped_at_one_step_and_respects_lock(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            ws = Path(tmp)
-            init_workspace.init_workspace(ws, mode="full", force=False)
-            (ws / ".github/workflows").mkdir(parents=True)
-            (ws / "tests").mkdir()
-            src = ws / "src"
-            src.mkdir()
-            for i in range(260):
-                (src / f"mod_{i}.py").write_text("x = 1\n", encoding="utf-8")
-            (ws / ".agents/gravity-workflow/observability/live_state.json").write_text(
-                json.dumps({"events": [{"type": "GUARD:run_command", "decision": "deny"}]}),
+            # Repli lecture seule sur <ws>/.agents/gravity-workflow/profile.json si centralisé absent
+            ro_prof = ws / ".agents/gravity-workflow/profile.json"
+            ro_prof.parent.mkdir(parents=True)
+            ro_prof.write_text(
+                json.dumps({"mode": "high", "allow_pro": False, "verification": "unsafe"}),
                 encoding="utf-8",
             )
+            p_ro = profile_engine.get_active_preset(ws)
+            self.assertEqual(p_ro["level"], "deep")
+            self.assertEqual(p_ro["plan_model"], "flash")
+            self.assertEqual(p_ro["review_model"], "flash")
+            # unsafe persisté dans un ancien fichier est ignoré
+            self.assertFalse(p_ro["skip_verification"])
 
-            # Even with ultra-level signals (>80), medium steps only +1 -> high
-            res1 = profile_engine.evolve_on_stop(
-                ws,
-                {"conversation_id": "c-1", "fully_idle": True, "termination_reason": "ERROR", "error": "boom"},
-            )
-            self.assertIsNotNone(res1)
-            assert res1 is not None
-            self.assertEqual(res1["current_level"], "high")
-            self.assertEqual(res1["suggested_level"], "ultra")
-
-            # Locked mode must not change current_level even on strong signals
-            profile_engine.set_mode(ws, "low")
-            res_locked = profile_engine.evolve_on_stop(
-                ws,
-                {"conversation_id": "c-2", "fully_idle": True, "termination_reason": "NO_TOOL_CALL"},
-            )
-            self.assertIsNotNone(res_locked)
-            assert res_locked is not None
-            self.assertEqual(res_locked["current_level"], "low")
-            self.assertTrue(res_locked["locked"])
-            self.assertIn(res_locked["suggested_level"], ("medium", "high", "ultra"))
-
-    def test_evolve_downscale_clean_streak_and_hysteresis(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            ws = Path(tmp)
-            init_workspace.init_workspace(ws, mode="quickstart", force=False)
-            # Build a small project scoring 25 (boundary for medium: files<15 (+5), tests (+5), ci (+5), 4 rules (+5), mcp (+5))
-            (ws / ".github/workflows").mkdir(parents=True)
-            (ws / "tests").mkdir()
-            for idx in range(2, 5):
-                (ws / f".agents/rules/0{idx}-r.md").write_text("---\ntrigger: manual\n---\n", encoding="utf-8")
-            (ws / ".agents/mcp_config.json").write_text(
-                json.dumps({"mcpServers": {"s1": {"serverUrl": "https://example.com"}}}),
-                encoding="utf-8",
-            )
-
-            # Sessions 1 and 2: score 25 keeps medium (below 20 required to drop)
-            r1 = profile_engine.evolve_on_stop(ws, {"conversation_id": "s1", "fully_idle": True})
-            r2 = profile_engine.evolve_on_stop(ws, {"conversation_id": "s2", "fully_idle": True})
-            assert r1 is not None and r2 is not None
-            self.assertEqual(r1["current_level"], "medium")
-            self.assertEqual(r2["current_level"], "medium")
-
-            # Session 3: clean_streak >= 3 subtracts 10 -> score 15 (< 20) -> steps down medium -> low
-            r3 = profile_engine.evolve_on_stop(ws, {"conversation_id": "s3", "fully_idle": True})
-            assert r3 is not None
-            self.assertEqual(r3["clean_streak"], 3)
-            self.assertEqual(r3["last_score"], 15)
-            self.assertEqual(r3["current_level"], "low")
-
-            # Hysteresis helper check: score 57 in medium stays medium (needs >= 60)
-            self.assertEqual(profile_engine.choose_next_level("medium", 57, "high"), "medium")
-            self.assertEqual(profile_engine.choose_next_level("medium", 60, "high"), "high")
-            self.assertEqual(profile_engine.choose_next_level("high", 52, "medium"), "high")
-            self.assertEqual(profile_engine.choose_next_level("high", 49, "medium"), "medium")
-
-    def test_evolve_idempotency_fully_idle_and_non_gravity_workspace(self) -> None:
-        with tempfile.TemporaryDirectory() as plain_tmp:
-            plain = Path(plain_tmp)
-            self.assertIsNone(
-                profile_engine.evolve_on_stop(plain, {"conversation_id": "x1", "fully_idle": True})
-            )
-            self.assertFalse((plain / ".agents/gravity-workflow/profile.json").exists())
-
-        with tempfile.TemporaryDirectory() as tmp:
-            ws = Path(tmp)
-            init_workspace.init_workspace(ws, mode="quickstart", force=False)
-            mid = profile_engine.evolve_on_stop(
-                ws, {"conversation_id": "conv-a", "fully_idle": False}
-            )
-            assert mid is not None
-            self.assertEqual(mid["sessions_analyzed"], 0)
-
-            first = profile_engine.evolve_on_stop(
-                ws, {"conversation_id": "conv-a", "fully_idle": True}
-            )
-            second = profile_engine.evolve_on_stop(
-                ws, {"conversation_id": "conv-a", "fully_idle": True}
-            )
-            assert first is not None and second is not None
-            self.assertEqual(first["sessions_analyzed"], 1)
-            self.assertEqual(second["sessions_analyzed"], 1)
-
-    def test_orthogonal_pace_and_verification_axes_and_post_hook(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            ws = Path(tmp)
-            init_workspace.init_workspace(ws, mode="quickstart", force=False)
-
-            p_def = profile_engine.get_active_preset(ws)
-            self.assertEqual(p_def["pace"], "slow")
-            self.assertEqual(p_def["verification"], "safe")
-            self.assertEqual(p_def["workflow_strategy"], "by_responsibility")
-            self.assertFalse(p_def["skip_verification"])
-            self.assertFalse(p_def["skip_tests"])
-            self.assertFalse(p_def["skip_separate_planner"])
-
-            # Axe 2 (fast) optimise le workflow sans modifier la réflexion ni désactiver les tests
-            fast_prof = profile_engine.set_pace(ws, "fast")
-            self.assertEqual(fast_prof["pace"], "fast")
-            self.assertEqual(fast_prof["verification"], "safe")
-            self.assertEqual(
-                profile_engine.format_mode_badge(fast_prof), "evo:medium/fast/safe"
-            )
-
-            model_keys = ("plan_model", "build_model", "review_model", "eval_candidate", "eval_judge")
-            for lvl in ("high", "ultra"):
-                pr_slow = profile_engine.get_active_preset(ws, level_override=lvl, pace_override="slow")
-                pr_fast = profile_engine.get_active_preset(ws, level_override=lvl, pace_override="fast")
-                for k in model_keys:
-                    self.assertEqual(pr_slow[k], pr_fast[k])
-
-            p_high_fast = profile_engine.get_active_preset(ws, level_override="high")
-            self.assertEqual(p_high_fast["workflow_strategy"], "time_optimized")
-            self.assertTrue(p_high_fast["parallelize_aggressively"])
-            self.assertTrue(p_high_fast["skip_separate_planner"])
-            self.assertFalse(p_high_fast["skip_verification"])
-            self.assertFalse(p_high_fast["skip_tests"])
-            self.assertEqual(p_high_fast["max_remediation_rounds"], 1)
-
-            # Axe 3 (unsafe) désactive vérifications et tests sans altérer pace ni modèles
-            unsafe_prof = profile_engine.set_verification(ws, "unsafe")
-            self.assertEqual(unsafe_prof["verification"], "unsafe")
-            self.assertEqual(unsafe_prof["pace"], "fast")
-            self.assertEqual(
-                profile_engine.format_mode_badge(unsafe_prof), "evo:medium/fast/unsafe"
-            )
-
-            p_unsafe = profile_engine.get_active_preset(ws)
-            self.assertTrue(p_unsafe["skip_verification"])
-            self.assertTrue(p_unsafe["skip_tests"])
-            self.assertEqual(p_unsafe["max_remediation_rounds"], 0)
-            self.assertEqual(p_unsafe["use_review_pipeline"], "disabled_unsafe")
-            self.assertEqual(p_unsafe["eval_scope"], "disabled_unsafe")
-
-            live = json.loads(
-                (ws / ".agents/gravity-workflow/observability/live_state.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(live["verification"], "unsafe")
-            self.assertEqual(live["pace"], "fast")
-
-            # evo stop préserve à la fois pace et verification
-            after_evo = profile_engine.evolve_on_stop(
-                ws, {"conversation_id": "conv-3axes", "fully_idle": True}
-            )
-            assert after_evo is not None
-            self.assertEqual(after_evo["pace"], "fast")
-            self.assertEqual(after_evo["verification"], "unsafe")
-
-            # Combinaison 3 axes et restauration sélective
-            comb = profile_engine.update_profile_settings(
-                ws, raw_mode="high", raw_pace="fast", raw_verification="unsafe"
-            )
-            self.assertEqual(
-                profile_engine.format_mode_badge(comb), "high[lock]/fast/unsafe"
-            )
-            safe_only = profile_engine.set_verification(ws, "safe")
-            self.assertEqual(
-                profile_engine.format_mode_badge(safe_only), "high[lock]/fast/safe"
-            )
-            slow_only = profile_engine.set_pace(ws, "slow")
-            self.assertEqual(slow_only["pace"], "slow")
-            self.assertEqual(
-                profile_engine.format_mode_badge(slow_only), "high[lock]/slow/safe"
-            )
-            # Les alias retirés et valeurs inconnues doivent lever ValueError
-            for bad_mode in ("auto",):
-                with self.assertRaises(ValueError):
-                    profile_engine.set_mode(ws, bad_mode)
-
-            with self.assertRaises(ValueError) as pace_err:
-                profile_engine.set_pace(ws, "default")
-            self.assertIn("Stratégie workflow Gravity invalide", str(pace_err.exception))
-
-            for bad_pace in ("normal", "responsibility"):
-                with self.assertRaises(ValueError):
-                    profile_engine.set_pace(ws, bad_pace)
-
-            with self.assertRaises(ValueError):
-                profile_engine.set_verification(ws, "yolo")
-
-            # Dry-run post_tool_format.py en mode unsafe
-            profile_engine.set_verification(ws, "unsafe")
-            sample_py = ws / "sample.py"
-            sample_py.write_text("x=1\n", encoding="utf-8")
-            post_hook = PLUGIN_ROOT / "hooks/post_tool_format.py"
-            post_payload = json.dumps(
-                {
-                    "toolCall": {"name": "write_to_file", "args": {"TargetFile": str(sample_py)}},
-                    "stepIdx": 1,
-                    "cwd": str(ws),
-                }
-            )
-            proc = subprocess.run(
-                [sys.executable, str(post_hook)],
-                input=post_payload,
+            # Surcharges A/B via CLI (--plan-model, --build-model, --review-model)
+            cli_script = PLUGIN_ROOT / "observability/profile_engine.py"
+            proc_ab = subprocess.run(
+                [
+                    sys.executable,
+                    str(cli_script),
+                    "set",
+                    "--workspace",
+                    str(ws),
+                    "--mode",
+                    "deep",
+                    "--allow-pro",
+                    "true",
+                    "--build-model",
+                    "pro",
+                    "--plan-model",
+                    "flash",
+                    "--json",
+                ],
                 text=True,
                 capture_output=True,
-                cwd=str(PLUGIN_ROOT),
                 timeout=5,
                 check=False,
             )
-            self.assertEqual(proc.returncode, 0)
-            self.assertEqual(proc.stdout.strip(), "{}")
-            self.assertEqual(sample_py.read_text(encoding="utf-8"), "x=1\n")
+            self.assertEqual(proc_ab.returncode, 0, proc_ab.stderr)
+            ab_data = json.loads(proc_ab.stdout)
+            self.assertEqual(ab_data["preset"]["plan_model"], "flash")
+            self.assertEqual(ab_data["preset"]["build_model"], "pro")
+            self.assertEqual(ab_data["preset"]["review_model"], "pro")
+
+    def test_consultative_evo_behavioral_without_file_count_or_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "small_plain_repo"
+            ws.mkdir()
+            (ws / "only_one.py").write_text("x = 1\n", encoding="utf-8")
+
+            # Dépôt < 80 fichiers et sans init : evo s'exécute sans polluer ws et sans rétrograder en quick/flash_lite
+            r1 = profile_engine.evolve_on_stop(
+                ws, {"conversation_id": "s1", "fully_idle": True, "termination_reason": "NO_TOOL_CALL"}
+            )
+            self.assertEqual(r1["current_level"], "standard")
+            self.assertEqual(r1["suggested_profile"], "standard")
+            self.assertFalse((ws / ".agents").exists())
+
+            # Friction comportementale (rejet Reviewer + deny) -> suggested_profile='deep' sans muter current_level
+            state_writer.update_live_state(
+                workspace_root=ws,
+                event={"type": "REVIEWER", "decision": "force_ask", "message": "FAIL — écart majeur"},
+            )
+            state_writer.update_live_state(
+                workspace_root=ws,
+                event={"type": "GUARD:run_command", "decision": "deny", "message": "blocked"},
+            )
+            r2 = profile_engine.evolve_on_stop(
+                ws, {"conversation_id": "s2", "fully_idle": True, "termination_reason": "NO_TOOL_CALL"}
+            )
+            self.assertEqual(r2["current_level"], "standard")
+            self.assertEqual(r2["suggested_profile"], "deep")
+            self.assertIn("rejet(s) Reviewer", r2["last_reason"])
+
+            live = json.loads(state_writer.resolve_state_path(workspace_root=ws).read_text(encoding="utf-8"))
+            self.assertEqual(live["suggested_profile"], "deep")
+            self.assertEqual(live["level"], "standard")
+
+            # Retour au calme sur session suivante -> suggested_profile='standard'
+            r3 = profile_engine.evolve_on_stop(
+                ws, {"conversation_id": "s3", "fully_idle": True, "termination_reason": "NO_TOOL_CALL"}
+            )
+            self.assertEqual(r3["current_level"], "standard")
+            self.assertEqual(r3["suggested_profile"], "standard")
+
+    def test_deprecated_pace_and_ephemeral_unsafe_never_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "ephemeral_ws"
+            ws.mkdir()
+
+            # Alias historiques slow/fast tolérés sans crash ni persistance
+            p_fast = profile_engine.update_profile_settings(ws, raw_pace="fast")
+            self.assertNotIn("pace", p_fast)
+
+            # unsafe ne doit JAMAIS être persisté
+            with self.assertRaises(ValueError):
+                profile_engine.update_profile_settings(ws, raw_verification="unsafe")
+
+            # Mais éphémère en mémoire via get_active_preset
+            ephem = profile_engine.get_active_preset(ws, no_verify=True)
+            self.assertTrue(ephem["skip_verification"])
+            self.assertEqual(ephem["max_remediation_rounds"], 0)
+
+            persisted = profile_engine.get_active_preset(ws)
+            self.assertFalse(persisted["skip_verification"])
+            self.assertEqual(persisted["max_remediation_rounds"], 1)
+
+            for bad_mode in ("auto", "yolo"):
+                with self.assertRaises(ValueError):
+                    profile_engine.set_mode(ws, bad_mode)
 
     def test_terminal_custom_hook_event_window_and_multiturn_evo(self) -> None:
         stop_hook = PLUGIN_ROOT / "hooks/stop_session_logger.py"
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            plain_ws = base / "plain"
+            plain_ws = base / "plain_repo"
             plain_ws.mkdir()
 
             p_plain = subprocess.run(
                 [sys.executable, str(stop_hook)],
-                input=json.dumps({"cwd": str(plain_ws), "fullyIdle": True}),
+                input=json.dumps({"cwd": str(plain_ws), "fullyIdle": True, "conversationId": "c-plain"}),
                 text=True,
                 encoding="utf-8",
                 capture_output=True,
@@ -1707,12 +1628,17 @@ class TestProfileEngine(unittest.TestCase):
             )
             self.assertEqual(p_plain.returncode, 0)
             self.assertEqual(p_plain.stdout.strip(), "{}")
+            # Zéro écriture dans le workspace cible mais runs.jsonl + profile.json centralisés créés
             self.assertFalse((plain_ws / ".agents").exists())
+            runs_file = state_writer.resolve_runs_log_path(plain_ws)
+            self.assertTrue(runs_file.is_file())
+            last_run = json.loads(runs_file.read_text(encoding="utf-8").splitlines()[-1])
+            self.assertEqual(last_run["preset_profile"], "standard")
+            self.assertIn("role_models", last_run)
 
             ws = base / "gravity_ws"
-            init_workspace.init_workspace(ws, mode="quickstart", force=False)
+            ws.mkdir()
 
-            # Un événement deny enregistré avant la fin de la session 1 ne doit pas polluer la session 2
             state_writer.update_live_state(
                 workspace_root=ws,
                 event={"type": "GUARD:run_command", "decision": "deny", "message": "old deny"},
@@ -1726,13 +1652,12 @@ class TestProfileEngine(unittest.TestCase):
                     "termination_reason": "TERMINAL_CUSTOM_HOOK",
                 },
             )
-            assert r1 is not None
             self.assertFalse(r1["signals"]["session_error"])
             self.assertEqual(r1["signals"]["guard_deny_recent"], 1)
-            self.assertEqual(r1["clean_streak"], 0)
+            self.assertEqual(r1["suggested_profile"], "deep")
             self.assertEqual(r1["sessions_analyzed"], 1)
 
-            # Tour 2 de la même conversation : réévaluation sans double comptage de sessions_analyzed
+            # Tour 2 de la même conversation : réévaluation sans double comptage
             r1_t2 = profile_engine.evolve_on_stop(
                 ws,
                 {
@@ -1742,42 +1667,33 @@ class TestProfileEngine(unittest.TestCase):
                     "termination_reason": "TERMINAL_CUSTOM_HOOK",
                 },
             )
-            assert r1_t2 is not None
             self.assertEqual(r1_t2["sessions_analyzed"], 1)
             self.assertEqual(r1_t2["signals"]["guard_deny_recent"], 0)
-
-            # Session 2 propre : l'ancien deny antérieur à last_updated est ignoré
-            r2 = profile_engine.evolve_on_stop(
-                ws,
-                {
-                    "conversation_id": "conv-m2",
-                    "execution_num": 1,
-                    "fully_idle": True,
-                    "termination_reason": "TERMINAL_CUSTOM_HOOK",
-                },
-            )
-            assert r2 is not None
-            self.assertEqual(r2["sessions_analyzed"], 2)
-            self.assertEqual(r2["signals"]["guard_deny_recent"], 0)
-            self.assertEqual(r2["clean_streak"], 1)
+            self.assertEqual(r1_t2["suggested_profile"], "standard")
 
 
 class TestCavemanIntegration(unittest.TestCase):
     def setUp(self) -> None:
-        self._prev_skip = os.environ.get("GRAVITY_WORKFLOW_SKIP_REGISTRY")
-        self._prev_state_path = os.environ.get("GRAVITY_WORKFLOW_STATE_PATH")
+        self._tmp_home = tempfile.TemporaryDirectory()
+        self._env_keys = (
+            "GRAVITY_WORKFLOW_HOME",
+            "GRAVITY_HOME",
+            "GRAVITY_WORKFLOW_SKIP_REGISTRY",
+            "GRAVITY_WORKFLOW_STATE_PATH",
+        )
+        self._saved_env = {k: os.environ.get(k) for k in self._env_keys}
+        os.environ["GRAVITY_WORKFLOW_HOME"] = str(Path(self._tmp_home.name) / "wf_home")
         os.environ["GRAVITY_WORKFLOW_SKIP_REGISTRY"] = "1"
         os.environ.pop("GRAVITY_WORKFLOW_STATE_PATH", None)
+        os.environ.pop("GRAVITY_HOME", None)
 
     def tearDown(self) -> None:
-        if self._prev_skip is None:
-            os.environ.pop("GRAVITY_WORKFLOW_SKIP_REGISTRY", None)
-        else:
-            os.environ["GRAVITY_WORKFLOW_SKIP_REGISTRY"] = self._prev_skip
-        if self._prev_state_path is None:
-            os.environ.pop("GRAVITY_WORKFLOW_STATE_PATH", None)
-        else:
-            os.environ["GRAVITY_WORKFLOW_STATE_PATH"] = self._prev_state_path
+        for k, val in self._saved_env.items():
+            if val is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = val
+        self._tmp_home.cleanup()
 
     def test_caveman_protocol_rules_and_directives(self) -> None:
         self.assertEqual(caveman_protocol.normalize_caveman(" EVO "), "auto")
@@ -1792,33 +1708,18 @@ class TestCavemanIntegration(unittest.TestCase):
         self.assertEqual(caveman_protocol.effective_planner_caveman("off"), "off")
         self.assertEqual(caveman_protocol.effective_planner_caveman("unknown"), "off")
 
-        # Nominal -> lite
-        lvl_nom, _ = caveman_protocol.choose_evo_caveman("medium", {}, 1)
-        self.assertEqual(lvl_nom, "lite")
+        # lite par défaut sur les 3 profils (full auto réservé Phase 3)
+        for tier in ("quick", "standard", "deep"):
+            auto_lvl, _ = caveman_protocol.choose_evo_caveman(tier, {}, 10)
+            self.assertEqual(auto_lvl, "lite")
 
-        # clean_streak >= 2 -> full
-        lvl_streak, _ = caveman_protocol.choose_evo_caveman("medium", {}, 2)
-        self.assertEqual(lvl_streak, "full")
-
-        # high / ultra propre -> full dès session 0
-        lvl_high, _ = caveman_protocol.choose_evo_caveman("high", {}, 0)
-        self.assertEqual(lvl_high, "full")
-        lvl_ultra, _ = caveman_protocol.choose_evo_caveman("ultra", {}, 0)
-        self.assertEqual(lvl_ultra, "full")
-
-        # Instabilité -> toujours lite (même en high avec clean_streak élevé)
         for bad_sig in (
             {"session_error": True},
             {"guard_deny_recent": 1},
             {"eval_pass_rate": 0.75},
         ):
-            lvl_err, _ = caveman_protocol.choose_evo_caveman("high", bad_sig, 5)
+            lvl_err, _ = caveman_protocol.choose_evo_caveman("deep", bad_sig, 5)
             self.assertEqual(lvl_err, "lite")
-
-        # Jamais ultra ni off automatiquement
-        for tier in ("low", "medium", "high", "ultra"):
-            auto_lvl, _ = caveman_protocol.choose_evo_caveman(tier, {}, 10)
-            self.assertIn(auto_lvl, ("lite", "full"))
 
         self.assertEqual(caveman_protocol.build_session_start_prompt("off"), "")
         prompt_lite = caveman_protocol.build_session_start_prompt("lite", locked=False)
@@ -1838,8 +1739,8 @@ class TestCavemanIntegration(unittest.TestCase):
 
     def test_profile_engine_caveman_lock_evo_and_cli(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ws = Path(tmp)
-            init_workspace.init_workspace(ws, mode="quickstart", force=False)
+            ws = Path(tmp) / "ws"
+            ws.mkdir()
 
             prof0 = profile_engine.load_profile(ws)
             self.assertEqual(prof0["caveman"], "lite")
@@ -1855,8 +1756,6 @@ class TestCavemanIntegration(unittest.TestCase):
             preset_ultra = profile_engine.get_active_preset(ws)
             self.assertEqual(preset_ultra["caveman"], "ultra")
             self.assertEqual(preset_ultra["caveman_planner"], "full")
-            self.assertEqual(preset_ultra["caveman_reviewer"], "ultra")
-            self.assertEqual(preset_ultra["caveman_builder"], "ultra")
             self.assertEqual(preset_ultra["caveman_evals"], "off")
             self.assertEqual(
                 profile_engine.get_active_preset(ws, caveman_override="lite")["caveman_planner"],
@@ -1867,48 +1766,29 @@ class TestCavemanIntegration(unittest.TestCase):
             evolved_locked = profile_engine.evolve_on_stop(
                 ws, {"conversation_id": "cav-lock-1", "fully_idle": True}
             )
-            assert evolved_locked is not None
             self.assertEqual(evolved_locked["caveman"], "ultra")
             self.assertTrue(evolved_locked["caveman_locked"])
 
-            # Déverrouillage via auto / evo
+            # Déverrouillage via auto / evo -> revient au défaut lite
             unlocked = profile_engine.set_caveman(ws, "evo")
             self.assertFalse(unlocked["caveman_locked"])
             self.assertEqual(unlocked["caveman"], "lite")
 
-            # Montée lite -> full à clean_streak == 2
             ev2 = profile_engine.evolve_on_stop(
                 ws, {"conversation_id": "cav-clean-2", "fully_idle": True}
             )
-            assert ev2 is not None
             self.assertEqual(ev2["clean_streak"], 2)
-            self.assertEqual(ev2["caveman"], "full")
+            self.assertEqual(ev2["caveman"], "lite")
 
-            # Redescente full -> lite sur erreur de session
-            ev3 = profile_engine.evolve_on_stop(
-                ws,
-                {
-                    "conversation_id": "cav-err-3",
-                    "fully_idle": True,
-                    "termination_reason": "ERROR",
-                    "error": "boom",
-                },
-            )
-            assert ev3 is not None
-            self.assertEqual(ev3["clean_streak"], 0)
-            self.assertEqual(ev3["caveman"], "lite")
-
-            # Indépendance entre locked (Axe 1) et caveman_locked
-            profile_engine.set_mode(ws, "low")
-            profile_engine.evolve_on_stop(ws, {"conversation_id": "cav-indep-4", "fully_idle": True})
+            # Indépendance entre locked et caveman_locked
+            profile_engine.set_mode(ws, "quick")
             ev5 = profile_engine.evolve_on_stop(
                 ws, {"conversation_id": "cav-indep-5", "fully_idle": True}
             )
-            assert ev5 is not None
             self.assertTrue(ev5["locked"])
-            self.assertEqual(ev5["current_level"], "low")
+            self.assertEqual(ev5["current_level"], "quick")
             self.assertFalse(ev5["caveman_locked"])
-            self.assertEqual(ev5["caveman"], "full")
+            self.assertEqual(ev5["caveman"], "lite")
 
             # CLI set --caveman & get --json
             cli_script = PLUGIN_ROOT / "observability/profile_engine.py"
@@ -1955,9 +1835,9 @@ class TestCavemanIntegration(unittest.TestCase):
             plain = base / "plain"
             plain.mkdir()
             ws = base / "gravity_ws"
-            init_workspace.init_workspace(ws, mode="quickstart", force=False)
+            ws.mkdir()
 
-            # Hors projet Gravity -> {}
+            # Actif partout sans init -> injectSteps (niveau=lite) sur dépôt vierge
             p_plain = subprocess.run(
                 [sys.executable, str(session_hook)],
                 input=json.dumps({"cwd": str(plain)}),
@@ -1968,7 +1848,9 @@ class TestCavemanIntegration(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(p_plain.returncode, 0)
-            self.assertEqual(p_plain.stdout.strip(), "{}")
+            out_plain = json.loads(p_plain.stdout.strip())
+            self.assertIn("niveau=lite", out_plain["injectSteps"][0]["systemMessage"]["systemMessage"])
+            self.assertFalse((plain / ".agents").exists())
 
             # stdin malformé -> {}
             p_bad = subprocess.run(
@@ -2028,7 +1910,7 @@ class TestCavemanIntegration(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(st_lite.returncode, 0)
-            self.assertIn("caveman:lite", st_lite.stdout)
+            self.assertIn("evo:standard · caveman:lite", st_lite.stdout)
             self.assertNotIn("[lock]", st_lite.stdout.split("caveman:")[1].split("·")[0])
 
             profile_engine.set_caveman(ws, "full")
@@ -2042,6 +1924,199 @@ class TestCavemanIntegration(unittest.TestCase):
             )
             self.assertEqual(st_full.returncode, 0)
             self.assertIn("caveman:full[lock]", st_full.stdout)
+
+
+class TestReviewPipelineAndRunSuite(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp_home = tempfile.TemporaryDirectory()
+        self._prev_wf_home = os.environ.get("GRAVITY_WORKFLOW_HOME")
+        self._prev_skip = os.environ.get("GRAVITY_WORKFLOW_SKIP_REGISTRY")
+        os.environ["GRAVITY_WORKFLOW_HOME"] = str(Path(self._tmp_home.name) / "wf_home")
+        os.environ["GRAVITY_WORKFLOW_SKIP_REGISTRY"] = "1"
+
+    def tearDown(self) -> None:
+        if self._prev_wf_home is None:
+            os.environ.pop("GRAVITY_WORKFLOW_HOME", None)
+        else:
+            os.environ["GRAVITY_WORKFLOW_HOME"] = self._prev_wf_home
+        if self._prev_skip is None:
+            os.environ.pop("GRAVITY_WORKFLOW_SKIP_REGISTRY", None)
+        else:
+            os.environ["GRAVITY_WORKFLOW_SKIP_REGISTRY"] = self._prev_skip
+        self._tmp_home.cleanup()
+
+    def _exec_workflow_without_dunder_file(
+        self,
+        script_path: Path,
+        *,
+        workspaces: list,
+        args_dict: dict,
+        fake_agent=None,
+        fake_parallel=None,
+    ):
+        import asyncio
+        import ast
+
+        logs = []
+        phases = []
+
+        async def _default_agent(*_a, **_kw):
+            return ""
+
+        ns = {
+            "__name__": "gravity_workflow_runtime",
+            "WORKSPACES": [str(w) for w in workspaces],
+            "args": args_dict,
+            "log": logs.append,
+            "phase": phases.append,
+            "agent": fake_agent or _default_agent,
+            "parallel": fake_parallel,
+        }
+        source = script_path.read_text(encoding="utf-8")
+        flags = getattr(ast, "PyCF_ALLOW_TOP_LEVEL_AWAIT", 0)
+        code = compile(source, str(script_path), "exec", flags=flags)
+        res = eval(code, ns)
+        if asyncio.iscoroutine(res):
+            asyncio.run(res)
+        return ns, logs, phases
+
+    def test_plugin_root_resolution_without_dunder_file_and_explicit_logging(self) -> None:
+        rp_path = PLUGIN_ROOT / "workflows/review_pipeline.py"
+        rs_path = PLUGIN_ROOT / "evals/run_suite.py"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            # 1. Résolution via args["plugin_root"] sans __file__
+            plain_ws = base / "plain_ws"
+            plain_ws.mkdir()
+            (plain_ws / "app.py").write_text("print('ok')\n", encoding="utf-8")
+            (plain_ws / ".git").mkdir()
+            (plain_ws / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+            calls = []
+
+            class _FakeBuilder:
+                def __init__(self, **kw):
+                    self.kw = kw
+
+                async def __call__(self, prompt, schema):
+                    calls.append(("builder", self.kw.get("model"), prompt, schema))
+                    return {
+                        "workspace_path": str(plain_ws),
+                        "modified_files": ["app.py"],
+                        "git_diff": "",
+                        "validation_summary": "python -m unittest -> OK (exit 0)",
+                        "refused": False,
+                        "summary": "Done",
+                    }
+
+            def fake_agent(*a, **kw):
+                role = kw.get("role", "")
+                if role == "Builder":
+                    return _FakeBuilder(**kw)
+
+                async def _oneshot():
+                    calls.append((role, kw.get("model"), a[0] if a else kw.get("prompt", "")))
+                    if role == "Reviewer":
+                        return {
+                            "verdict": "PASS",
+                            "comprehension_check": "Modifie app.py",
+                            "blockers": [],
+                            "majors": [],
+                            "uncertain": [],
+                            "nits": [],
+                            "manual_checks": [],
+                            "summary": "RAS",
+                        }
+                    return "Plan"
+
+                return _oneshot()
+
+            ns, logs, _ = self._exec_workflow_without_dunder_file(
+                rp_path,
+                workspaces=[plain_ws],
+                args_dict={
+                    "plugin_root": str(PLUGIN_ROOT),
+                    "task": "Tester pipeline",
+                    "plan": "1. Modifier app.py",
+                    "level": "deep",
+                },
+                fake_agent=fake_agent,
+            )
+            self.assertEqual(ns["PLUGIN_ROOT"].resolve(), PLUGIN_ROOT.resolve())
+            self.assertFalse(any("PLUGIN_ROOT introuvable" in m for m in logs))
+
+            # Planner sauté quand args["plan"] fourni (même en deep)
+            roles_called = [c[0] for c in calls]
+            self.assertNotIn("Planner", roles_called)
+            self.assertIn("builder", roles_called)
+            self.assertIn("Reviewer", roles_called)
+
+            # BUILD_SCHEMA inclut validation_summary
+            builder_call = [c for c in calls if c[0] == "builder"][0]
+            self.assertIn("validation_summary", builder_call[3]["required"])
+
+            # Arborescence bornée injectée sans .git + validation_summary + repli modified_files
+            rev_call = [c for c in calls if c[0] == "Reviewer"][0]
+            self.assertIn("app.py", rev_call[2])
+            self.assertNotIn(".git/HEAD", rev_call[2])
+            self.assertIn("python -m unittest -> OK (exit 0)", rev_call[2])
+            self.assertIn("print('ok')", rev_call[2])
+
+            # Zéro pollution .agents dans plain_ws ; runs.jsonl centralisé contient preset_profile + role_models
+            self.assertFalse((plain_ws / ".agents").exists())
+            runs_file = state_writer.resolve_runs_log_path(plain_ws)
+            self.assertTrue(runs_file.is_file())
+            last_entry = json.loads(runs_file.read_text(encoding="utf-8").splitlines()[-1])
+            self.assertEqual(last_entry["event"], "review_pipeline")
+            self.assertEqual(last_entry["preset_profile"], "deep")
+            self.assertEqual(last_entry["role_models"]["plan"], "skipped")
+            self.assertEqual(last_entry["role_models"]["build"], "flash")
+            self.assertEqual(last_entry["role_models"]["review"], "pro")
+
+            # 2. run_suite.py sans __file__ résout WS_ROOT / ".agents/plugins/gravity-workflow"
+            ws_installed = base / "ws_installed"
+            copied_plugin = ws_installed / ".agents" / "plugins" / "gravity-workflow"
+            shutil.copytree(
+                PLUGIN_ROOT,
+                copied_plugin,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+
+            # Importer les helpers de run_suite en exécutant juste la partie avant _is_workflow_runtime
+            async def fake_parallel(_items, _fn):
+                return []
+
+            ns_rs, logs_rs, _ = self._exec_workflow_without_dunder_file(
+                rs_path,
+                workspaces=[ws_installed],
+                args_dict={"case_ids": ["CASE-01-SCHEMA-INTEGRITY"]},
+                fake_parallel=fake_parallel,
+            )
+            self.assertEqual(ns_rs["PLUGIN_ROOT"].resolve(), copied_plugin.resolve())
+            self.assertFalse(any("PLUGIN_ROOT introuvable" in m for m in logs_rs))
+            self.assertNotIn(str(ws_installed.resolve()), str(ns_rs["REPORT_JSON"]))
+
+            # 3. Journalisation explicite en cas d'échec de résolution PLUGIN_ROOT (jamais silencieux)
+            orphan_ws = base / "orphan"
+            orphan_ws.mkdir()
+            with mock.patch("pathlib.Path.home", return_value=base / "no_home"):
+                import asyncio
+                import ast
+
+                logs_orphan = []
+                src_rp = rp_path.read_text(encoding="utf-8")
+                ns_orphan = {
+                    "__name__": "test_orphan",
+                    "WORKSPACES": [str(orphan_ws)],
+                    "args": {},
+                    "log": logs_orphan.append,
+                }
+                flags = getattr(ast, "PyCF_ALLOW_TOP_LEVEL_AWAIT", 0)
+                res_orphan = eval(compile(src_rp, str(rp_path), "exec", flags=flags), ns_orphan)
+                if asyncio.iscoroutine(res_orphan):
+                    asyncio.run(res_orphan)
+            self.assertTrue(any("PLUGIN_ROOT introuvable" in m for m in logs_orphan))
 
 
 if __name__ == "__main__":

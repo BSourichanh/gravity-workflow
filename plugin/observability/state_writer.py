@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Écrivain atomique pour .agents/gravity-workflow/observability/live_state.json (100 % stdlib Python 3)."""
+"""Écrivain atomique pour live_state.json et stockage centralisé Gravity Workflow (100 % stdlib Python 3)."""
 
 import contextlib
 import datetime
+import hashlib
 import json
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -20,7 +22,8 @@ try:
 except ImportError:  # POSIX
     msvcrt = None  # type: ignore[assignment]
 
-def default_workflow_home() -> Path:
+
+def resolve_workflow_home() -> Path:
     """Résout le dossier centralisé Gravity Workflow ($GRAVITY_WORKFLOW_HOME > $GRAVITY_HOME/workflow > ~/.gemini/gravity/workflow)."""
     env_wf = os.environ.get("GRAVITY_WORKFLOW_HOME", "").strip()
     if env_wf:
@@ -31,15 +34,21 @@ def default_workflow_home() -> Path:
     return (Path.home() / ".gemini" / "gravity" / "workflow").resolve()
 
 
+def default_workflow_home() -> Path:
+    """Alias conservé pour rétrocompatibilité vers `resolve_workflow_home()`."""
+    return resolve_workflow_home()
+
+
 DEFAULT_STATE_PATH = Path(".agents/gravity-workflow/observability/live_state.json")
-_DEFAULT_REGISTRY_SENTINEL = default_workflow_home() / "live_workspaces.json"
+_DEFAULT_REGISTRY_SENTINEL = resolve_workflow_home() / "live_workspaces.json"
 REGISTRY_PATH = _DEFAULT_REGISTRY_SENTINEL
 MAX_EVENTS = 50
 MAX_WORKSPACES = 20
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
 def resolve_registry_path(registry_path: Optional[Path] = None) -> Path:
-    """Résout live_workspaces.json via arg, monkeypatch REGISTRY_PATH, $GRAVITY_WORKFLOW_REGISTRY_PATH ou default_workflow_home()."""
+    """Résout live_workspaces.json via arg, monkeypatch REGISTRY_PATH, $GRAVITY_WORKFLOW_REGISTRY_PATH ou resolve_workflow_home()."""
     if registry_path is not None:
         return Path(registry_path).expanduser().resolve()
     if REGISTRY_PATH is not None and REGISTRY_PATH != _DEFAULT_REGISTRY_SENTINEL:
@@ -47,7 +56,7 @@ def resolve_registry_path(registry_path: Optional[Path] = None) -> Path:
     env_reg = os.environ.get("GRAVITY_WORKFLOW_REGISTRY_PATH", "").strip()
     if env_reg:
         return Path(env_reg).expanduser().resolve()
-    return (default_workflow_home() / "live_workspaces.json").resolve()
+    return (resolve_workflow_home() / "live_workspaces.json").resolve()
 
 LOCK_RETRIES = 50
 LOCK_RETRY_DELAY_S = 0.05
@@ -101,6 +110,41 @@ def _resolve_workspace_root(workspace_root: Optional[Path] = None) -> Path:
     return Path.cwd().resolve()
 
 
+def workspace_slug_hash(workspace_root: Optional[Path] = None) -> str:
+    """Calcule un identifiant stable `<slug>-<sha256_8>` pour le workspace cible."""
+    resolved = _resolve_workspace_root(workspace_root)
+    norm = os.path.normcase(str(resolved))
+    slug = _SLUG_RE.sub("-", resolved.name.lower()).strip("-")[:32] or "workspace"
+    digest = hashlib.sha256(norm.encode("utf-8")).hexdigest()[:8]
+    return f"{slug}-{digest}"
+
+
+def resolve_workspace_storage_dir(workspace_root: Optional[Path] = None) -> Path:
+    """Retourne le dossier centralisé du workspace sous `resolve_workflow_home() / workspaces / <slug>-<sha256_8>`."""
+    ws_root = _resolve_workspace_root(workspace_root)
+    return (resolve_workflow_home() / "workspaces" / workspace_slug_hash(ws_root)).resolve()
+
+
+def resolve_profile_storage_path(workspace_root: Optional[Path] = None) -> Path:
+    """Retourne le chemin centralisé de `profile.json` pour un workspace."""
+    return resolve_workspace_storage_dir(workspace_root) / "profile.json"
+
+
+def resolve_runs_log_path(workspace_root: Optional[Path] = None) -> Path:
+    """Retourne le chemin centralisé de `runs.jsonl` pour un workspace."""
+    return resolve_workspace_storage_dir(workspace_root) / "runs.jsonl"
+
+
+def resolve_patch_path(workspace_root: Optional[Path] = None) -> Path:
+    """Retourne le chemin centralisé de `last_verified.patch` pour un workspace."""
+    return resolve_workspace_storage_dir(workspace_root) / "last_verified.patch"
+
+
+def resolve_eval_dir(workspace_root: Optional[Path] = None) -> Path:
+    """Retourne le dossier centralisé `evals/` pour les rapports d'évaluation d'un workspace."""
+    return resolve_workspace_storage_dir(workspace_root) / "evals"
+
+
 def resolve_state_path(
     state_path: Optional[Path] = None,
     workspace_root: Optional[Path] = None,
@@ -110,7 +154,7 @@ def resolve_state_path(
     env_path = os.environ.get("GRAVITY_WORKFLOW_STATE_PATH", "").strip()
     if env_path:
         return Path(env_path)
-    return _resolve_workspace_root(workspace_root) / DEFAULT_STATE_PATH
+    return resolve_workspace_storage_dir(workspace_root) / "live_state.json"
 
 
 def _atomic_write_json(target: Path, payload: Dict[str, Any]) -> None:
@@ -168,6 +212,7 @@ def _register_active_workspace(ws_root: Path, state_file: Path) -> None:
             filtered.insert(
                 0,
                 {
+                    "workspace_path": resolved_ws,
                     "workspace": resolved_ws,
                     "state_path": resolved_state,
                     "updated_at": now_iso,
@@ -183,9 +228,11 @@ def _default_state() -> Dict[str, Any]:
         "stage": "idle",
         "progress": "0/8",
         "mode": "evo",
-        "level": "medium",
-        "pace": "slow",
-        "verification": "safe",
+        "level": "standard",
+        "preset_profile": "standard",
+        "suggested_profile": "standard",
+        "suggested_reason": "",
+        "role_models": {"plan": "flash", "build": "flash", "review": "pro"},
         "caveman": "lite",
         "caveman_locked": False,
         "guard_status": "ON",
@@ -194,14 +241,33 @@ def _default_state() -> Dict[str, Any]:
     }
 
 
+def append_run_log(
+    workspace_root: Optional[Path],
+    entry: Dict[str, Any],
+    *,
+    log_path: Optional[Path] = None,
+) -> Path:
+    """Ajoute de façon atomique et verrouillée une ligne JSON dans `runs.jsonl` centralisé."""
+    ws_root = _resolve_workspace_root(workspace_root)
+    target = Path(log_path) if log_path is not None else resolve_runs_log_path(ws_root)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with exclusive_file_lock(target.with_suffix(".lock")):
+        with target.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            fh.flush()
+    return target
+
+
 def update_live_state(
     *,
     stage: Optional[str] = None,
     progress: Optional[str] = None,
     mode: Optional[str] = None,
     level: Optional[str] = None,
-    pace: Optional[str] = None,
-    verification: Optional[str] = None,
+    preset_profile: Optional[str] = None,
+    suggested_profile: Optional[str] = None,
+    suggested_reason: Optional[str] = None,
+    role_models: Optional[Dict[str, str]] = None,
     caveman: Optional[str] = None,
     caveman_locked: Optional[bool] = None,
     guard_status: Optional[str] = None,
@@ -226,6 +292,9 @@ def update_live_state(
             except Exception:
                 pass
 
+        state.pop("pace", None)
+        state.pop("verification", None)
+
         if stage is not None:
             state["stage"] = stage
         if progress is not None:
@@ -234,10 +303,14 @@ def update_live_state(
             state["mode"] = mode
         if level is not None:
             state["level"] = level
-        if pace is not None:
-            state["pace"] = pace
-        if verification is not None:
-            state["verification"] = verification
+        if preset_profile is not None:
+            state["preset_profile"] = preset_profile
+        if suggested_profile is not None:
+            state["suggested_profile"] = suggested_profile
+        if suggested_reason is not None:
+            state["suggested_reason"] = suggested_reason
+        if role_models is not None:
+            state["role_models"] = dict(role_models)
         if caveman is not None:
             state["caveman"] = caveman
         if caveman_locked is not None:

@@ -5,8 +5,8 @@
   "description": "Ground your Antigravity agents — harnais multi-agents, garde-fous fail-closed et suite d'évaluations 100 % natifs Antigravity App & CLI.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
-    "Lancer /gravity-workflow pour initialiser le projet et démarrer en mode evo (medium)",
-    "Exécuter /gravity-workflow high fast, /gravity-workflow unsafe ou /caveman [lite|full|ultra|off|auto]",
+    "Lancer /gravity-workflow pour démarrer en profil standard (mode consultatif evo)",
+    "Exécuter /gravity-workflow quick|standard|deep, --no-verify éphémère ou /caveman [lite|full|ultra|off|auto]",
     "Afficher le bilan /gravity-workflow status ou lancer la suite /gravity-workflow evals"
   ],
   "author": {

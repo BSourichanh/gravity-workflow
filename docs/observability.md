@@ -1,6 +1,6 @@
 # Observabilité & Tableau de Bord
 
-Gravity Workflow fournit 4 surfaces complémentaires alimentées par les fichiers `.agents/gravity-workflow/` du projet cible ([`09-observability-dashboard.md`](../plugin/skills/gravity-workflow/references/09-observability-dashboard.md)).
+Gravity Workflow fournit 4 surfaces complémentaires alimentées par le stockage centralisé sous **`$GRAVITY_WORKFLOW_HOME/workspaces/<slug>-<sha256_8>/`** (`$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/`, avec repli lecture seule sur `.agents/gravity-workflow/` si présent — [`09-observability-dashboard.md`](../plugin/skills/gravity-workflow/references/09-observability-dashboard.md)).
 
 ---
 
@@ -8,24 +8,25 @@ Gravity Workflow fournit 4 surfaces complémentaires alimentées par les fichier
 
 | Surface | Environnement | Script / Mécanisme | Contenu affiché |
 |---|---|---|---|
-| **Micro-carte (3 lignes)** | App & CLI (`agy`) | `SKILL.md` | Progression `[X/8]`, badge `mode` (`evo -> <palier>` ou verrouillé), `pace`, `verification`, santé règles/`Guard`, `Caveman : <niveau> (auto\|verrouillé)`, évals, dernier motif `evo` |
-| **`/gravity-workflow status`** | App (`generative_ui`) / CLI (Markdown) | `SKILL.md` + `profile_engine.py get --json` | Bilan à la demande en **4 blocs** : avancement, 3 axes & `caveman`, santé règles & sécurité, métriques d'évals, 1–3 recommandations |
-| **`/statusline`** | **CLI `agy` uniquement** | [`statusline.py`](../plugin/observability/statusline.py) | Barre compacte sur 1 ligne : `Gravity Workflow X/8 · <badge> · <caveman_badge> · Guard ON/OFF · Evals ... · <modèle> · Ctx % · SBX · $coût` (lecture unique de `profile.json`, vérifie `harness-pre-tool-guard.enabled`, `exit 0` garanti) |
-| **Live Widget (Sidecar)** | **Antigravity App uniquement** *(transition)* | [`server.py`](../plugin/sidecars/live-widget/server.py) (`http://127.0.0.1:4789`) | Serveur HTTP + SSE stdlib anti-XSS (`ThreadingHTTPServer`, `daemon_threads=True`), affichant mode, `pace`, `verification` et `caveman`, santé `/health`, sélecteur multi-workspaces (signature SSE surveillant `live_state.json`, `profile.json` et `live_workspaces.json`) |
+| **Micro-carte (3 lignes)** | App & CLI (`agy`) | `SKILL.md` | Progression `[X/8 ou centralisé]`, profil actif (`quick`\|`standard`\|`deep`), mode (`evo` consultatif ou verrouillé), santé règles/`Guard`, `Caveman`, évals, **`suggested_profile` (`standard`\|`deep`) + motif** |
+| **`/gravity-workflow status`** | App (`generative_ui`) / CLI (Markdown) | `SKILL.md` + `profile_engine.py get --json` | Bilan à la demande en **4 blocs** : avancement, profil & `role_models` A/B, **`suggested_profile` + motif**, santé règles & sécurité, métriques d'évals/`runs.jsonl`, 1–3 recommandations |
+| **`/statusline`** | **CLI `agy` uniquement** | [`statusline.py`](../plugin/observability/statusline.py) | Barre compacte sur 1 ligne : `Gravity Workflow X/8 · <badge> · <caveman_badge> · Guard ON/OFF · Evals ... · <modèle> · Ctx % · SBX · $coût` (`exit 0` garanti) |
+| **Live Widget (Sidecar)** | **Antigravity App uniquement** *(transition)* | [`server.py`](../plugin/sidecars/live-widget/server.py) (`http://127.0.0.1:4789`) | Serveur HTTP + SSE stdlib anti-XSS (`ThreadingHTTPServer`, `daemon_threads=True`), affichant mode, profil actif, `suggested_profile`, `caveman`, santé `/health`, sélecteur multi-workspaces |
 
 > **Note de transition UI :** le sidecar Live Widget sur le port `4789` (`"ui": {"mode": "transition-sidecar", "target": "gravity"}` dans `plugin/config/module.json`) est maintenu à titre transitoire et convergera vers l'UI unifiée du plugin Core **`gravity`** (`../gravity`).
 
-Les formats compacts produits par `profile_engine.format_mode_badge()` et `profile_engine.format_caveman_badge()` sont respectivement `evo:<level>/<pace>/<verification>` (ou `<level>[lock]/<pace>/<verification>`) et `caveman:<niveau>` (ou `caveman:<niveau>[lock]`).
+Les formats compacts produits par `profile_engine.format_mode_badge()` et `profile_engine.format_caveman_badge()` sont respectivement `evo:<profil>` (ou `<profil>[lock]`) et `caveman:<niveau>` (ou `caveman:<niveau>[lock]`).
 
 ---
 
 ## Persistance atomique & stockage centralisé ([`state_writer.py`](../plugin/observability/state_writer.py))
 
-- **Résolution centralisée unifiée (`default_workflow_home()` & `resolve_registry_path()`) :** partagée entre `state_writer.py`, `sidecars/live-widget/server.py` et `uninstall.py` selon l'ordre **`$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/`** (avec surcharge directe optionnelle `$GRAVITY_WORKFLOW_REGISTRY_PATH` et compatibilité descendante si `state_writer.REGISTRY_PATH` est patché en test).
+- **Résolution centralisée unifiée (`resolve_workflow_home()` / `default_workflow_home()` & `resolve_registry_path()`) :** partagée entre `state_writer.py`, `profile_engine.py`, `sidecars/live-widget/server.py` et `uninstall.py` selon l'ordre **`$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/`** (avec surcharge directe optionnelle `$GRAVITY_WORKFLOW_REGISTRY_PATH` et compatibilité descendante si `state_writer.REGISTRY_PATH` est patché en test).
+- **Isolation par dépôt (`workspaces/<slug>-<sha256_8>/`) :** regroupe `profile.json`, `live_state.json`, `runs.jsonl`, `last_verified.patch` et `evals/report.{json,md}` via `resolve_workspace_storage_dir()` sans jamais écrire de fichier d'état dans les workspaces cibles ; chaque entrée de `live_workspaces.json` enregistre `workspace_path` (`workspace`) et `state_path`.
 - **Écriture atomique :** fichier temporaire dans le même dossier (`tempfile.mkstemp` + `os.fsync` + `os.replace` avec retry borné sur `PermissionError` Windows) protégé par `exclusive_file_lock` (`fcntl.flock` sur POSIX, `msvcrt.locking` avec retry sur Windows).
 - **Limites bornées :** `MAX_EVENTS = 50` dans `live_state.json` (horodatage `ts` + `ts_iso`), `MAX_WORKSPACES = 20` dans `~/.gemini/gravity/workflow/live_workspaces.json` (désactivable en test via `GRAVITY_WORKFLOW_SKIP_REGISTRY=1` et surchargeable via `GRAVITY_WORKFLOW_STATE_PATH` / `GRAVITY_WORKFLOW_WORKSPACE` / `GRAVITY_WORKFLOW_HOME` / `GRAVITY_HOME` / `GRAVITY_WORKFLOW_REGISTRY_PATH`).
-- **Champs clés de `.agents/gravity-workflow/observability/live_state.json` :**
-  `stage`, `progress`, `mode`, `level`, `pace`, `verification`, `caveman`, `caveman_locked`, `guard_status`, `nodes` (`planner`/`builder`/`reviewer`), `events`.
+- **Champs clés de `live_state.json` :**
+  `stage`, `progress`, `mode`, `level`, `preset_profile`, `suggested_profile`, `suggested_reason`, `role_models`, `caveman`, `caveman_locked`, `guard_status`, `nodes` (`planner`/`builder`/`reviewer`), `events`.
 
 ---
 

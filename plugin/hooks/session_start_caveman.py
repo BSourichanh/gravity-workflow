@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hook SessionStart Gravity : injecte le protocole Caveman si le projet Gravity est actif (exit 0 garanti)."""
+"""Hook SessionStart Gravity : injecte le protocole Caveman sur tout dépôt (exit 0 garanti)."""
 
 import json
 import sys
@@ -24,11 +24,7 @@ def main() -> int:
             resolve_workspace_root,
         )
         from caveman_protocol import build_session_start_prompt  # type: ignore[import-not-found]
-        from profile_engine import (  # type: ignore[import-not-found]
-            PROFILE_REL_PATH,
-            PROGRESS_REL_PATH,
-            load_profile,
-        )
+        from profile_engine import load_profile  # type: ignore[import-not-found]
     except Exception:
         sys.stdout.write("{}\n")
         sys.stdout.flush()
@@ -37,18 +33,19 @@ def main() -> int:
     configure_utf8_stdio()
     try:
         raw = read_stdin_text()
-        try:
-            event = json.loads(raw) if raw else {}
-        except Exception:
+        if raw:
+            try:
+                event = json.loads(raw)
+            except Exception:
+                emit_ok()
+                return 0
+        else:
             event = {}
         if not isinstance(event, dict):
-            event = {}
-
-        ws_root = resolve_workspace_root(event, __file__)
-        if not ((ws_root / PROFILE_REL_PATH).is_file() or (ws_root / PROGRESS_REL_PATH).is_file()):
             emit_ok()
             return 0
 
+        ws_root = resolve_workspace_root(event, __file__)
         profile = load_profile(ws_root)
         level = str(profile.get("caveman", "lite")).strip().lower()
         locked = bool(profile.get("caveman_locked", False))

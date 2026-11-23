@@ -1,25 +1,19 @@
-# Routeur & workflows (Multi-orchestration native et paliers `/gravity-workflow`)
+# Routeur & workflows (Multi-orchestration native et profils `/gravity-workflow`)
 
 ## Objectif
-Piloter l'orchestration, l'attribution des modèles et le workflow `workflows/review_pipeline.py` depuis le skill unifié `/gravity-workflow [low|medium|high|ultra|evo]`, en adaptant automatiquement la profondeur de revue aux enjeux du projet, à l'éligibilité du plan Antigravity et aux quotas (fenêtre 5h / hebdomadaire).
+Piloter l'orchestration, l'attribution des modèles et le workflow `workflows/review_pipeline.py` depuis le skill unifié `/gravity-workflow [quick|standard|deep|evo]`, sans clé morte et avec stockage centralisé sous `$GRAVITY_HOME/workflow/workspaces/<hash>/`.
 
-## Modes `/gravity-workflow`, stratégie workflow & vérification (3 axes orthogonaux)
-Un projet démarre par défaut en **`mode: "evo"` (palier `medium`)**, **`pace: "slow"`** (par responsabilité) et **`verification: "safe"`**. Les 3 axes se combinent librement dans n'importe quel ordre (`/gravity-workflow high fast`, `/gravity-workflow fast unsafe`, `/gravity-workflow evo slow safe`) :
+## Profils `/gravity-workflow` & vérification éphémère
+Un projet démarre par défaut en **`mode: "evo"` (consultatif, profil actif `standard`)**. Les alias historiques (`low→quick`, `medium→standard`, `high/ultra→deep`, `slow`/`fast`) restent tolérés sans erreur :
 
-1. **Mode / Réflexion (`low`, `medium`, `high`, `ultra`, `evo`) :** fixe uniquement la profondeur de réflexion et les modèles (`plan_model`, `build_model`, `review_model`, `evals`). Un palier fixe verrouille `.agents/gravity-workflow/profile.json` ; `/gravity-workflow evo` réactive l'adaptation en fin de session.
-2. **Stratégie Workflow / Temps (`slow` vs `fast`) — sans impact sur la réflexion :**
-   - **`slow` *(par défaut)* :** choisit le moteur par responsabilité (`Orchestrator`/`/plan`, boucle séquentielle complète `Planner → Builder → Reviewer`, `swarm` si multi-modules).
-   - **`fast` :** optimise le **temps d'exécution** sans toucher aux modèles ni à la réflexion du palier — parallélise agressivement (`swarm` / `parallel()`), condense la planification séparée lorsque la tâche est cadrée et limite les remédiations séquentielles à 1 passe max. **Laisse tests et vérifications actifs.**
-3. **Vérification & Tests (`safe` vs `unsafe`) :**
-   - **`safe` *(par défaut)* :** exécute la revue indépendante (`review_pipeline.py`), les boucles de remédiation, les tests unitaires, `/gravity-workflow evals`, `validate.py` et `PostToolUse`.
-   - **`unsafe` :** désactive **toute** procédure de test et de vérification du workflow (`review_pipeline.py` livre directement après le Builder, aucun test ni formatage `PostToolUse` exécuté). Les garde-fous `PreToolUse` restent **toujours actifs** sur tous les axes.
+1. **Profil d'exécution (`quick`, `standard`, `deep`, `evo`) :** fixe les modèles (`plan_model`, `build_model`, `review_model`, `evals`), `max_remediation_rounds` et `skip_separate_planner`. Un profil fixe verrouille `profile.json` ; `/gravity-workflow evo` réactive la recommandation consultative (`suggested_profile`: `standard` | `deep`).
+2. **Vérification éphémère (`--no-verify` / `unsafe`) :** s'applique uniquement à **1 tâche ou 1 invocation `run_workflow`**, n'est **jamais persistée** dans `profile.json`, et maintient `PreToolUse` actif.
 
-| Palier | Orchestration | `planner` / `builder` / `reviewer` (`review_pipeline.py`) | `max_remediation_rounds` | Modèles `swarm` / recommandations |
-| :--- | :--- | :--- | :--- | :--- |
-| **`low`** | Conversation directe mono-fil (économe) | `flash_lite` / `flash_lite` / `flash` *(uniquement si forcé)* | `0` | Pas de `swarm` ; UI conseillée `3.8 Flash` / `Hydrogen` (`/effort low`) |
-| **`medium`** *(défaut `evo`)* | `Orchestrator` / `/plan` (+ `/grill-me` si ambigu) + `review_pipeline.py` sur modifs significatives | `inherit` / `flash` / `pro` *(repli `inherit` si `allow_pro: false`)* | `1` | Pas de `swarm` par défaut ; UI conseillée `Orchestrator` (`/effort medium`) |
-| **`high`** | `/plan /grill-me` si périmètre ouvert + `review_pipeline.py` complet ou `swarm` si multi-modules | `pro` / `flash` / `pro` *(repli `inherit` sur Free/Plus)* | `2` | `swarm` avec workers rapides et `@verifier` frontier (`Neon`) |
-| **`ultra`** | `/plan /grill-me` si structurant + `swarm` cross-model, `/boost` ou `/teamwork` | `pro` / `pro` / `pro` | `2` (+ escalade `/boost`) | `@verifier` **cross-model obligatoire** via `swarm(action="models")`, UI `Neon`/`Carbon` (`/effort xhigh`) |
+| Profil | Orchestration | `planner` / `builder` / `reviewer` (`review_pipeline.py`) | `max_remediation_rounds` |
+| :--- | :--- | :--- | :--- |
+| **`quick`** *(alias `low`)* | Exécution directe mono-fil (zéro `review_pipeline` par défaut) | `flash` *(sauté)* / `flash` / `flash` *(sauté par défaut)* | `0` *(0–1 si forcé)* |
+| **`standard`** *(défaut, alias `medium`)* | Direct sur tâche triviale ; `review_pipeline.py` sur lot significatif | `flash` *(sauté si `plan` fourni)* / `flash` / `pro` *(repli `flash` si `allow_pro: false`)* | `1` |
+| **`deep`** *(alias `high`/`ultra`)* | `review_pipeline.py` complet ; suggestion `/plan /grill-me`, `/boost` ou `/swarm` à l'initiative utilisateur | `pro` *(sauté si `plan` fourni)* / `flash` *(`pro` sur override)* / `pro` *(repli `flash`)* | `2` |
 
 ## Palier d'entrée : conversation simple, `/grill-me`, `/plan`, `/goal` & mode `Orchestrator`
 Avant de lancer plusieurs agents, privilégie les mécanismes mono-fil moins gourmands en quota :
@@ -46,11 +40,10 @@ Avant de lancer plusieurs agents, privilégie les mécanismes mono-fil moins gou
 - Chantier multi-jalons multi-jours -> proposer `/teamwork` à l'utilisateur (plan payant).
 
 ## Composants fournis par le plugin (`plugin/`)
-1. **`skills/gravity-workflow/SKILL.md` & `skills/caveman/SKILL.md`** : skill principal `/gravity-workflow` (3 axes orthogonaux, paliers, `status`, `evals`, `init`) et skill compagnon `/caveman` (concision ciblée par ROI sans collision sur `ultra`, avec `commit` et `compress`).
-2. **`observability/profile_engine.py` & `observability/caveman_protocol.py`** : résout les presets actifs (`plan_model`, `build_model`, `review_model`, `max_remediation_rounds`, `eval_candidate`, `eval_judge`, `pace`, `workflow_strategy`, `parallelize_aggressively`, `skip_separate_planner`, `verification`, `skip_verification`, `skip_tests`, `caveman`, `caveman_planner`, `caveman_builder`, `caveman_reviewer`, `caveman_evals="off"`) et gère `.agents/gravity-workflow/profile.json`.
-3. **`workflows/review_pipeline.py`** : workflow `planner` (condensé si `skip_separate_planner=True` en stratégie `fast`, tout en conservant les modèles du palier ; concision Caveman plafonnée à `full`) → `builder` multi-tour (unique worktree `workspace="branch"`, produisant de façon déterministe `.gravity_verified.patch` via `git add -N .` puis `git diff --output=.gravity_verified.patch -- . ":(exclude).gravity_verified.patch"`) → en mode **`unsafe`** (`skip_verification=True`), exporte directement le patch et clôture sans revue ni remédiation ; sinon (`safe`) → `reviewer` indépendant (`workspace="inherit"` lecture seule + diff lu en pur Python sans `subprocess`, constats sur 1 ligne sous Caveman avec *Preuve ou Silence* intact, JSON Schema compatible Gemini sans `maxItems`) → remédiation ciblée bornée par `max_remediation_rounds` (`0`/`1`/`2` selon le palier et plafonné à `1` en `fast`, dans **le même** builder multi-tour avec contrôle `build.get("refused")` et `finally: del builder`), verrou déterministe sur `blockers`/`majors`, export du patch vérifié complet dans le projet (`.agents/gravity-workflow/observability/last_verified.patch`) et mise à jour de `.agents/gravity-workflow/observability/live_state.json`.
+1. **`skills/gravity-workflow/SKILL.md` & `skills/caveman/SKILL.md`** : skill principal `/gravity-workflow` (`quick`/`standard`/`deep`/`evo`, `status`, `evals`, `init`) et skill compagnon `/caveman` (`lite` défaut sur les 3 profils, `commit`, `compress`).
+2. **`observability/profile_engine.py` & `observability/caveman_protocol.py`** : résout les presets actifs (`plan_model`, `build_model`, `review_model`, `max_remediation_rounds`, `eval_candidate`, `eval_judge`, `skip_separate_planner`, `skip_verification` éphémère, `caveman`, `caveman_planner`, `caveman_evals="off"`) depuis le profil centralisé (`$GRAVITY_HOME/workflow/workspaces/<hash>/profile.json`, repli lecture seule `.agents/gravity-workflow/profile.json`).
+3. **`workflows/review_pipeline.py`** : résout `PLUGIN_ROOT` sans `__file__` ni `os.environ`, collecte l'arborescence bornée du dépôt, saute `planner` dès que `args.get("plan")` est non vide, exécute `builder` (`workspace="branch"`, produisant `validation_summary` et `.gravity_verified.patch`) puis `reviewer` (`workspace="inherit"` avec repli diff sûr si `Non-Workspace File Access` est restreint), exporte `last_verified.patch` et journalise `preset_profile` + `role_models` dans `live_state.json` et `runs.jsonl` centralisés.
 
 ## Checkpoint déterministe
-- Le skill unifié `skills/gravity-workflow/SKILL.md` et `observability/profile_engine.py` couvrent les 4 paliers, le mode `evo`, l'attribution des modèles et la distinction outil vs slash command.
-- `workflows/review_pipeline.py` lit le preset actif depuis `profile_engine`, garde le même `builder` multi-tour sur `workspace="branch"`, exécute `reviewer` en `workspace="inherit"` avec le `git_diff`, et ferme l'agent dans un `finally`.
-- Mettre à jour `.agents/gravity-workflow/PROGRESS.md` et afficher la micro-carte.
+- Le skill unifié `skills/gravity-workflow/SKILL.md` et `observability/profile_engine.py` couvrent les 3 profils (`quick`/`standard`/`deep`), le mode consultatif `evo` et les surcharges A/B.
+- `workflows/review_pipeline.py` saute `Planner` sur plan fourni, injecte arborescence + `validation_summary`, sauvegarde les artefacts en centralisé et ferme l'agent dans un `finally`.

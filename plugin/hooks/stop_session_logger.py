@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hook Stop Gravity Workflow : journalisation sécurisée dans .agents/gravity-workflow/observability/runs.jsonl."""
+"""Hook Stop Gravity Workflow : journalisation centralisée `runs.jsonl` + adaptation consultative `evo`."""
 
 import datetime
 import json
@@ -7,10 +7,10 @@ import sys
 from pathlib import Path
 
 HOOKS_DIR = Path(__file__).resolve().parent
-if str(HOOKS_DIR) not in sys.path:
-    sys.path.insert(0, str(HOOKS_DIR))
-
-REL_LOG_PATH = Path(".agents/gravity-workflow/observability/runs.jsonl")
+OBS_DIR = HOOKS_DIR.parent / "observability"
+for _p in (str(HOOKS_DIR), str(OBS_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 
 def main() -> int:
@@ -19,11 +19,15 @@ def main() -> int:
             configure_utf8_stdio,
             emit_ok,
             first_not_none,
-            get_lock_fn,
-            is_gravity_workspace,
             read_stdin_text,
             resolve_workspace_root,
         )
+        from profile_engine import (  # type: ignore[import-not-found]
+            evolve_on_stop,
+            get_active_preset,
+            role_models_from_preset,
+        )
+        from state_writer import append_run_log  # type: ignore[import-not-found]
     except Exception:
         sys.stdout.write("{}\n")
         sys.stdout.flush()
@@ -32,20 +36,26 @@ def main() -> int:
     configure_utf8_stdio()
     try:
         raw = read_stdin_text()
-        event = json.loads(raw) if raw else {}
+        if raw:
+            try:
+                event = json.loads(raw)
+            except Exception:
+                emit_ok()
+                return 0
+        else:
+            event = {}
         if not isinstance(event, dict):
             event = {"raw_payload": event}
 
         ws_root = resolve_workspace_root(event, __file__)
-        if not is_gravity_workspace(ws_root):
-            emit_ok()
-            return 0
-        log_path = ws_root / REL_LOG_PATH
+        preset = get_active_preset(ws_root)
         entry = {
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "event": "Stop",
             "conversation_id": first_not_none(event.get("conversationId"), event.get("sessionId")),
             "model": event.get("modelName"),
+            "preset_profile": str(preset.get("level") or "standard"),
+            "role_models": role_models_from_preset(preset),
             "termination_reason": first_not_none(
                 event.get("terminationReason"), event.get("stopReason")
             ),
@@ -57,22 +67,8 @@ def main() -> int:
             "cwd": str(ws_root),
         }
 
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_fn = get_lock_fn()
-        with lock_fn(log_path.with_suffix(".lock")):
-            with log_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-                fh.flush()
-
-        try:
-            obs_dir = HOOKS_DIR.parent / "observability"
-            if str(obs_dir) not in sys.path:
-                sys.path.insert(0, str(obs_dir))
-            from profile_engine import evolve_on_stop  # type: ignore[import-not-found]
-
-            evolve_on_stop(ws_root, entry)
-        except Exception:
-            pass
+        append_run_log(ws_root, entry)
+        evolve_on_stop(ws_root, entry)
     except Exception:
         pass
     emit_ok()

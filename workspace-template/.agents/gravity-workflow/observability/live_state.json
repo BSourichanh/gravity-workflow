@@ -2,9 +2,15 @@
   "stage": "idle",
   "progress": "0/8",
   "mode": "evo",
-  "level": "medium",
-  "pace": "slow",
-  "verification": "safe",
+  "level": "standard",
+  "preset_profile": "standard",
+  "suggested_profile": "standard",
+  "suggested_reason": "",
+  "role_models": {
+    "plan": "flash",
+    "build": "flash",
+    "review": "pro"
+  },
   "caveman": "lite",
   "caveman_locked": false,
   "guard_status": "ON",

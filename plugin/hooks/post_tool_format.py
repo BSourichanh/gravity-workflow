@@ -99,16 +99,6 @@ def main() -> int:
             return 0
 
         ws_root = resolve_workspace_root(data, __file__)
-        try:
-            prof_path = ws_root / ".agents/gravity-workflow/profile.json"
-            if prof_path.is_file():
-                pdata = json.loads(prof_path.read_text(encoding="utf-8"))
-                if isinstance(pdata, dict) and pdata.get("verification") == "unsafe":
-                    emit_ok()
-                    return 0
-        except Exception:
-            pass
-
         target_path = Path(target_raw)
         if not target_path.is_absolute():
             target_path = ws_root / target_path
