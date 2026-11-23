@@ -9,11 +9,14 @@ from typing import Any, Dict
 from .base import (
     EXPECTED_REFERENCES,
     KEBAB_RE,
+    MAX_AGENTS_MD_BYTES,
     MAX_DESC_LEN,
     MODULE_JARGON_RE,
+    UTF8_BOM,
     Report,
     check_executable,
     check_stdlib_only,
+    check_utf8_no_bom_lf,
     parse_frontmatter,
     run_hook_dry_runs,
     validate_agent_file,
@@ -35,8 +38,20 @@ OFFICIAL_PLUGIN_FIELDS = frozenset(
 )
 OPTIONAL_PLUGIN_FIELDS = frozenset({"disabled"})
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
-UTF8_BOM = b"\xef\xbb\xbf"
 VALID_UI_MODES = frozenset({"none", "core", "transition-sidecar", "transition-mcp-app", "mcp-app"})
+TEMPLATE_MAPPINGS = (
+    ("AGENTS.md", "AGENTS.md"),
+    (".agents/mcp_config.json", ".agents/mcp_config.json"),
+    (".agents/rules/01-safety-boundaries.md.tmpl", ".agents/rules/01-safety-boundaries.md"),
+    (".agents/rules/02-python-stdlib.md", ".agents/rules/02-python-stdlib.md"),
+    (".agents/rules/03-api-architecture.md", ".agents/rules/03-api-architecture.md"),
+    (".agents/rules/04-release-checklist.md", ".agents/rules/04-release-checklist.md"),
+    (".agents/rules/05-git-versioning.md", ".agents/rules/05-git-versioning.md"),
+    (".agents/rules/06-engineering-principles.md", ".agents/rules/06-engineering-principles.md"),
+    (".agents/gravity-workflow/.gitignore", ".agents/gravity-workflow/.gitignore"),
+    (".agents/gravity-workflow/BACKLOG.md", ".agents/gravity-workflow/BACKLOG.md"),
+    (".agents/gravity-workflow/profile.json", ".agents/gravity-workflow/profile.json"),
+)
 
 
 def _read_json_no_bom(path: Path, label: str, report: Report) -> Any:
@@ -208,6 +223,55 @@ def validate_module_contract(
             report.error("config/module.json : 'signals.consumes' doit être une liste de chaînes.")
 
 
+def _validate_templates_and_repo_charter(root: Path, report: Report) -> None:
+    """Contrôle les templates du plugin, l'AGENTS.md racine et l'absence de dérive avec workspace-template/."""
+    templates_dir = root / "templates"
+    if not templates_dir.is_dir():
+        report.error("Dossier templates/ manquant dans le plugin.")
+    else:
+        for src_rel, _ in TEMPLATE_MAPPINGS:
+            src_path = templates_dir / src_rel
+            if not src_path.is_file():
+                report.error(f"Template requis manquant : templates/{src_rel}")
+            else:
+                check_utf8_no_bom_lf(
+                    src_path,
+                    f"templates/{src_rel}",
+                    report,
+                    max_bytes=MAX_AGENTS_MD_BYTES if src_rel == "AGENTS.md" else None,
+                )
+
+    repo_agents = root.parent / "AGENTS.md"
+    if root.name == "plugin" and repo_agents.is_file():
+        check_utf8_no_bom_lf(
+            repo_agents,
+            "AGENTS.md (racine dépôt)",
+            report,
+            max_bytes=MAX_AGENTS_MD_BYTES,
+        )
+
+    wt_dir = root.parent / "workspace-template"
+    if templates_dir.is_dir() and wt_dir.is_dir():
+        for src_rel, wt_rel in TEMPLATE_MAPPINGS:
+            src_path = templates_dir / src_rel
+            wt_path = wt_dir / wt_rel
+            if not src_path.is_file():
+                continue
+            if not wt_path.is_file():
+                report.error(f"Dérive workspace-template : fichier manquant {wt_rel}.")
+            elif src_path.read_bytes() != wt_path.read_bytes():
+                report.error(
+                    f"Dérive détectée entre templates/{src_rel} et workspace-template/{wt_rel}."
+                )
+        plugin_cases = root / "evals/cases.json"
+        wt_cases = wt_dir / ".agents/gravity-workflow/evals/cases.json"
+        if plugin_cases.is_file() and wt_cases.is_file():
+            if plugin_cases.read_bytes() != wt_cases.read_bytes():
+                report.error(
+                    "Dérive détectée entre evals/cases.json et workspace-template/.agents/gravity-workflow/evals/cases.json."
+                )
+
+
 def validate_plugin(root: Path, report: Report) -> None:
     """Audite le manifeste, le contrat module, le logo, les skills, les agents, les hooks, le sidecar et le moteur."""
     manifest_path = root / "plugin.json"
@@ -351,5 +415,7 @@ def validate_plugin(root: Path, report: Report) -> None:
                 )
         except Exception as exc:
             report.error(f"evals/cases.json invalide : {exc}")
+
+    _validate_templates_and_repo_charter(root, report)
 
     run_hook_dry_runs(root / "hooks", root, report)

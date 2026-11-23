@@ -887,22 +887,25 @@ def is_unsafe_workspace_target(ws_dir: Path) -> Optional[str]:
 
 
 def _load_canonical_templates() -> Dict[str, str]:
-    """Load canonical starter file contents from plugin/scripts/init_workspace.py."""
-    init_path = PLUGIN_SOURCE / "scripts" / "init_workspace.py"
-    spec = importlib.util.spec_from_file_location("gravity_workflow_init_workspace_tpl", init_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load template definitions from {init_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return {
-        "AGENTS.md": str(module.AGENTS_MD),
-        ".agents/mcp_config.json": str(module.MCP_CONFIG_JSON),
-        ".agents/rules/01-safety-boundaries.md": str(module.RULE_01_SAFETY),
-        ".agents/rules/02-python-stdlib.md": str(module.RULE_02_PYTHON),
-        ".agents/rules/03-api-architecture.md": str(module.RULE_03_API),
-        ".agents/rules/04-release-checklist.md": str(module.RULE_04_RELEASE),
-        ".agents/rules/05-git-versioning.md": str(module.RULE_05_GIT_VERSIONING),
+    """Load canonical starter file contents from plugin/templates/."""
+    templates_root = PLUGIN_SOURCE / "templates"
+    template_sources = {
+        "AGENTS.md": "AGENTS.md",
+        ".agents/mcp_config.json": ".agents/mcp_config.json",
+        ".agents/rules/01-safety-boundaries.md": ".agents/rules/01-safety-boundaries.md.tmpl",
+        ".agents/rules/02-python-stdlib.md": ".agents/rules/02-python-stdlib.md",
+        ".agents/rules/03-api-architecture.md": ".agents/rules/03-api-architecture.md",
+        ".agents/rules/04-release-checklist.md": ".agents/rules/04-release-checklist.md",
+        ".agents/rules/05-git-versioning.md": ".agents/rules/05-git-versioning.md",
+        ".agents/rules/06-engineering-principles.md": ".agents/rules/06-engineering-principles.md",
     }
+    loaded: Dict[str, str] = {}
+    for target_rel, src_rel in template_sources.items():
+        src_path = templates_root / src_rel
+        if not src_path.is_file():
+            raise RuntimeError(f"Unable to load canonical template from {src_path}")
+        loaded[target_rel] = src_path.read_text(encoding="utf-8")
+    return loaded
 
 
 def _atomic_write_json(target: Path, payload: Dict[str, Any]) -> None:

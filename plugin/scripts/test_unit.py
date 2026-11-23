@@ -25,7 +25,7 @@ import init_workspace  # noqa: E402
 import profile_engine  # noqa: E402
 import safety_policy  # noqa: E402
 import state_writer  # noqa: E402
-from validators import Report, plugin_validator, validate_plugin  # noqa: E402
+from validators import Report, plugin_validator, validate_plugin, validate_workspace  # noqa: E402
 from validators.base import parse_frontmatter, validate_agent_file  # noqa: E402
 
 
@@ -347,6 +347,65 @@ class TestPluginValidator(unittest.TestCase):
                 rep_no_mod = Report()
                 validate_plugin(plugin_dir, rep_no_mod)
                 self.assertFalse(rep_no_mod.ok(strict=True))
+
+    def test_templates_repo_agents_and_workspace_template_drift_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_dir = Path(tmp)
+            plugin_dir = repo_dir / "plugin"
+            self._build_minimal_plugin(plugin_dir)
+            wt_dir = repo_dir / "workspace-template"
+            wt_src = PLUGIN_ROOT.parent / "workspace-template"
+            if wt_src.is_dir():
+                shutil.copytree(wt_src, wt_dir)
+            repo_agents = repo_dir / "AGENTS.md"
+            repo_agents.write_text("# Agents\n\n## Invariants\n- OK.\n", encoding="utf-8", newline="\n")
+
+            with mock.patch.object(plugin_validator, "run_hook_dry_runs"):
+                rep_ok = Report()
+                validate_plugin(plugin_dir, rep_ok)
+                self.assertTrue(rep_ok.ok(strict=True), f"Erreurs inattendues: {rep_ok.errors} {rep_ok.warnings}")
+
+                # 1. Root AGENTS.md > 2500 bytes, BOM, CRLF
+                repo_agents.write_text("x" * 2501 + "\n", encoding="utf-8", newline="\n")
+                rep_big = Report()
+                validate_plugin(plugin_dir, rep_big)
+                self.assertTrue(any("2500" in err for err in rep_big.errors), rep_big.errors)
+
+                repo_agents.write_bytes(b"\xef\xbb\xbf# Agents\n")
+                rep_bom = Report()
+                validate_plugin(plugin_dir, rep_bom)
+                self.assertTrue(any("BOM" in err for err in rep_bom.errors), rep_bom.errors)
+
+                repo_agents.write_bytes(b"# Agents\r\n")
+                rep_crlf = Report()
+                validate_plugin(plugin_dir, rep_crlf)
+                self.assertTrue(any("CRLF" in err for err in rep_crlf.errors), rep_crlf.errors)
+                repo_agents.write_text("# Agents\n", encoding="utf-8", newline="\n")
+
+                # 2. Drift between templates/.agents/rules/06-engineering-principles.md and workspace-template
+                if wt_dir.is_dir():
+                    wt_rule06 = wt_dir / ".agents/rules/06-engineering-principles.md"
+                    orig_rule06 = wt_rule06.read_bytes()
+                    wt_rule06.write_bytes(orig_rule06 + b"\n# drift\n")
+                    rep_drift = Report()
+                    validate_plugin(plugin_dir, rep_drift)
+                    self.assertTrue(any("Dérive" in err for err in rep_drift.errors), rep_drift.errors)
+                    wt_rule06.write_bytes(orig_rule06)
+
+                # 3. Missing required template (01-safety-boundaries.md.tmpl) or CRLF in template
+                tpl_safety = plugin_dir / "templates/.agents/rules/01-safety-boundaries.md.tmpl"
+                orig_safety = tpl_safety.read_bytes()
+                tpl_safety.write_bytes(orig_safety.replace(b"\n", b"\r\n"))
+                rep_tpl_crlf = Report()
+                validate_plugin(plugin_dir, rep_tpl_crlf)
+                self.assertTrue(any("CRLF" in err for err in rep_tpl_crlf.errors), rep_tpl_crlf.errors)
+                tpl_safety.unlink()
+                rep_missing_tpl = Report()
+                validate_plugin(plugin_dir, rep_missing_tpl)
+                self.assertTrue(
+                    any("01-safety-boundaries.md.tmpl" in err for err in rep_missing_tpl.errors),
+                    rep_missing_tpl.errors,
+                )
 
     def test_agent_tools_rejects_duplicates_and_canonical_alias_collisions(self) -> None:
         agents_dir = PLUGIN_ROOT / "agents"
@@ -1287,8 +1346,25 @@ class TestInitWorkspace(unittest.TestCase):
             rc = init_workspace.init_workspace(ws, mode="quickstart", force=False)
             self.assertEqual(rc, 0)
             self.assertEqual((ws / "AGENTS.md").read_text(encoding="utf-8"), custom_agents)
+            self.assertTrue((ws / ".agents/rules/01-safety-boundaries.md").is_file())
             self.assertTrue((ws / ".agents/rules/05-git-versioning.md").is_file())
+            self.assertTrue((ws / ".agents/rules/06-engineering-principles.md").is_file())
+            self.assertFalse((ws / ".agents/rules/02-python-stdlib.md").exists())
+            self.assertFalse((ws / ".agents/rules/03-api-architecture.md").exists())
+            self.assertFalse((ws / ".agents/rules/04-release-checklist.md").exists())
             self.assertTrue((ws / ".agents/gravity-workflow/.gitignore").is_file())
+
+            # Vérifie encodage UTF-8 sans BOM et LF sur les fichiers générés
+            for gen_rel in (
+                ".agents/rules/01-safety-boundaries.md",
+                ".agents/rules/05-git-versioning.md",
+                ".agents/rules/06-engineering-principles.md",
+                ".agents/gravity-workflow/PROGRESS.md",
+                ".agents/gravity-workflow/observability/live_state.json",
+            ):
+                raw = (ws / gen_rel).read_bytes()
+                self.assertFalse(raw.startswith(b"\xef\xbb\xbf"), gen_rel)
+                self.assertNotIn(b"\r\n", raw, gen_rel)
 
             live_state = json.loads(
                 (ws / ".agents/gravity-workflow/observability/live_state.json").read_text(encoding="utf-8")
@@ -1317,6 +1393,68 @@ class TestInitWorkspace(unittest.TestCase):
             self.assertFalse(profile["caveman_locked"])
             self.assertFalse(profile["locked"])
 
+    def test_full_mode_opt_in_stacks_and_workspace_agents_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ws_default = base / "ws_default"
+            rc_def = init_workspace.init_workspace(ws_default, mode="full")
+            self.assertEqual(rc_def, 0)
+            self.assertTrue((ws_default / "AGENTS.md").is_file())
+            self.assertTrue((ws_default / ".agents/rules/01-safety-boundaries.md").is_file())
+            self.assertTrue((ws_default / ".agents/rules/04-release-checklist.md").is_file())
+            self.assertTrue((ws_default / ".agents/rules/05-git-versioning.md").is_file())
+            self.assertTrue((ws_default / ".agents/rules/06-engineering-principles.md").is_file())
+            self.assertFalse((ws_default / ".agents/rules/02-python-stdlib.md").exists())
+            self.assertFalse((ws_default / ".agents/rules/03-api-architecture.md").exists())
+
+            # CLI --with-stack opt-in (répétable)
+            ws_stacks = base / "ws_stacks"
+            init_cli = PLUGIN_ROOT / "scripts/init_workspace.py"
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(init_cli),
+                    "--workspace",
+                    str(ws_stacks),
+                    "--mode",
+                    "full",
+                    "--with-stack",
+                    "python",
+                    "--with-stack",
+                    "api",
+                ],
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue((ws_stacks / ".agents/rules/02-python-stdlib.md").is_file())
+            self.assertTrue((ws_stacks / ".agents/rules/03-api-architecture.md").is_file())
+
+            # workspace_validator contrôle AGENTS.md <= 2500 o, sans BOM, sans CRLF
+            with mock.patch("validators.workspace_validator.run_hook_dry_runs"):
+                rep_ok = Report()
+                validate_workspace(ws_default, rep_ok)
+                self.assertTrue(rep_ok.ok(strict=False), rep_ok.errors)
+
+                agents_file = ws_default / "AGENTS.md"
+                orig_agents = agents_file.read_bytes()
+                agents_file.write_bytes(b"a" * 2501 + b"\n")
+                rep_big = Report()
+                validate_workspace(ws_default, rep_big)
+                self.assertTrue(any("2500" in err for err in rep_big.errors), rep_big.errors)
+
+                agents_file.write_bytes(b"\xef\xbb\xbf" + orig_agents)
+                rep_bom = Report()
+                validate_workspace(ws_default, rep_bom)
+                self.assertTrue(any("BOM" in err for err in rep_bom.errors), rep_bom.errors)
+
+                agents_file.write_bytes(orig_agents.replace(b"\n", b"\r\n"))
+                rep_crlf = Report()
+                validate_workspace(ws_default, rep_crlf)
+                self.assertTrue(any("CRLF" in err for err in rep_crlf.errors), rep_crlf.errors)
+
     def test_git_versioning_rule_ensure_and_template_sync(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ws = Path(tmp)
@@ -1340,10 +1478,10 @@ class TestInitWorkspace(unittest.TestCase):
 
             # Remplacement uniquement avec force=True
             self.assertTrue(init_workspace.ensure_git_versioning_rule(ws, force=True))
-            self.assertEqual(
-                rule_path.read_text(encoding="utf-8"),
-                init_workspace.RULE_05_GIT_VERSIONING,
+            expected_git_rule = (PLUGIN_ROOT / "templates/.agents/rules/05-git-versioning.md").read_text(
+                encoding="utf-8"
             )
+            self.assertEqual(rule_path.read_text(encoding="utf-8"), expected_git_rule)
 
             # Vérification CLI --ensure-git-rule idempotente
             cli_ws = Path(tmp) / "cli_proj"
@@ -1373,18 +1511,12 @@ class TestInitWorkspace(unittest.TestCase):
         # Synchronisation exacte avec workspace-template/ si présent dans le dépôt parent
         wt_root = PLUGIN_ROOT.parent / "workspace-template"
         if wt_root.is_dir():
-            self.assertEqual(
-                (wt_root / "AGENTS.md").read_text(encoding="utf-8"),
-                init_workspace.AGENTS_MD,
-            )
-            self.assertEqual(
-                (wt_root / ".agents/rules/04-release-checklist.md").read_text(encoding="utf-8"),
-                init_workspace.RULE_04_RELEASE,
-            )
-            self.assertEqual(
-                (wt_root / ".agents/rules/05-git-versioning.md").read_text(encoding="utf-8"),
-                init_workspace.RULE_05_GIT_VERSIONING,
-            )
+            for src_rel, wt_rel in plugin_validator.TEMPLATE_MAPPINGS:
+                self.assertEqual(
+                    (wt_root / wt_rel).read_bytes(),
+                    (PLUGIN_ROOT / "templates" / src_rel).read_bytes(),
+                    f"Dérive entre workspace-template/{wt_rel} et plugin/templates/{src_rel}",
+                )
 
 
 class TestProfileEngine(unittest.TestCase):

@@ -25,10 +25,11 @@ Remplacer toute instruction monolithique par un socle minimal permanent complét
 - **Context Caching Gemini (`cache_read_tokens` 10×–20× moins cher) :** garde le préfixe (`AGENTS.md` et règles `always_on`) strictement statique ; n'y injecte jamais d'horodatages, compteurs ou états mouvants.
 
 ## Livrables produits dans le projet
-1. **`AGENTS.md`** à la racine du projet : sans frontmatter, concis, préfixe stable, orienté rôle, livrable, sources de vérité et règles de collaboration (anti-écrasement, priorité outils natifs, revue indépendante, double boucle `/learn`, et conventions Git/versioning réservées au chef d'orchestre).
+1. **`AGENTS.md`** à la racine du projet : sans frontmatter, concis (`<= 2 500` octets, LF), préfixe stable, orienté rôle, livrable, sources de vérité et règles de collaboration (anti-écrasement, priorité outils natifs, revue indépendante, double boucle `/learn`, conventions Git/versioning chef d'orchestre et principes KISS/YAGNI/DRY/SOLID/CUPID).
 2. **`.agents/rules/01-safety-boundaries.md`** : `trigger: always_on`, traduit les 3 lignes rouges sous 2 Ko.
 3. **`.agents/rules/05-git-versioning.md`** : `trigger: model_decision`, conventions Git & versioning avant `commit`/`push` (branches hors `main`, *Conventional Commits*, SemVer, `CHANGELOG.md`, tags annotés `vX.Y.Z`) réservées exclusivement au chef d'orchestre et déployées automatiquement par `/gravity-workflow` si absentes (modes `quickstart`, `full`, Audit et Reprise).
-4. **Règles conditionnelles ciblées complémentaires** (`--mode full`) dans `.agents/rules/` : au moins une règle `trigger: glob` adaptée à la stack du projet (`02-python-stdlib.md`), une règle `trigger: model_decision` (`03-api-architecture.md`) et une règle `trigger: manual` (`04-release-checklist.md`, avec note de lecture manuelle en CLI).
+4. **`.agents/rules/06-engineering-principles.md`** : `trigger: model_decision` (`0` token `always_on`), critères KISS, YAGNI, DRY, SOLID et CUPID déployés en `quickstart` et `full`.
+5. **Checklist release & règles opt-in par stack :** `.agents/rules/04-release-checklist.md` (`trigger: manual`, déployée en `--mode full`, avec note de lecture manuelle en CLI) et règles de stack ciblées déployées uniquement sur demande via `--with-stack python` (`02-python-stdlib.md`, `trigger: glob`) ou `--with-stack api` (`03-api-architecture.md`, `trigger: model_decision`).
 
 ## Règle anti-écrasement
 Si `AGENTS.md` ou des règles préexistent (mode Audit), analyse leur volume, détecte les doublons ou syntaxes invalides (`always_on: true` sans `trigger:`, `globs` en liste YAML) et propose un diff avant toute édition.

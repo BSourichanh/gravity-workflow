@@ -1,0 +1,27 @@
+{
+  "schema_version": 2,
+  "mode": "evo",
+  "current_level": "standard",
+  "locked": false,
+  "caveman": "lite",
+  "caveman_locked": false,
+  "suggested_profile": "standard",
+  "allow_pro": true,
+  "model_overrides": {},
+  "sessions_analyzed": 0,
+  "clean_streak": 0,
+  "last_score": 50,
+  "last_reason": "Initialisation par défaut (mode evo consultatif, profil standard).",
+  "last_evaluated_conversation_id": null,
+  "last_evaluated_execution_num": null,
+  "last_updated": null,
+  "signals": {
+    "reviewer_rejections_recent": 0,
+    "tool_or_test_errors_recent": 0,
+    "guard_deny_recent": 0,
+    "guard_ask_recent": 0,
+    "eval_pass_rate": null,
+    "session_error": false
+  },
+  "history": []
+}

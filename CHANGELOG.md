@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Single-Source `plugin/templates/` & Engineering Principles Rule (`plugin/templates/`, `plugin/templates/.agents/rules/06-engineering-principles.md`, `workspace-template/`):**
+  - Centralized static starter templates under `plugin/templates/` (using `.agents/rules/01-safety-boundaries.md.tmpl` -> `.agents/rules/01-safety-boundaries.md`) as the single source of truth synchronized byte-for-byte with `workspace-template/`.
+  - Added `06-engineering-principles.md` (`trigger: model_decision`, 0 `always_on` tokens) covering verifiable KISS, YAGNI, DRY, SOLID, and CUPID criteria, deployed in both `quickstart` and `full` modes alongside point 7 in `AGENTS.md`.
+  - Added repeatable `--with-stack {python,api}` opt-in flag (and `stacks` parameter) to `plugin/scripts/init_workspace.py` for `02-python-stdlib.md` and `03-api-architecture.md`.
+- **Charter Size, Encoding & Drift Guards (`plugin/scripts/validators/{base,workspace_validator,plugin_validator}.py`, `plugin/scripts/test_unit.py`):**
+  - Added `check_utf8_no_bom_lf()` (`UTF-8` without BOM, `LF` line endings, `MAX_AGENTS_MD_BYTES = 2500`) enforced on workspace `AGENTS.md`, repository root `AGENTS.md`, and `plugin/templates/`.
+  - Added byte-for-byte drift validation between `plugin/templates/` (plus `evals/cases.json`) and `workspace-template/`.
 - **3 Executed Profiles (`quick` / `standard` / `deep`) & A/B Model Experiment Logging (`plugin/observability/profile_engine.py`, `plugin/observability/state_writer.py`, `docs/modes-and-routing.md`):**
   - Replaced the 4-tier matrix and 14 dead preset keys with 3 executed profiles (`quick`, `standard` default, `deep`) plus backward-compatible aliases (`low→quick`, `medium→standard`, `high/ultra→deep`) and `"allow_pro": false` fallback to `"flash"` (instead of `"inherit"`).
   - Exposed `--plan-model`, `--build-model`, `--review-model` (`inherit` | `flash_lite` | `flash` | `pro` | `reset`) in `profile_engine.py set` and `review_pipeline.py`, logged effective `preset_profile` and `role_models` into `live_state.json` and `runs.jsonl`, and documented the A/B comparison protocol with `gravity-metrics` in `docs/modes-and-routing.md`.
@@ -16,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `validation_summary` to `BUILD_SCHEMA` and safe modified-file snippet fallback when `.gravity_verified.patch` / `git_diff` is empty or `Non-Workspace File Access` restricts external worktree reads.
 
 ### Changed
+- **DRY `init_workspace.py`, Opt-In Stacks, Agent Principles & Root `AGENTS.md` Compaction (`plugin/scripts/init_workspace.py`, `install.py`, `plugin/agents/{planner,reviewer}.md`, `AGENTS.md`, `docs/`):**
+  - Removed duplicated template string constants (`AGENTS_MD`, `MCP_CONFIG_JSON`, `RULE_01_*`..`RULE_05_*`, `PROGRESS_*`, `BACKLOG_MD`, `LIVE_STATE_*`, `PROFILE_JSON`, `GRAVITY_GITIGNORE`) from `init_workspace.py`, replacing `PROGRESS_*` / `LIVE_STATE_*` pairs with `_render_progress_md(mode)` / `_render_live_state_json(mode)`, normalizing all writes via `_write_utf8_lf()`, and stopping default deployment of `02-python-stdlib.md` / `03-api-architecture.md` in `--mode full` unless requested via `--with-stack`.
+  - Updated `install.py:_load_canonical_templates()` to load canonical templates from `plugin/templates/` (including `01-safety-boundaries.md.tmpl` -> `.agents/rules/01-safety-boundaries.md` and `06-engineering-principles.md`) for `--purge-workspace-templates`.
+  - Updated `planner.md` (referencing project `AGENTS.md`/active rules invariants instead of hardcoded Python 3 stdlib, plus KISS/YAGNI/DRY check) and `reviewer.md` (`MAJOR` covers proven source-of-truth duplication and KISS/YAGNI/DRY/SOLID/CUPID violations on the diff; `NIT` covers optional simplifications).
+  - Compacted root `AGENTS.md` (`2 261 B` -> `<= 1 650 B`, UTF-8 without BOM, LF) and updated living documentation (`docs/`, `README.md`, skill references).
 - **Centralized Per-Workspace Runtime Storage & Global Lifecycle Without `init` (`plugin/observability/state_writer.py`, `plugin/observability/profile_engine.py`, `plugin/hooks/{session_start_caveman,stop_session_logger,hook_runtime}.py`, `plugin/sidecars/live-widget/server.py`, `plugin/observability/statusline.py`):**
   - Centralized `profile.json`, `live_state.json`, `runs.jsonl`, `last_verified.patch`, and `evals/report.{json,md}` under `resolve_workflow_home() / "workspaces" / "<slug>-<sha256_8>/"` (`$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/`), recording `workspace_path` + `state_path` in `live_workspaces.json` with read-only fallback to `<ws>/.agents/gravity-workflow/profile.json` and zero state files written in target workspaces.
   - Enabled `SessionStart`, `Stop`, `Live` event recording, and `profile_engine.evolve_on_stop()` on all repositories without requiring `/gravity-workflow init`.

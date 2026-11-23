@@ -6,7 +6,7 @@ Les agents sont validés strictement par [`validate.py`](../plugin/scripts/valid
 
 | Agent | Fichier | Modèle manifeste | Permissions & Isolation | Rôle |
 |---|---|---|---|---|
-| **Planner** | [`planner.md`](../plugin/agents/planner.md) | `pro` | Lecture seule (`read_file`, `grep_search`, `find_by_name`, `list_dir`, `send_message`), `sandbox` | Analyse le contexte, vérifie `01-safety-boundaries.md`, produit un plan borné (concision Caveman plafonnée à `full`), sans planifier de `git commit`/`push`/`tag` ou release, et refuse précocement toute dérive sécurité |
+| **Planner** | [`planner.md`](../plugin/agents/planner.md) | `pro` | Lecture seule (`read_file`, `grep_search`, `find_by_name`, `list_dir`, `send_message`), `sandbox` | Analyse le contexte, vérifie `01-safety-boundaries.md` et les invariants de `AGENTS.md` / règles actives, contrôle KISS/YAGNI/DRY avant tout nouveau fichier ou abstraction, produit un plan borné (Caveman <= `full`), sans `git commit`/`push`/`tag` ou release |
 | **Builder** | [`builder.md`](../plugin/agents/builder.md) | `flash` | Édition (`write_file`, `edit_file`) + lecture (`read_file`, `grep_search`, `find_by_name`, `list_dir`) + `run_command`, `send_message`, `workspace="branch"`, `sandbox` | Implémente strictement le plan ou corrige les constats bloquants dans un worktree isolé, sans jamais commiter/pousser/taguer ni faire de release, et produit `.gravity_verified.patch` |
 | **Reviewer** | [`reviewer.md`](../plugin/agents/reviewer.md) | `pro` | Lecture seule (`read_file`, `grep_search`, `find_by_name`, `list_dir`, `send_message`), **`inheritMcp: false`**, `workspace="inherit"` | Audit indépendant à froid (sans historique de conversation) sur les fichiers produits et le diff (constats 1 ligne sous Caveman, *Preuve ou Silence* intact) |
 
@@ -15,9 +15,9 @@ Les agents sont validés strictement par [`validate.py`](../plugin/scripts/valid
 2. **Preuve ou Silence :** aucun `BLOCKER` ou `MAJOR` n'est recevable sans le triplet exact `chemin/fichier:ligne`, extrait littéral constaté, et règle violée. Sans preuve matérielle, le constat passe en `UNCERTAIN` ou est supprimé.
 3. **Grille à 4 niveaux + `[manual]` :**
    - `BLOCKER` (ligne rouge / sécurité) → verdict `FAIL`.
-   - `MAJOR` (écart objectif aux specs) → verdict `FAIL`.
+   - `MAJOR` (écart objectif aux specs, duplication avérée de source de vérité ou violation manifeste KISS/YAGNI/DRY/SOLID/CUPID prouvée sur le diff) → verdict `FAIL`.
    - `UNCERTAIN` (tronqué à 3 items max) → non bloquant.
-   - `NIT` (tronqué à 3 items max) → non bloquant (`PASS`).
+   - `NIT` (tronqué à 3 items max, forme/lisibilité/simplification optionnelle) → non bloquant (`PASS`).
    - `[manual]` → checklist qualitative soumise à l'utilisateur.
 
 ---

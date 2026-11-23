@@ -43,6 +43,8 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - **Initialisation et audit d'un projet cible :**
   ```bash
   python plugin/scripts/init_workspace.py --workspace <projet> --mode quickstart
+  # Avec stacks opt-in (python / api) :
+  python plugin/scripts/init_workspace.py --workspace <projet> --mode full --with-stack python --with-stack api
   python plugin/scripts/validate.py --workspace <projet> --strict
   ```
 
@@ -50,9 +52,9 @@ python -m unittest discover -s tests -p "test_*.py" -v
 
 ## Architecture des validateurs (`plugin/scripts/validators/`)
 
-- [`base.py`](../plugin/scripts/validators/base.py) : parseur frontmatter YAML, vérificateur AST `check_stdlib_only` (avec tolérance explicite aux modules locaux déclarés), contrôle `chmod 0755` sous POSIX, validation des agents (`readonly=True` interdit écriture/shell/`run_workflow`), validation structurelle `hooks.json` et exécution complète des dry-runs `PreToolUse` / `PostToolUse` / `SessionStart` / `Stop`.
-- [`plugin_validator.py`](../plugin/scripts/validators/plugin_validator.py) : contrôle strict des 9 champs officiels de `plugin.json` (+ `disabled` optionnel, rejet des clés non officielles et du BOM UTF-8), validation du contrat [`config/module.json`](../plugin/config/module.json) v1 (`validate_module_contract`), ratio carré du `logo.svg`, conformité des skills `gravity-workflow/` (`description <= 160` car. + 10 fiches `references/`) et `caveman/` (`description <= 160` car.), rejet de toute ancienne skill héritée (`gravity`, ...), absence de `Module XX`.
-- [`workspace_validator.py`](../plugin/scripts/validators/workspace_validator.py) : vérifie `AGENTS.md`, expansion `@[label](path)`, règles (triggers valides, `01-safety-boundaries.md` `trigger: always_on` `<= 2 048` octets, règles `<= 24 000` octets, budget total `< 20 000` tokens), `mcp_config.json`, `evals/cases.json` (10–15 cas), `.agents/gravity-workflow/profile.json` (`mode`, `current_level`, `locked`, `pace`, `verification`, `caveman`, `caveman_locked`) et `.gitignore` (`*.lock`).
+- [`base.py`](../plugin/scripts/validators/base.py) : parseur frontmatter YAML, vérificateur AST `check_stdlib_only` (avec tolérance explicite aux modules locaux déclarés), contrôle `check_utf8_no_bom_lf` (UTF-8 sans BOM, LF, plafond `MAX_AGENTS_MD_BYTES = 2500`), contrôle `chmod 0755` sous POSIX, validation des agents (`readonly=True` interdit écriture/shell/`run_workflow`), validation structurelle `hooks.json` et exécution complète des dry-runs `PreToolUse` / `PostToolUse` / `SessionStart` / `Stop`.
+- [`plugin_validator.py`](../plugin/scripts/validators/plugin_validator.py) : contrôle strict des 9 champs officiels de `plugin.json` (+ `disabled` optionnel, rejet des clés non officielles et du BOM UTF-8), validation du contrat [`config/module.json`](../plugin/config/module.json) v1 (`validate_module_contract`), ratio carré du `logo.svg`, conformité des skills `gravity-workflow/` (`description <= 160` car. + 10 fiches `references/`) et `caveman/` (`description <= 160` car.), contrôle des templates dans `plugin/templates/` (UTF-8 sans BOM, LF), contrôle de `AGENTS.md` racine (`<= 2 500` octets, sans BOM, LF), contrôle d'absence de dérive entre `plugin/templates/` (+ `evals/cases.json`) et `workspace-template/`, rejet de toute ancienne skill héritée (`gravity`, ...), absence de `Module XX`.
+- [`workspace_validator.py`](../plugin/scripts/validators/workspace_validator.py) : vérifie `AGENTS.md` (`<= 2 500` octets UTF-8 sans BOM, LF), expansion `@[label](path)`, règles (triggers valides, `01-safety-boundaries.md` `trigger: always_on` `<= 2 048` octets, règles `<= 24 000` octets, budget total `< 20 000` tokens), `mcp_config.json`, `evals/cases.json` (10–15 cas), `.agents/gravity-workflow/profile.json` (`mode`, `current_level`, `locked`, `pace`, `verification`, `caveman`, `caveman_locked`) et `.gitignore` (`*.lock`).
 
 ---
 

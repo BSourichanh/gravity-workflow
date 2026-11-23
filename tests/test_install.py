@@ -435,7 +435,7 @@ class TestGravityInstaller(unittest.TestCase):
             ws = base / "project"
             ws.mkdir()
             custom_agents = "# Custom Project AGENTS\nDo not overwrite me.\n"
-            (ws / "AGENTS.md").write_text(custom_agents, encoding="utf-8")
+            (ws / "AGENTS.md").write_text(custom_agents, encoding="utf-8", newline="\n")
 
             self.assertEqual(_run_quiet(["--target", str(target)]), 0)
             rc = _run_quiet(

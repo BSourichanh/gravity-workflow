@@ -2,242 +2,121 @@
 """Initialiseur du socle vital Gravity Workflow dans un projet cible (appelé par /gravity-workflow, 100 % stdlib)."""
 
 import argparse
+import json
 import shutil
 import sys
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Sequence, Tuple
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+TEMPLATES_ROOT = PLUGIN_ROOT / "templates"
 GIT_VERSIONING_RULE_REL = ".agents/rules/05-git-versioning.md"
+SAFETY_RULE_REL = ".agents/rules/01-safety-boundaries.md"
+ENGINEERING_RULE_REL = ".agents/rules/06-engineering-principles.md"
 
-AGENTS_MD = """# Charte Projet — Agents Antigravity
-
-## Identité & Livrable
-- **Domaine :** <Décrire le projet et son processus répétitif cible>
-- **Livrable principal :** <PR / Patch / Rapport structuré / Audit JSON>
-- **Sources de vérité :** <Chemins vers les specs, schémas ou docs de référence>
-
-## Règles de travail
-1. Toujours respecter `.agents/rules/01-safety-boundaries.md` (`trigger: always_on`, préfixe statique conservé pour optimiser le Context Caching Gemini).
-2. Ne jamais écraser un fichier existant sans diff préalable validé par l'utilisateur.
-3. Privilégier les outils natifs (`/browser`, terminal sandbox, outils fichiers) avant tout connecteur MCP.
-4. Soumettre tout livrable significatif au sous-agent `reviewer` (indépendant, à froid) avant clôture.
-5. En cas de correction manuelle ou d'incident, appliquer la double boucle `/learn` : proposer une règle ciblée (`learning_proposal.md` validé avant écriture) et ajouter un cas de non-régression dans `.agents/gravity-workflow/evals/cases.json`.
-6. **Git & versioning (chef d'orchestre uniquement) :** avant tout `git commit`, `git push` ou release, l'agent principal applique `.agents/rules/05-git-versioning.md` (branches hors `main`, *Conventional Commits*, SemVer, `CHANGELOG.md`, tags annotés `vX.Y.Z`) ; les sous-agents et workers `swarm` ne committent ni ne poussent jamais.
-"""
-
-MCP_CONFIG_JSON = """{
-  "mcpServers": {}
+TEMPLATE_SOURCE_OVERRIDES: Dict[str, str] = {
+    SAFETY_RULE_REL: ".agents/rules/01-safety-boundaries.md.tmpl",
 }
-"""
 
-RULE_01_SAFETY = """---
-trigger: always_on
-description: Lignes rouges absolues du projet (chargées à chaque tour, < 2 Ko).
----
-
-# Frontières de sécurité absolues
-
-1. **Secrets :** Interdiction absolue de lire, rechercher, afficher, journaliser ou commiter `.env`, `secrets/`, clés privées (`.pem`, `.key`, clés SSH `id_rsa`/`id_ed25519`), `printenv`/`env`/`Get-ChildItem Env:` ou jetons d'API.
-2. **Commandes & workflows destructeurs :** Interdiction de `rm -rf`/`rm --recursive --force` ou `Remove-Item -Recurse -Force` destructeurs, `git push --force`/`-f`/`+ref`, suppressions DB (`DROP`/`TRUNCATE`/`FLUSHALL`), `curl|wget` pipés vers un shell, `irm`/`iwr | iex`, et `run_workflow` ciblant secrets ou hooks.
-3. **Intégrité du harnais :** Interdiction de modifier ou désactiver les garde-fous Gravity Workflow (`hooks.json`, `hooks/` ou ce fichier) sans validation explicite de l'utilisateur.
-"""
-
-RULE_02_PYTHON = """---
-trigger: glob
-globs: '**/*.py'
-description: Conventions Python 3 applicables aux scripts du projet et du harnais.
----
-
-- Utiliser exclusivement la bibliothèque standard Python 3 (zéro dépendance externe non approuvée).
-- Garantir un code de retour `0` et une sortie JSON conforme sur `stdout` (`{}` strict pour `PostToolUse` et `Stop`) pour tout script de hook.
-- Dans les hooks, résoudre les chemins workspace depuis le payload `stdin` (`cwd` / `workspacePaths`).
-"""
-
-RULE_03_API = """---
-trigger: model_decision
-description: Charger uniquement lors de la conception ou modification d'endpoints API, de schémas JSON ou de contrats de données.
----
-
-- Préserver la rétrocompatibilité des champs existants.
-- Valider toute sortie structurée contre un JSON Schema strict compatible Gemini.
-"""
-
-RULE_04_RELEASE = """---
-trigger: manual
-description: Checklist de pré-publication invoquée explicitement avant toute release (mention @rule en App/IDE ; lecture directe en CLI agy).
----
-
-- [ ] `python3 <plugin_gravity_workflow>/scripts/validate.py --workspace . --strict` passe sans erreur ni avertissement.
-- [ ] Suite `/gravity-workflow evals` exécutée (12/12 PASS) et checklist `[manual]` arbitrée par un humain.
-- [ ] Conventions Git & versioning vérifiées par le chef d'orchestre (`.agents/rules/05-git-versioning.md` : branche hors `main`, SemVer, `CHANGELOG.md`, *Conventional Commits*, tag annoté `vX.Y.Z`).
-"""
-
-RULE_05_GIT_VERSIONING = """---
-trigger: model_decision
-description: Conventions Git et versioning (branches, Conventional Commits, SemVer, CHANGELOG, tags) réservées au chef d'orchestre (agent principal) avant tout commit, push ou release — ignorées par les sous-agents et workers swarm.
----
-
-# Conventions Git & Versioning (Chef d'orchestre uniquement)
-
-> **Portée stricte :** Cette règle s'applique **exclusivement au chef d'orchestre** (agent principal / session `/gravity-workflow`). Les sous-agents (`planner`, `builder`, `reviewer`) et les workers `swarm` ne doivent **jamais** exécuter `git commit`, `git push`, `git tag`, ni modifier les numéros de version ou `CHANGELOG.md` à titre de release.
-
-Avant tout `git commit` et `git push` (toujours après demande ou validation explicite de l'utilisateur) :
-
-1. **Stratégie de branches :**
-   - Travailler sur `dev` ou une branche dédiée (`feat/<nom>`, `fix/<nom>`, `docs/<nom>`, `chore/<nom>`).
-   - **Jamais** de commit ni de push direct sur `main` ou `master` (intégration uniquement via `dev` / PR / merge contrôlé ; `--force` / `-f` / `+ref` strictement interdits).
-2. **Propreté & vérifications pré-commit / pré-push :**
-   - Contrôler `git status` et `git diff --staged` : exclure tout secret (`.env`, clés), fichier temporaire ou artefact local (`__pycache__/`, `*.lock`, `runs.jsonl`).
-   - En mode **`safe`** (défaut) : exécuter les validations et tests du projet avant de commiter et pousser ; en mode **`unsafe`**, vérifier au minimum la propreté du diff et l'absence de secrets.
-3. **Messages *Conventional Commits* :**
-   - Titre impératif `<= 50` car. : `<type>(<scope>): <résumé>` (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `build`, `ci`, `perf`, `style` ; ajouter `!` et un pied `BREAKING CHANGE:` en cas de rupture).
-   - Privilégier le **pourquoi** dans le corps si des puces complémentaires (`<= 72` car./ligne) sont nécessaires.
-4. **Semantic Versioning (`MAJOR.MINOR.PATCH`) & `CHANGELOG.md` :**
-   - Déterminer si le lot requiert une montée SemVer (`MAJOR` rupture, `MINOR` ajout rétrocompatible, `PATCH` correctif) et synchroniser tous les manifestes de version du projet (`plugin.json`, `package.json`, `pyproject.toml`, `Cargo.toml`, `VERSION`, etc.).
-   - Mettre à jour `CHANGELOG.md` au format *Keep a Changelog* (`[Unreleased]` ou `[X.Y.Z] - YYYY-MM-DD`, rubriques `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`) pour tout changement notable ou release.
-5. **Tags Git annotés (`vX.Y.Z`) :**
-   - À chaque montée de version / release validée, créer un tag annoté aligné avec le manifeste et `CHANGELOG.md` (`git tag -a vX.Y.Z -m "Release vX.Y.Z"`), puis pousser explicitement le tag (`git push origin vX.Y.Z` ou `--follow-tags`, sans jamais forcer l'écrasement d'un tag existant).
-"""
-
-PROGRESS_FULL_MD = """# Gravity Workflow Progress
-
-- **Parcours :** Guidé (0/8)
-- **Domaine :** À définir
-- **Livrable principal :** À définir
-- **Sources de vérité :** À définir
-- **3 Lignes rouges :**
-  1. Aucune lecture/fuite de secrets (`.env`, `secrets/`, clés SSH/privées, `printenv`)
-  2. Aucune commande destructrice système/Git/DB (`rm -rf`, `git push --force`, `DROP DATABASE`)
-  3. Auto-protection des hooks et règles de sécurité
-
-## Avancement des étapes
-- [ ] Cadrage du projet
-- [ ] Socle & règles
-- [ ] Équipe & Reviewer indépendant
-- [ ] Outils & connexions
-- [ ] Routeur & workflows
-- [ ] Garde-fous automatiques
-- [ ] Tests & évaluations
-- [ ] Suivi & boucle `/learn`
-- [ ] Tableau de bord (Bonus)
-"""
-
-PROGRESS_QUICKSTART_MD = """# Gravity Workflow Progress
-
-- **Parcours :** Quick Start [~] 3/8
-- **Domaine :** À définir
-- **Livrable principal :** À définir
-- **Sources de vérité :** À définir
-- **3 Lignes rouges :**
-  1. Aucune lecture/fuite de secrets (`.env`, `secrets/`, clés SSH/privées, `printenv`)
-  2. Aucune commande destructrice système/Git/DB (`rm -rf`, `git push --force`, `DROP DATABASE`)
-  3. Auto-protection des hooks et règles de sécurité
-
-## Avancement des étapes
-- [x] Cadrage du projet
-- [x] Socle & règles
-- [x] Équipe & Reviewer indépendant
-- [ ] Outils & connexions
-- [ ] Routeur & workflows
-- [ ] Garde-fous automatiques
-- [ ] Tests & évaluations
-- [ ] Suivi & boucle `/learn`
-- [ ] Tableau de bord (Bonus)
-"""
-
-BACKLOG_MD = """# Gravity Workflow Backlog — Questions ouvertes & arbitrages différés
-
-- [ ] Ajouter les cas d'évaluation métier spécifiques au projet dans `.agents/gravity-workflow/evals/cases.json` au fil des sessions `/learn`.
-"""
-
-LIVE_STATE_JSON = """{
-  "stage": "idle",
-  "progress": "0/8",
-  "mode": "evo",
-  "level": "standard",
-  "preset_profile": "standard",
-  "suggested_profile": "standard",
-  "suggested_reason": "",
-  "role_models": {
-    "plan": "flash",
-    "build": "flash",
-    "review": "pro"
-  },
-  "caveman": "lite",
-  "caveman_locked": false,
-  "guard_status": "ON",
-  "nodes": {
-    "planner": "",
-    "builder": "",
-    "reviewer": ""
-  },
-  "events": []
+STACK_RULE_MAP: Dict[str, str] = {
+    "python": ".agents/rules/02-python-stdlib.md",
+    "api": ".agents/rules/03-api-architecture.md",
 }
-"""
 
-LIVE_STATE_QUICKSTART_JSON = """{
-  "stage": "quickstart",
-  "progress": "3/8",
-  "mode": "evo",
-  "level": "standard",
-  "preset_profile": "standard",
-  "suggested_profile": "standard",
-  "suggested_reason": "",
-  "role_models": {
-    "plan": "flash",
-    "build": "flash",
-    "review": "pro"
-  },
-  "caveman": "lite",
-  "caveman_locked": false,
-  "guard_status": "ON",
-  "nodes": {
-    "planner": "",
-    "builder": "",
-    "reviewer": ""
-  },
-  "events": []
-}
-"""
+COMMON_TEMPLATE_RELS: Tuple[str, ...] = (
+    "AGENTS.md",
+    ".agents/mcp_config.json",
+    SAFETY_RULE_REL,
+    GIT_VERSIONING_RULE_REL,
+    ENGINEERING_RULE_REL,
+    ".agents/gravity-workflow/.gitignore",
+    ".agents/gravity-workflow/BACKLOG.md",
+    ".agents/gravity-workflow/profile.json",
+)
 
-PROFILE_JSON = """{
-  "schema_version": 2,
-  "mode": "evo",
-  "current_level": "standard",
-  "locked": false,
-  "caveman": "lite",
-  "caveman_locked": false,
-  "suggested_profile": "standard",
-  "allow_pro": true,
-  "model_overrides": {},
-  "sessions_analyzed": 0,
-  "clean_streak": 0,
-  "last_score": 50,
-  "last_reason": "Initialisation par défaut (mode evo consultatif, profil standard).",
-  "last_evaluated_conversation_id": null,
-  "last_evaluated_execution_num": null,
-  "last_updated": null,
-  "signals": {
-    "reviewer_rejections_recent": 0,
-    "tool_or_test_errors_recent": 0,
-    "guard_deny_recent": 0,
-    "guard_ask_recent": 0,
-    "eval_pass_rate": null,
-    "session_error": false
-  },
-  "history": []
-}
-"""
+FULL_EXTRA_TEMPLATE_RELS: Tuple[str, ...] = (".agents/rules/04-release-checklist.md",)
 
-GRAVITY_GITIGNORE = """# Fichiers temporaires et télémétrie d'exécution Gravity Workflow
-*.lock
-observability/*.lock
-observability/runs.jsonl
-observability/last_verified.patch
-evals/report.json
-evals/report.md
-"""
+PROGRESS_STEPS: Tuple[str, ...] = (
+    "Cadrage du projet",
+    "Socle & règles",
+    "Équipe & Reviewer indépendant",
+    "Outils & connexions",
+    "Routeur & workflows",
+    "Garde-fous automatiques",
+    "Tests & évaluations",
+    "Suivi & boucle `/learn`",
+    "Tableau de bord (Bonus)",
+)
+
+
+def _write_utf8_lf(dest: Path, content: str) -> None:
+    """Écrit un fichier texte en UTF-8 sans BOM avec fins de ligne LF."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    with dest.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(normalized)
+
+
+def _read_template(rel_path: str) -> str:
+    """Lit un fichier template statique depuis `plugin/templates/` (en résolvant les suffixes `.tmpl`)."""
+    src_rel = TEMPLATE_SOURCE_OVERRIDES.get(rel_path, rel_path)
+    src = TEMPLATES_ROOT / src_rel
+    if not src.is_file():
+        raise FileNotFoundError(f"Template introuvable : {src}")
+    return src.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+def _render_progress_md(mode: str) -> str:
+    """Génère `PROGRESS.md` paramétré selon le mode (`full` ou `quickstart`)."""
+    is_quickstart = mode == "quickstart"
+    parcours = "Quick Start [~] 3/8" if is_quickstart else "Guidé (0/8)"
+    done_count = 3 if is_quickstart else 0
+    checklist = "\n".join(
+        f"- [{'x' if idx < done_count else ' '}] {step}"
+        for idx, step in enumerate(PROGRESS_STEPS)
+    )
+    return (
+        "# Gravity Workflow Progress\n\n"
+        f"- **Parcours :** {parcours}\n"
+        "- **Domaine :** À définir\n"
+        "- **Livrable principal :** À définir\n"
+        "- **Sources de vérité :** À définir\n"
+        "- **3 Lignes rouges :**\n"
+        "  1. Aucune lecture/fuite de secrets (`.env`, `secrets/`, clés SSH/privées, `printenv`)\n"
+        "  2. Aucune commande destructrice système/Git/DB (`rm -rf`, `git push --force`, `DROP DATABASE`)\n"
+        "  3. Auto-protection des hooks et règles de sécurité\n\n"
+        "## Avancement des étapes\n"
+        f"{checklist}\n"
+    )
+
+
+def _render_live_state_json(mode: str) -> str:
+    """Génère `observability/live_state.json` v2 paramétré selon le mode (`full` ou `quickstart`)."""
+    is_quickstart = mode == "quickstart"
+    payload = {
+        "stage": "quickstart" if is_quickstart else "idle",
+        "progress": "3/8" if is_quickstart else "0/8",
+        "mode": "evo",
+        "level": "standard",
+        "preset_profile": "standard",
+        "suggested_profile": "standard",
+        "suggested_reason": "",
+        "role_models": {
+            "plan": "flash",
+            "build": "flash",
+            "review": "pro",
+        },
+        "caveman": "lite",
+        "caveman_locked": False,
+        "guard_status": "ON",
+        "nodes": {
+            "planner": "",
+            "builder": "",
+            "reviewer": "",
+        },
+        "events": [],
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
 
 
 def ensure_git_versioning_rule(target_root: Path, force: bool = False) -> bool:
@@ -247,45 +126,46 @@ def ensure_git_versioning_rule(target_root: Path, force: bool = False) -> bool:
     if dest.exists() and not force:
         print(f"[SKIP]   {GIT_VERSIONING_RULE_REL} (existe déjà, anti-écrasement actif)")
         return False
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(RULE_05_GIT_VERSIONING, encoding="utf-8")
+    _write_utf8_lf(dest, _read_template(GIT_VERSIONING_RULE_REL))
     print(f"[CREATE] {GIT_VERSIONING_RULE_REL}")
     return True
 
 
-def init_workspace(target_root: Path, mode: str = "full", force: bool = False) -> int:
+def init_workspace(
+    target_root: Path,
+    mode: str = "full",
+    force: bool = False,
+    stacks: Sequence[str] = (),
+) -> int:
+    """Déploie le socle Gravity Workflow depuis `plugin/templates/` (sans écrasement par défaut)."""
     target_root = target_root.resolve()
     target_root.mkdir(parents=True, exist_ok=True)
 
-    progress_text = PROGRESS_QUICKSTART_MD if mode == "quickstart" else PROGRESS_FULL_MD
-    live_state_text = LIVE_STATE_QUICKSTART_JSON if mode == "quickstart" else LIVE_STATE_JSON
-    files: Dict[str, str] = {
-        "AGENTS.md": AGENTS_MD,
-        ".agents/mcp_config.json": MCP_CONFIG_JSON,
-        ".agents/rules/01-safety-boundaries.md": RULE_01_SAFETY,
-        GIT_VERSIONING_RULE_REL: RULE_05_GIT_VERSIONING,
-        ".agents/gravity-workflow/.gitignore": GRAVITY_GITIGNORE,
-        ".agents/gravity-workflow/PROGRESS.md": progress_text,
-        ".agents/gravity-workflow/BACKLOG.md": BACKLOG_MD,
-        ".agents/gravity-workflow/profile.json": PROFILE_JSON,
-        ".agents/gravity-workflow/observability/live_state.json": live_state_text,
-    }
+    rel_paths = list(COMMON_TEMPLATE_RELS)
     if mode == "full":
-        files.update(
-            {
-                ".agents/rules/02-python-stdlib.md": RULE_02_PYTHON,
-                ".agents/rules/03-api-architecture.md": RULE_03_API,
-                ".agents/rules/04-release-checklist.md": RULE_04_RELEASE,
-            }
-        )
+        rel_paths.extend(FULL_EXTRA_TEMPLATE_RELS)
+
+    seen_stacks = set()
+    for stack in stacks:
+        if stack not in STACK_RULE_MAP:
+            raise ValueError(
+                f"Stack inconnue : {stack!r} (attendu : {sorted(STACK_RULE_MAP)})"
+            )
+        if stack in seen_stacks:
+            continue
+        seen_stacks.add(stack)
+        rel_paths.append(STACK_RULE_MAP[stack])
+
+    files: Dict[str, str] = {rel: _read_template(rel) for rel in rel_paths}
+    files[".agents/gravity-workflow/PROGRESS.md"] = _render_progress_md(mode)
+    files[".agents/gravity-workflow/observability/live_state.json"] = _render_live_state_json(mode)
 
     for rel_path, content in files.items():
         dest = target_root / rel_path
         if dest.exists() and not force:
             print(f"[SKIP]   {rel_path} (existe déjà, anti-écrasement actif)")
             continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(content, encoding="utf-8")
+        _write_utf8_lf(dest, content)
         print(f"[CREATE] {rel_path}")
 
     default_cases = PLUGIN_ROOT / "evals/cases.json"
@@ -322,6 +202,13 @@ def main() -> int:
         help="Mode d'initialisation : 'quickstart' (socle minimal 10 min) ou 'full' (socle complet).",
     )
     parser.add_argument(
+        "--with-stack",
+        choices=tuple(STACK_RULE_MAP.keys()),
+        action="append",
+        default=[],
+        help="Déploie en opt-in une règle de stack complémentaire (répétable : python, api).",
+    )
+    parser.add_argument(
         "--ensure-git-rule",
         action="store_true",
         help="Crée uniquement `.agents/rules/05-git-versioning.md` s'il est absent du projet (sans écraser l'existant).",
@@ -335,7 +222,12 @@ def main() -> int:
     if args.ensure_git_rule:
         ensure_git_versioning_rule(args.workspace, force=args.force)
         return 0
-    return init_workspace(args.workspace, mode=args.mode, force=args.force)
+    return init_workspace(
+        args.workspace,
+        mode=args.mode,
+        force=args.force,
+        stacks=args.with_stack,
+    )
 
 
 if __name__ == "__main__":

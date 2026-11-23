@@ -20,8 +20,10 @@ SECRET_LEAK_RE = re.compile(r"(?:sk-live-|ghp_[A-Za-z0-9]{20,}|xox[baprs]-|AKIA[
 
 MAX_DESC_LEN = 160
 MAX_ALWAYS_ON_BYTES = 2048
+MAX_AGENTS_MD_BYTES = 2500
 MAX_RULE_BYTES = 24000
 MAX_ACTIVE_TOKENS = 20000
+UTF8_BOM = b"\xef\xbb\xbf"
 
 VALID_RULE_TRIGGERS = {"always_on", "model_decision", "glob", "manual"}
 VALID_AGENT_MODELS = {"inherit", "flash_lite", "flash", "pro"}
@@ -99,6 +101,29 @@ class Report:
 
     def ok(self, strict: bool) -> bool:
         return len(self.errors) == 0 and (not strict or len(self.warnings) == 0)
+
+
+def check_utf8_no_bom_lf(
+    path: Path, label: str, report: Report, *, max_bytes: Optional[int] = None
+) -> Optional[bytes]:
+    """Vérifie qu'un fichier est encodé en UTF-8 sans BOM, avec fins de ligne LF et taille bornée."""
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        report.error(f"{label} illisible : {exc}")
+        return None
+    if raw.startswith(UTF8_BOM):
+        report.error(f"{label} : BOM UTF-8 interdit (encoder en UTF-8 sans BOM).")
+    payload = raw[len(UTF8_BOM) :] if raw.startswith(UTF8_BOM) else raw
+    try:
+        payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        report.error(f"{label} : encodage UTF-8 invalide ({exc}).")
+    if b"\r\n" in raw:
+        report.error(f"{label} : fins de ligne CRLF interdites (utiliser LF).")
+    if max_bytes is not None and len(raw) > max_bytes:
+        report.error(f"{label} dépasse {max_bytes} octets ({len(raw)} octets).")
+    return raw
 
 
 def has_real_python3() -> bool:

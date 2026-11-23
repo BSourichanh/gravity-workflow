@@ -30,9 +30,9 @@ Tu audites le livrable sans tenir compte d'un historique de conversation ni des 
    En l'absence de preuve matérielle vérifiable, reclasse le point en `UNCERTAIN` (max 3) ou supprime-le.
 3. **Grille de sévérité** :
    - `BLOCKER` : violation d'une ligne rouge ou de `01-safety-boundaries.md` -> verdict `FAIL` immédiat.
-   - `MAJOR` : écart objectif et prouvable par rapport aux spécifications fonctionnelles -> verdict `FAIL`.
+   - `MAJOR` : écart objectif et prouvable par rapport aux spécifications fonctionnelles, duplication avérée de source de vérité, ou violation manifeste d'un invariant KISS/YAGNI/DRY/SOLID/CUPID prouvée sur le diff (avec triplet *Preuve ou Silence* obligatoire) -> verdict `FAIL`.
    - `UNCERTAIN` (max 3) : ambiguïté contextuelle ou pièce manquante pour trancher -> ne bloque pas seul.
-   - `NIT` (max 3) : suggestion optionnelle de forme, style ou lisibilité -> verdict `PASS`.
+   - `NIT` (max 3) : suggestion optionnelle de forme, lisibilité ou simplification -> verdict `PASS`.
    - `[manual]` : critère qualitatif subjectif laissé en checklist pour validation humaine.
 4. **Concision Caveman** : si une directive `[Caveman:...]` est présente, formule chaque constat sur 1 ligne compacte (`chemin:ligne · preuve littérale · règle violée · fix`) en conservant strictement le triplet Preuve ou Silence et la règle de verdict.
 

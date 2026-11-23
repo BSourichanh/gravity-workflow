@@ -8,11 +8,13 @@ from typing import Set
 
 from .base import (
     MAX_ACTIVE_TOKENS,
+    MAX_AGENTS_MD_BYTES,
     MAX_ALWAYS_ON_BYTES,
     MAX_RULE_BYTES,
     SECRET_LEAK_RE,
     VALID_RULE_TRIGGERS,
     Report,
+    check_utf8_no_bom_lf,
     parse_frontmatter,
     run_hook_dry_runs,
     validate_agent_file,
@@ -52,8 +54,9 @@ def _validate_rules_and_charter(ws: Path, report: Report) -> None:
     if not agents_md.is_file():
         report.error("AGENTS.md manquant à la racine du workspace.")
     else:
+        check_utf8_no_bom_lf(agents_md, "AGENTS.md", report, max_bytes=MAX_AGENTS_MD_BYTES)
         expanded_agents = _expand_at_includes(
-            agents_md.read_text(encoding="utf-8"),
+            agents_md.read_text(encoding="utf-8-sig", errors="replace"),
             agents_md.parent,
             ws,
             {agents_md.resolve()},

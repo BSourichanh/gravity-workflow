@@ -12,3 +12,4 @@
 4. Soumettre tout livrable significatif au sous-agent `reviewer` (indépendant, à froid) avant clôture.
 5. En cas de correction manuelle ou d'incident, appliquer la double boucle `/learn` : proposer une règle ciblée (`learning_proposal.md` validé avant écriture) et ajouter un cas de non-régression dans `.agents/gravity-workflow/evals/cases.json`.
 6. **Git & versioning (chef d'orchestre uniquement) :** avant tout `git commit`, `git push` ou release, l'agent principal applique `.agents/rules/05-git-versioning.md` (branches hors `main`, *Conventional Commits*, SemVer, `CHANGELOG.md`, tags annotés `vX.Y.Z`) ; les sous-agents et workers `swarm` ne committent ni ne poussent jamais.
+7. **Ingénierie & sobriété :** appliquer **KISS, YAGNI, DRY, SOLID, CUPID** (critères détaillés chargés à la demande via `.agents/rules/06-engineering-principles.md` en conception, refactor ou revue).

@@ -28,13 +28,13 @@ All runtime machinery lives in [`plugin/`](plugin/) and stays decoupled from tar
 - **Live Observability, Consultative Profile & Centralized Storage**:
   - [`plugin/observability/profile_engine.py`](plugin/observability/profile_engine.py) and [`plugin/observability/caveman_protocol.py`](plugin/observability/caveman_protocol.py) — 3-profile engine (`quick`/`standard`/`deep` with legacy aliases, ephemeral `no_verify`, consultative behavioral `evo` recommending `standard`|`deep` without silent mutation, and A/B model overrides) active globally on all repositories without requiring `/gravity-workflow init`.
   - [`plugin/observability/state_writer.py`](plugin/observability/state_writer.py), [`plugin/observability/statusline.py`](plugin/observability/statusline.py), and [`plugin/sidecars/live-widget/server.py`](plugin/sidecars/live-widget/server.py) — Stores all runtime state (`profile.json`, `live_state.json`, `runs.jsonl`, `last_verified.patch`, `evals/report.*`) centrally under `resolve_workflow_home() / "workspaces" / "<slug>-<sha256_8>/"` (`$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/`) with read-only `.agents/gravity-workflow/profile.json` fallback and zero state files written into target workspaces.
-  - [`plugin/scripts/init_workspace.py`](plugin/scripts/init_workspace.py) (non-destructive project initialization in `full` or `quickstart` mode) and [`plugin/scripts/validate.py`](plugin/scripts/validate.py) (strict plugin, 9-field manifest + `config/module.json` v1, and workspace validator).
+  - [`plugin/scripts/init_workspace.py`](plugin/scripts/init_workspace.py) (non-destructive project initialization from [`plugin/templates/`](plugin/templates/) in `full` or `quickstart` mode with opt-in `--with-stack python|api`, UTF-8 LF) and [`plugin/scripts/validate.py`](plugin/scripts/validate.py) (strict plugin, 9-field manifest + `config/module.json` v1, template parity, `AGENTS.md <= 2 500 B`, and workspace validator).
 
 ### 2. Minimal Project Footprint ([`workspace-template/`](workspace-template/))
-Initializing Gravity Workflow in a repository deploys only the 13 project-specific files exemplified in [`workspace-template/`](workspace-template/):
-- [`workspace-template/AGENTS.md`](workspace-template/AGENTS.md) — Project charter and working rules.
+Initializing Gravity Workflow in a repository deploys only the minimal project-specific baseline (`11` files in `quickstart`, `12` in `full`, plus opt-in `--with-stack python|api`) exemplified by the 14 reference files in [`workspace-template/`](workspace-template/):
+- [`workspace-template/AGENTS.md`](workspace-template/AGENTS.md) — Project charter and working rules (including KISS/YAGNI/DRY/SOLID/CUPID).
 - [`workspace-template/.agents/mcp_config.json`](workspace-template/.agents/mcp_config.json) — Project MCP configuration.
-- [`workspace-template/.agents/rules/01-safety-boundaries.md`](workspace-template/.agents/rules/01-safety-boundaries.md) (plus four scoped rule templates in `workspace-template/.agents/rules/`, including orchestrator-only Git & versioning conventions) — `trigger: always_on` safety boundaries under 2 KB.
+- [`workspace-template/.agents/rules/01-safety-boundaries.md`](workspace-template/.agents/rules/01-safety-boundaries.md) (plus `05-git-versioning.md`, `06-engineering-principles.md`, `04-release-checklist.md` in `full`, and opt-in stack rules `02-python-stdlib.md` / `03-api-architecture.md`) — `trigger: always_on` safety boundaries under 2 KB.
 - [`workspace-template/.agents/gravity-workflow/`](workspace-template/.agents/gravity-workflow/) — Milestone progress ([`workspace-template/.agents/gravity-workflow/PROGRESS.md`](workspace-template/.agents/gravity-workflow/PROGRESS.md)), backlog ([`workspace-template/.agents/gravity-workflow/BACKLOG.md`](workspace-template/.agents/gravity-workflow/BACKLOG.md)), adaptive mode profile ([`workspace-template/.agents/gravity-workflow/profile.json`](workspace-template/.agents/gravity-workflow/profile.json)), project evals ([`workspace-template/.agents/gravity-workflow/evals/cases.json`](workspace-template/.agents/gravity-workflow/evals/cases.json)), and live state ([`workspace-template/.agents/gravity-workflow/observability/live_state.json`](workspace-template/.agents/gravity-workflow/observability/live_state.json)).
 
 ### 3. Living Documentation ([`docs/`](docs/README.md))
@@ -109,7 +109,7 @@ python plugin/scripts/validate.py --plugin-root ~/.gemini/config/plugins/gravity
 
 ### After Installing
 
-1. Open any project in Antigravity and invoke `/gravity-workflow` (default `evo` at `medium`, `slow`, `safe`), `/gravity-workflow low|medium|high|ultra|evo [slow|fast] [safe|unsafe] <task>`, `/caveman [lite|full|ultra|off|auto]` (defaults to `lite`), `/gravity-workflow status`, or `/gravity-workflow evals` to start a session and initialize the minimal 13-file project footprint (or bootstrap via CLI with `init_workspace.py`).
+1. Open any project in Antigravity and invoke `/gravity-workflow` (default `evo` at `standard`, `safe`), `/gravity-workflow quick|standard|deep|evo [--no-verify] <task>`, `/caveman [lite|full|ultra|off|auto]` (defaults to `lite`), `/gravity-workflow status`, or `/gravity-workflow evals` to start a session (or bootstrap project files via CLI with `init_workspace.py`).
 2. **Optional — Enable the Live Widget Transition Sidecar (Antigravity App only):** Manually add the block below to `~/.gemini/config/config.json` (never let an agent edit `config.json` directly), then visit `http://127.0.0.1:4789` (health endpoint: `/health`). *Transition note: this standalone HTTP/SSE widget (`ui.mode: "transition-sidecar"`) will converge into the unified `gravity` Core UI.*
 
 ```json
@@ -177,7 +177,7 @@ python install.py --uninstall --method agy
 | [`tests/test_install.py`](tests/test_install.py) | Unit tests for `install.py` (install, upgrade, rollback, unified uninstall & cleanup) |
 | [`tests/test_uninstall.py`](tests/test_uninstall.py) | Unit tests for the deprecated `uninstall.py` wrapper and CLI parity |
 | [`plugin/`](plugin/) | Standalone Antigravity plugin ([manifest](plugin/plugin.json), [module contract](plugin/config/module.json), skills, subagents, hooks, workflows, evals, observability, sidecar, scripts) |
-| [`workspace-template/`](workspace-template/) | Reference 13-file project workspace generated by [`plugin/scripts/init_workspace.py`](plugin/scripts/init_workspace.py) |
+| [`workspace-template/`](workspace-template/) | Reference 14-file project workspace synchronized with [`plugin/templates/`](plugin/templates/) and [`plugin/scripts/init_workspace.py`](plugin/scripts/init_workspace.py) |
 | [`docs/`](docs/README.md) | Modular living documentation kept in sync with the codebase (French) |
 | [`AGENTS.md`](AGENTS.md) | Repository-level agent instructions and Python stdlib / KISS-YAGNI-DRY-SOLID-CUPID / living docs / integrity invariants |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release notes (`v0.2.0`) |
