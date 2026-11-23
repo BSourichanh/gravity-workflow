@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-23
+
 ### Added
 - **Single-Source `plugin/templates/` & Engineering Principles Rule (`plugin/templates/`, `plugin/templates/.agents/rules/06-engineering-principles.md`, `workspace-template/`):**
   - Centralized static starter templates under `plugin/templates/` (using `.agents/rules/01-safety-boundaries.md.tmpl` -> `.agents/rules/01-safety-boundaries.md`) as the single source of truth synchronized byte-for-byte with `workspace-template/`.
