@@ -67,7 +67,7 @@ plugin/
 └── scripts/
     ├── init_workspace.py               # Bootstrapper projet full/quickstart + --with-stack (chmod 0755)
     ├── validate.py                     # CLI validation --strict (chmod 0755)
-    ├── test_unit.py                    # Suite de tests unitaires internes (100 % stdlib)
+    ├── test_unit.py                    # Lanceur rétrocompatible vers tests/test_*.py (<= 50 L, 100 % stdlib)
     └── validators/                     # base.py, plugin_validator.py, workspace_validator.py
 ```
 

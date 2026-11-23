@@ -18,17 +18,17 @@ python plugin/scripts/validate.py --workspace workspace-template --strict
 # 3. Valider via Antigravity CLI (agy)
 agy plugin validate ./plugin --strict
 
-# 4. Exécuter la suite de tests unitaires interne du plugin
+# 4. Exécuter les suites unitaires rapides (lanceur rétrocompatible `tests/test_*.py` hors install/uninstall)
 python plugin/scripts/test_unit.py
 
-# 5. Exécuter les tests d'intégration installateur & désinstalleur
+# 5. Exécuter l'ensemble des suites unitaires et d'intégration (installateur & désinstalleur inclus)
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 ### Checklist pré-release (`v0.2.0+`)
 - [ ] `validate.py --strict` et `validate.py --workspace workspace-template --strict` retournent `0` erreur et `0` avertissement.
 - [ ] `agy plugin validate ./plugin --strict` retourne `Validation passed` (`exit 0`).
-- [ ] `test_unit.py` et `tests/test_*.py` (`test_install.py` couvrant installation + désinstallation/nettoyage unifiés `install.py --uninstall` et `test_uninstall.py` couvrant la parité + avertissement `[DEPRECATED]` du wrapper mince `uninstall.py`) passent intégralement.
+- [ ] `test_unit.py` (suites unitaires thématiques `tests/test_*.py` + `tests/_unit_helpers.py` hors install/uninstall) et `tests/test_*.py` (`test_install.py` couvrant installation + désinstallation/nettoyage unifiés `install.py --uninstall` et `test_uninstall.py` couvrant la parité + avertissement `[DEPRECATED]` du wrapper mince `uninstall.py`) passent intégralement.
 - [ ] [`CHANGELOG.md`](../CHANGELOG.md), [`LICENSE`](../LICENSE), [`.gitignore`](../.gitignore) et [`.gitattributes`](../.gitattributes) sont à jour et aucun `__pycache__/`, `.agents/` ou secret n'est suivi.
 
 ### Vérifications complémentaires

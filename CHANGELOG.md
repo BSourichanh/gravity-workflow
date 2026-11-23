@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Modular Unit Test Suite & Thin `test_unit.py` Launcher (`tests/test_*.py`, `tests/_unit_helpers.py`, `plugin/scripts/test_unit.py`, `docs/`):**
+  - Split monolithic `plugin/scripts/test_unit.py` (`2 371` lines) into 9 domain-focused stdlib test modules under `tests/` (`test_safety_paths.py`, `test_safety_shell.py`, `test_safety_python_ast.py`, `test_safety_inline_scripts.py`, `test_profile_engine.py`, `test_caveman.py`, `test_hooks_runtime.py`, `test_validators.py`, `test_sidecar_widget.py`) sharing `tests/_unit_helpers.py`.
+  - Reduced `plugin/scripts/test_unit.py` to a `32`-line stdlib-only (`unittest`, `sys`, `pathlib`) backward-compatible launcher running all unit suites in `tests/` while excluding slow installer/uninstaller integration suites (`test_install.py`, `test_uninstall.py`).
+
 ## [0.3.0] - 2026-11-23
 
 ### Added
