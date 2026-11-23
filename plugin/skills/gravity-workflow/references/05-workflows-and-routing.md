@@ -15,6 +15,11 @@ Un projet démarre par défaut en **`mode: "evo"` (consultatif, profil actif `st
 | **`standard`** *(défaut, alias `medium`)* | Direct sur tâche triviale ; `review_pipeline.py` sur lot significatif | `flash` *(sauté si `plan` fourni)* / `flash` / `pro` *(repli `flash` si `allow_pro: false`)* | `1` |
 | **`deep`** *(alias `high`/`ultra`)* | `review_pipeline.py` complet ; suggestion `/plan /grill-me`, `/boost` ou `/swarm` à l'initiative utilisateur | `pro` *(sauté si `plan` fourni)* / `flash` *(`pro` sur override)* / `pro` *(repli `flash`)* | `2` |
 
+**Règles de surcharge & essais A/B :**
+- `review_pipeline.py` et `run_suite.py` lisent automatiquement `profile_engine.get_active_preset()` ; les `Args` explicites (`level`, `plan`, `no_verify`, `plan_model`, `build_model`, `review_model`, `plugin_root`) restent prioritaires.
+- Lorsque `args.get("plan")` est fourni non vide, `review_pipeline.py` saute le `Planner` séparé même en `standard` ou `deep` (sauf override `skip_separate_planner=False`).
+- Un projet peut définir `"allow_pro": false` (rabattant tout modèle `pro` vers `flash`) ou `"model_overrides"` via `--plan-model`, `--build-model`, `--review-model` (`inherit` | `flash_lite` | `flash` | `pro` | `reset`). Chaque exécution journalise `preset_profile` et `role_models` effectifs dans `runs.jsonl` et `live_state.json`.
+
 ## Palier d'entrée : conversation simple, `/grill-me`, `/plan`, `/goal` & mode `Orchestrator`
 Avant de lancer plusieurs agents, privilégie les mécanismes mono-fil moins gourmands en quota :
 - **`/grill-me`** *(tous plans — slash command utilisateur ; côté agent, utiliser l'outil natif `ask_question` une question à la fois avec `(Recommended)` en premier)* : interview interactive avant implémentation pour lever les ambiguïtés d'architecture, de périmètre ou de comportement après exploration du dépôt. Se combine idéalement en **`/plan /grill-me`** pour verrouiller un plan validé avant d'engager `builder`, `review_pipeline.py` ou `swarm` ; les arbitrages différés sont consignés dans `.agents/gravity-workflow/BACKLOG.md`.

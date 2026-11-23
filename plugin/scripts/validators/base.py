@@ -22,6 +22,8 @@ MAX_DESC_LEN = 160
 MAX_ALWAYS_ON_BYTES = 2048
 MAX_AGENTS_MD_BYTES = 2500
 MAX_RULE_BYTES = 24000
+MAX_GRAVITY_SKILL_MD_BYTES = 6000
+MAX_CAVEMAN_SKILL_MD_BYTES = 3000
 MAX_ACTIVE_TOKENS = 20000
 UTF8_BOM = b"\xef\xbb\xbf"
 
@@ -41,6 +43,7 @@ EXPECTED_REFERENCES = [
     "08-session-learning.md",
     "09-observability-dashboard.md",
 ]
+EXPECTED_CAVEMAN_REFERENCES = ["style-examples.md"]
 
 FORBIDDEN_READONLY_TOOLS = {
     "write_to_file",

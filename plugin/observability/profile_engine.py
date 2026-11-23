@@ -19,6 +19,7 @@ from caveman_protocol import (  # noqa: E402
     effective_planner_caveman,
     normalize_caveman,
 )
+from metrics_signals import collect_metrics_signals  # noqa: E402
 from state_writer import (  # noqa: E402
     _atomic_write_json,
     exclusive_file_lock,
@@ -131,6 +132,7 @@ def default_profile() -> Dict[str, Any]:
             "guard_ask_recent": 0,
             "eval_pass_rate": None,
             "session_error": False,
+            "metrics": {"available": False, "sample_count": 0},
         },
         "history": [],
     }
@@ -255,7 +257,11 @@ def _sanitize_profile(raw: Any) -> Dict[str, Any]:
         sig = dict(profile["signals"])
         for k in sig:
             if k in raw["signals"]:
-                sig[k] = raw["signals"][k]
+                if k == "metrics":
+                    raw_m = raw["signals"]["metrics"]
+                    sig["metrics"] = dict(raw_m) if isinstance(raw_m, dict) else {"available": False, "sample_count": 0}
+                else:
+                    sig[k] = raw["signals"][k]
         merged["signals"] = sig
 
     if isinstance(raw.get("history"), list):
@@ -784,6 +790,11 @@ def collect_signals(
 
     tool_or_test_errors_recent = eval_err_ev + extra_errors + (1 if session_error else 0)
 
+    try:
+        metrics_signals = collect_metrics_signals(ws_root)
+    except Exception:
+        metrics_signals = {"available": False, "sample_count": 0}
+
     return {
         "reviewer_rejections_recent": reviewer_rejections_recent,
         "tool_or_test_errors_recent": tool_or_test_errors_recent,
@@ -791,11 +802,70 @@ def collect_signals(
         "guard_ask_recent": guard_ask_recent,
         "eval_pass_rate": eval_pass_rate,
         "session_error": session_error,
+        "metrics": metrics_signals,
     }
 
 
+def _has_behavioral_friction(signals: Dict[str, Any]) -> bool:
+    rev_rej = int(signals.get("reviewer_rejections_recent") or 0)
+    tool_errs = int(signals.get("tool_or_test_errors_recent") or 0)
+    session_err = bool(signals.get("session_error"))
+    deny_cnt = int(signals.get("guard_deny_recent") or 0)
+    eval_rate = signals.get("eval_pass_rate")
+    eval_failing = eval_rate is not None and float(eval_rate) < 1.0
+    return bool(rev_rej > 0 or tool_errs > 0 or session_err or deny_cnt > 0 or eval_failing)
+
+
+def compute_metrics_delta(
+    signals: Dict[str, Any],
+    *,
+    has_friction: Optional[bool] = None,
+) -> Tuple[int, List[str]]:
+    """Calcule l'ajustement consultatif `metrics` strictement borné dans `[-5, +10]`."""
+    sig = signals if isinstance(signals, dict) else {}
+    metrics = sig.get("metrics")
+    if not isinstance(metrics, dict) or not metrics.get("available"):
+        return 0, []
+
+    if has_friction is None:
+        has_friction = _has_behavioral_friction(sig)
+
+    try:
+        sample_count = int(metrics.get("sample_count") or 0)
+        avg_err = float(metrics.get("avg_error_rate_pct") or 0.0)
+        avg_cache = float(metrics.get("avg_cache_hit_rate_pct") or 0.0)
+        max_ctx = int(metrics.get("max_context_tokens") or 0)
+        dup_spawns = int(metrics.get("recent_duplicate_spawns") or 0)
+        rewinds = int(metrics.get("recent_rewind_calls") or 0)
+    except (TypeError, ValueError):
+        return 0, []
+
+    delta = 0
+    m_factors: List[str] = []
+    if avg_err >= 15.0 or rewinds >= 3:
+        delta += 5
+        m_factors.append("metrics: erreurs/rewinds")
+    if dup_spawns >= 2 or max_ctx >= 180_000:
+        delta += 5
+        m_factors.append("metrics: bloat/spawns")
+
+    if (
+        delta == 0
+        and not has_friction
+        and sample_count >= 3
+        and avg_err <= 3.0
+        and avg_cache >= 75.0
+        and dup_spawns == 0
+        and rewinds == 0
+    ):
+        delta = -5
+        m_factors.append("metrics: cache/stabilité")
+
+    return max(-5, min(10, delta)), m_factors
+
+
 def compute_score(signals: Dict[str, Any], clean_streak: int) -> Tuple[int, str, List[str]]:
-    """Évalue la recommandation consultative `evo` (`standard` | `deep`) à partir des signaux comportementaux."""
+    """Évalue la recommandation consultative `evo` (`standard` | `deep`) à partir des signaux comportementaux et Metrics."""
     score = 50
     factors: List[str] = []
 
@@ -822,15 +892,50 @@ def compute_score(signals: Dict[str, Any], clean_streak: int) -> Tuple[int, str,
         factors.append(f"évals {int(round(float(eval_rate) * 100))}%")
 
     has_friction = bool(rev_rej > 0 or tool_errs > 0 or session_err or deny_cnt > 0 or eval_failing)
+    metrics_delta, metrics_factors = compute_metrics_delta(signals, has_friction=has_friction)
+    score += metrics_delta
+    factors.extend(metrics_factors)
+
     if not has_friction and clean_streak >= 2:
         score -= 10
         factors.append(f"stabilité {clean_streak} sessions")
-    elif not has_friction:
+    elif not has_friction and not factors:
         factors.append("signaux sains")
 
     clamped = max(0, min(100, score))
     suggested = "deep" if (has_friction or clamped >= 65) else "standard"
     return clamped, suggested, factors
+
+
+def format_metrics_line(profile: Dict[str, Any]) -> str:
+    """Formate la ligne synthétique Metrics si `signals.metrics.available` vaut `True`, sinon `""`."""
+    signals = profile.get("signals") if isinstance(profile, dict) else None
+    if not isinstance(signals, dict):
+        return ""
+    metrics = signals.get("metrics")
+    if not isinstance(metrics, dict) or not metrics.get("available"):
+        return ""
+    try:
+        n = int(metrics.get("sample_count") or 0)
+        cache = float(metrics.get("avg_cache_hit_rate_pct") or 0.0)
+        err = float(metrics.get("avg_error_rate_pct") or 0.0)
+    except (TypeError, ValueError):
+        return ""
+    delta, _ = compute_metrics_delta(signals)
+    delta_str = f"{delta:+d}" if delta != 0 else "0"
+    return f"Signaux Metrics ({n} sess.) : cache {cache:.0f} %, err {err:.1f} %, delta {delta_str} pts"
+
+
+def format_status(profile: Dict[str, Any]) -> str:
+    """Formate le bilan statut lisible (incluant la ligne Metrics si disponible)."""
+    base = (
+        f"Mode: {format_mode_badge(profile)} | {format_caveman_badge(profile)} | "
+        f"Suggestion: {profile.get('suggested_profile', DEFAULT_LEVEL)} | {profile.get('last_reason', '')}"
+    )
+    metrics_line = format_metrics_line(profile)
+    if metrics_line:
+        return f"{base}\n{metrics_line}"
+    return base
 
 
 def evolve_on_stop(
@@ -1027,20 +1132,19 @@ def main() -> int:
     if args.command == "get":
         profile = load_profile(ws)
         preset = get_active_preset(ws)
+        metrics_status = format_metrics_line(profile)
         payload = {
             "profile": profile,
             "preset": preset,
             "badge": format_mode_badge(profile),
             "caveman_badge": format_caveman_badge(profile),
+            "metrics_status": metrics_status,
             "storage_path": str(resolve_profile_path(ws)),
         }
         if args.json:
             print(json.dumps(payload, indent=2, ensure_ascii=False))
         else:
-            print(
-                f"Mode: {format_mode_badge(profile)} | {format_caveman_badge(profile)} | "
-                f"Suggestion: {profile['suggested_profile']} | {profile['last_reason']}"
-            )
+            print(format_status(profile))
         return 0
 
     if args.command == "set":

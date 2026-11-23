@@ -22,6 +22,7 @@ for _sub in ("scripts", "evals", "observability", "hooks"):
 import caveman_protocol  # noqa: E402
 import eval_checks  # noqa: E402
 import init_workspace  # noqa: E402
+import metrics_signals  # noqa: E402
 import profile_engine  # noqa: E402
 import safety_policy  # noqa: E402
 import state_writer  # noqa: E402
@@ -448,6 +449,41 @@ class TestPluginValidator(unittest.TestCase):
                     rep_bad.errors,
                     f"{filename} devrait produire une erreur pour {tool_list}",
                 )
+
+    def test_skill_md_byte_caps_and_caveman_reference_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp) / "plugin"
+            self._build_minimal_plugin(plugin_dir)
+
+            with mock.patch.object(plugin_validator, "run_hook_dry_runs"):
+                rep_ok = Report()
+                validate_plugin(plugin_dir, rep_ok)
+                self.assertTrue(rep_ok.ok(strict=True), f"Erreurs inattendues: {rep_ok.errors} {rep_ok.warnings}")
+
+                # 1. gravity-workflow/SKILL.md > 6000 octets
+                gw_skill = plugin_dir / "skills/gravity-workflow/SKILL.md"
+                orig_gw = gw_skill.read_text(encoding="utf-8")
+                gw_skill.write_text(orig_gw + "\n" + ("x" * 6001) + "\n", encoding="utf-8", newline="\n")
+                rep_gw = Report()
+                validate_plugin(plugin_dir, rep_gw)
+                self.assertTrue(any("6000" in err for err in rep_gw.errors), rep_gw.errors)
+                gw_skill.write_text(orig_gw, encoding="utf-8", newline="\n")
+
+                # 2. caveman/SKILL.md > 3000 octets
+                cav_skill = plugin_dir / "skills/caveman/SKILL.md"
+                orig_cav = cav_skill.read_text(encoding="utf-8")
+                cav_skill.write_text(orig_cav + "\n" + ("y" * 3001) + "\n", encoding="utf-8", newline="\n")
+                rep_cav = Report()
+                validate_plugin(plugin_dir, rep_cav)
+                self.assertTrue(any("3000" in err for err in rep_cav.errors), rep_cav.errors)
+                cav_skill.write_text(orig_cav, encoding="utf-8", newline="\n")
+
+                # 3. skills/caveman/references/style-examples.md manquant
+                cav_ref = plugin_dir / "skills/caveman/references/style-examples.md"
+                cav_ref.unlink()
+                rep_ref = Report()
+                validate_plugin(plugin_dir, rep_ref)
+                self.assertTrue(any("style-examples.md" in err for err in rep_ref.errors), rep_ref.errors)
 
 
 class TestFrontmatterParser(unittest.TestCase):
@@ -1802,6 +1838,86 @@ class TestProfileEngine(unittest.TestCase):
             self.assertEqual(r1_t2["sessions_analyzed"], 1)
             self.assertEqual(r1_t2["signals"]["guard_deny_recent"], 0)
             self.assertEqual(r1_t2["suggested_profile"], "standard")
+
+    def test_metrics_signals_integration_bounds_and_caveman_evo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ws = base / "metrics-proj"
+            ws.mkdir()
+            metrics_home = base / "metrics_home"
+            hfile = metrics_home / "data" / "history.jsonl"
+            hfile.parent.mkdir(parents=True)
+            hfile.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "status": "active",
+                                "project": "metrics-proj",
+                                "ended_at": "2026-11-23T23:00:00Z",
+                                "error_rate_pct": 95.0,
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "status": "archived",
+                                "project": "metrics-proj",
+                                "ended_at": "2026-11-23T10:00:00Z",
+                                "error_rate_pct": 2.0,
+                                "cache_hit_rate_pct": 85.0,
+                                "max_context_tokens": 160_000,
+                                "duplicate_spawns": 0,
+                                "rewind_calls": 0,
+                                "cost_usd": 1.0,
+                                "cost_output_usd": 0.2,
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "status": "archived",
+                                "project": "metrics-proj",
+                                "ended_at": "2026-11-23T11:00:00Z",
+                                "error_rate_pct": 2.0,
+                                "cache_hit_rate_pct": 85.0,
+                                "max_context_tokens": 100_000,
+                                "duplicate_spawns": 0,
+                                "rewind_calls": 0,
+                                "cost_usd": 1.0,
+                                "cost_output_usd": 0.2,
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "status": "archived",
+                                "project": "metrics-proj",
+                                "ended_at": "2026-11-23T12:00:00Z",
+                                "error_rate_pct": 2.0,
+                                "cache_hit_rate_pct": 82.0,
+                                "max_context_tokens": 90_000,
+                                "duplicate_spawns": 0,
+                                "rewind_calls": 0,
+                                "cost_usd": 1.0,
+                                "cost_output_usd": 0.2,
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, {"GRAVITY_METRICS_HOME": str(metrics_home)}):
+                sig = profile_engine.collect_signals(ws)
+                self.assertTrue(sig["metrics"]["available"])
+                self.assertEqual(sig["metrics"]["sample_count"], 3)
+                score, sugg, factors = profile_engine.compute_score(sig, clean_streak=0)
+                self.assertEqual(score, 45)
+                self.assertEqual(sugg, "standard")
+                self.assertIn("metrics: cache/stabilité", factors)
+                lvl, reason = caveman_protocol.choose_evo_caveman("standard", sig, 0)
+                self.assertEqual(lvl, "full")
+                self.assertIn("metrics", reason)
+                prof = profile_engine.evolve_on_stop(ws, {"conversation_id": "m1", "fully_idle": True})
+                self.assertIn("Signaux Metrics (3 sess.)", profile_engine.format_status(prof))
 
 
 class TestCavemanIntegration(unittest.TestCase):

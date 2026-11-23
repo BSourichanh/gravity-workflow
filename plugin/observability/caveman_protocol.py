@@ -41,7 +41,7 @@ def choose_evo_caveman(
     signals: Dict[str, Any],
     clean_streak: int,
 ) -> Tuple[str, str]:
-    """Retourne le niveau Caveman par défaut (`lite` sur les 3 profils ; `full` auto réservé Phase 3)."""
+    """Adapte le niveau Caveman evo (`lite` par défaut/sécurité, `full` auto si contexte/coût output élevé)."""
     sig = signals if isinstance(signals, dict) else {}
     eval_rate = sig.get("eval_pass_rate")
     eval_failing = eval_rate is not None and float(eval_rate) < 1.0
@@ -50,6 +50,17 @@ def choose_evo_caveman(
 
     if session_error or guard_deny or eval_failing:
         return "lite", "caveman lite (clarté prioritaire suite à erreur, alerte deny ou éval)"
+
+    metrics = sig.get("metrics")
+    if isinstance(metrics, dict) and metrics.get("available"):
+        try:
+            max_ctx = int(metrics.get("max_context_tokens") or 0)
+            out_ratio = float(metrics.get("high_output_cost_ratio") or 0.0)
+        except (TypeError, ValueError):
+            max_ctx = 0
+            out_ratio = 0.0
+        if max_ctx >= 150_000 or out_ratio >= 0.35:
+            return "full", "caveman full (contexte/output élevé mesuré par metrics)"
 
     return "lite", "caveman lite (défaut nominal sur tous les profils)"
 

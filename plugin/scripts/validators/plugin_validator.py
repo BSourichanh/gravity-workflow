@@ -7,10 +7,13 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .base import (
+    EXPECTED_CAVEMAN_REFERENCES,
     EXPECTED_REFERENCES,
     KEBAB_RE,
     MAX_AGENTS_MD_BYTES,
+    MAX_CAVEMAN_SKILL_MD_BYTES,
     MAX_DESC_LEN,
+    MAX_GRAVITY_SKILL_MD_BYTES,
     MODULE_JARGON_RE,
     UTF8_BOM,
     Report,
@@ -314,6 +317,7 @@ def validate_plugin(root: Path, report: Report) -> None:
         "validators",
         "state_writer",
         "profile_engine",
+        "metrics_signals",
         "caveman_protocol",
         "hook_runtime",
         "safety_policy",
@@ -370,12 +374,22 @@ def validate_plugin(root: Path, report: Report) -> None:
                 f"Ancien skill redondant détecté : skills/{legacy_skill}/ doit être supprimé (unifié dans /gravity-workflow)."
             )
 
+    skill_caps = {
+        "gravity-workflow": MAX_GRAVITY_SKILL_MD_BYTES,
+        "caveman": MAX_CAVEMAN_SKILL_MD_BYTES,
+    }
     for skill_name in ("gravity-workflow", "caveman"):
         skill_md = root / "skills" / skill_name / "SKILL.md"
         if not skill_md.is_file():
             report.error(f"skills/{skill_name}/SKILL.md introuvable.")
         else:
-            content = skill_md.read_text(encoding="utf-8")
+            check_utf8_no_bom_lf(
+                skill_md,
+                f"skills/{skill_name}/SKILL.md",
+                report,
+                max_bytes=skill_caps[skill_name],
+            )
+            content = skill_md.read_text(encoding="utf-8", errors="replace")
             sk_meta, _ = parse_frontmatter(content)
             if sk_meta.get("name") != skill_name:
                 report.error(
@@ -400,6 +414,24 @@ def validate_plugin(root: Path, report: Report) -> None:
                 report.error(f"Fiche de référence manquante : {ref_path}")
         for ref in sorted(refs_dir.glob("*.md")):
             if MODULE_JARGON_RE.search(ref.read_text(encoding="utf-8")):
+                report.error(f"{ref} contient le jargon interdit 'Module XX'.")
+
+    cav_refs_dir = root / "skills/caveman/references"
+    if not cav_refs_dir.is_dir():
+        report.error("Dossier skills/caveman/references/ introuvable.")
+    else:
+        for expected_cav_ref in EXPECTED_CAVEMAN_REFERENCES:
+            cav_ref_path = cav_refs_dir / expected_cav_ref
+            if not cav_ref_path.is_file():
+                report.error(f"Fiche de référence manquante : {cav_ref_path}")
+            else:
+                check_utf8_no_bom_lf(
+                    cav_ref_path,
+                    f"skills/caveman/references/{expected_cav_ref}",
+                    report,
+                )
+        for ref in sorted(cav_refs_dir.glob("*.md")):
+            if MODULE_JARGON_RE.search(ref.read_text(encoding="utf-8", errors="replace")):
                 report.error(f"{ref} contient le jargon interdit 'Module XX'.")
 
     cases_json = root / "evals/cases.json"

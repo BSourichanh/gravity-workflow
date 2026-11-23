@@ -123,14 +123,15 @@ def _read_badges(root: Path) -> tuple:
             sys.path.insert(0, obs_dir)
         from profile_engine import (  # type: ignore[import-not-found]
             format_caveman_badge,
+            format_metrics_line,
             format_mode_badge,
             load_profile,
         )
 
         prof = load_profile(root)
-        return format_mode_badge(prof), format_caveman_badge(prof)
+        return format_mode_badge(prof), format_caveman_badge(prof), format_metrics_line(prof)
     except Exception:
-        return _read_mode_badge(root), _read_caveman_badge(root)
+        return _read_mode_badge(root), _read_caveman_badge(root), ""
 
 
 def _is_hooks_guard_enabled(hooks_json: Path) -> bool:
@@ -160,7 +161,7 @@ def main() -> int:
                     done += 1
             done = min(done, total)
 
-        mode_badge, caveman_badge = _read_badges(root)
+        mode_badge, caveman_badge, metrics_line = _read_badges(root)
 
         plugin_guard_ok = (PLUGIN_ROOT / "hooks/pre_tool_guard.py").is_file() and _is_hooks_guard_enabled(
             PLUGIN_ROOT / "hooks.json"
@@ -197,6 +198,8 @@ def main() -> int:
             f"Guard {guard}",
             eval_str,
         ]
+        if metrics_line:
+            parts.append(metrics_line)
 
         model = payload.get("model")
         if isinstance(model, dict):
