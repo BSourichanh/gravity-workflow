@@ -28,7 +28,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 ### Checklist pré-release (`v0.2.0+`)
 - [ ] `validate.py --strict` et `validate.py --workspace workspace-template --strict` retournent `0` erreur et `0` avertissement.
 - [ ] `agy plugin validate ./plugin --strict` retourne `Validation passed` (`exit 0`).
-- [ ] `test_unit.py` et `tests/test_*.py` (`test_install.py` + `test_uninstall.py`) passent intégralement.
+- [ ] `test_unit.py` et `tests/test_*.py` (`test_install.py` couvrant installation + désinstallation/nettoyage unifiés `install.py --uninstall` et `test_uninstall.py` couvrant la parité + avertissement `[DEPRECATED]` du wrapper mince `uninstall.py`) passent intégralement.
 - [ ] [`CHANGELOG.md`](../CHANGELOG.md), [`LICENSE`](../LICENSE), [`.gitignore`](../.gitignore) et [`.gitattributes`](../.gitattributes) sont à jour et aucun `__pycache__/`, `.agents/` ou secret n'est suivi.
 
 ### Vérifications complémentaires

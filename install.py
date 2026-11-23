@@ -3,6 +3,7 @@
 
 import argparse
 import errno
+import importlib.util
 import json
 import os
 import platform
@@ -16,6 +17,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent
 PLUGIN_SOURCE = REPO_ROOT / "plugin"
+WORKSPACE_TEMPLATE_DIR = REPO_ROOT / "workspace-template"
 PLUGIN_NAME = "gravity-workflow"
 LEGACY_PLUGIN_NAME = "gravity"
 LEGACY_REGISTRY_PATH = Path.home() / ".gravity" / "live_workspaces.json"
@@ -261,7 +263,7 @@ def print_next_steps(
             "    (or re-run /gravity-workflow init).\n"
             "  - Update any manual 'gravity/live-widget' entry in ~/.gemini/config/config.json to\n"
             "    'gravity-workflow/live-widget', and optionally run:\n"
-            "      python uninstall.py --workspace-only --clean-legacy"
+            "      python install.py --workspace-only --clean-legacy"
         )
 
 
@@ -826,10 +828,512 @@ def cleanup_legacy_plugin(
         if _is_lock_oserror(exc):
             print(
                 f"[WARN]  Could not remove legacy 'gravity' plugin {legacy_dir} (in use: {exc}).\n"
-                "        Remove it manually or run 'python uninstall.py --clean-legacy --workspace-only'."
+                "        Remove it manually or run 'python install.py --workspace-only --clean-legacy'."
             )
             return False
         raise
+
+
+def _load_state_writer() -> Any:
+    """Load plugin/observability/state_writer.py lazily using stdlib importlib."""
+    obs_dir = PLUGIN_SOURCE / "observability"
+    if str(obs_dir) not in sys.path:
+        sys.path.insert(0, str(obs_dir))
+    if "state_writer" in sys.modules:
+        return sys.modules["state_writer"]
+    sw_path = obs_dir / "state_writer.py"
+    spec = importlib.util.spec_from_file_location("state_writer", sw_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load state_writer from {sw_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["state_writer"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def default_workflow_home() -> Path:
+    """Resolve centralized Gravity Workflow storage ($GRAVITY_WORKFLOW_HOME > $GRAVITY_HOME/workflow > ~/.gemini/gravity/workflow)."""
+    return _load_state_writer().default_workflow_home()
+
+
+def resolve_registry_path(registry_path: Optional[Path] = None) -> Path:
+    """Resolve the Live Widget workspace registry path (~/.gemini/gravity/workflow/live_workspaces.json)."""
+    return _load_state_writer().resolve_registry_path(registry_path).expanduser().resolve()
+
+
+def resolve_legacy_registry_path(legacy_registry_path: Optional[Path] = None) -> Path:
+    """Resolve the legacy v0.1.x registry path (~/.gravity/live_workspaces.json)."""
+    if legacy_registry_path is not None:
+        return Path(legacy_registry_path).expanduser().resolve()
+    env_reg = os.environ.get("GRAVITY_WORKFLOW_LEGACY_REGISTRY_PATH", "").strip()
+    if env_reg:
+        return Path(env_reg).expanduser().resolve()
+    return LEGACY_REGISTRY_PATH.resolve()
+
+
+def is_unsafe_workspace_target(ws_dir: Path) -> Optional[str]:
+    """Return an error reason if ws_dir is unsafe to clean as a user workspace."""
+    resolved = ws_dir.expanduser().resolve()
+    home_resolved = Path.home().resolve()
+    repo_resolved = REPO_ROOT.resolve()
+
+    if resolved == resolved.parent:
+        return f"Refusing unsafe filesystem root workspace: {resolved}"
+    if resolved == home_resolved:
+        return f"Refusing unsafe home directory workspace: {resolved}"
+    if resolved == repo_resolved or repo_resolved in resolved.parents:
+        return f"Refusing Gravity Workflow source repository path: {resolved}"
+    return None
+
+
+def _load_canonical_templates() -> Dict[str, str]:
+    """Load canonical starter file contents from plugin/scripts/init_workspace.py."""
+    init_path = PLUGIN_SOURCE / "scripts" / "init_workspace.py"
+    spec = importlib.util.spec_from_file_location("gravity_workflow_init_workspace_tpl", init_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load template definitions from {init_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return {
+        "AGENTS.md": str(module.AGENTS_MD),
+        ".agents/mcp_config.json": str(module.MCP_CONFIG_JSON),
+        ".agents/rules/01-safety-boundaries.md": str(module.RULE_01_SAFETY),
+        ".agents/rules/02-python-stdlib.md": str(module.RULE_02_PYTHON),
+        ".agents/rules/03-api-architecture.md": str(module.RULE_03_API),
+        ".agents/rules/04-release-checklist.md": str(module.RULE_04_RELEASE),
+        ".agents/rules/05-git-versioning.md": str(module.RULE_05_GIT_VERSIONING),
+    }
+
+
+def _atomic_write_json(target: Path, payload: Dict[str, Any]) -> None:
+    """Atomically write JSON with UTF-8 encoding and fsync."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.stem}_", suffix=".tmp", dir=str(target.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp_fh:
+            json.dump(payload, tmp_fh, indent=2, ensure_ascii=False)
+            tmp_fh.write("\n")
+            tmp_fh.flush()
+            os.fsync(tmp_fh.fileno())
+        os.replace(tmp_name, target)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _remove_dir_if_empty(directory: Path) -> bool:
+    """Remove directory only if it is a regular empty directory."""
+    try:
+        if _is_empty_dir(directory):
+            directory.rmdir()
+            return True
+    except OSError:
+        pass
+    return False
+
+
+def _remove_registry_files(reg_path: Path, label: str, *, dry_run: bool = False) -> bool:
+    """Safely remove a registry JSON file, its .lock sibling, and an empty parent dir."""
+    lock_path = reg_path.with_suffix(".lock")
+    exists = (
+        reg_path.exists()
+        or _is_symlink_or_junction(reg_path)
+        or lock_path.exists()
+        or _is_symlink_or_junction(lock_path)
+    )
+    if not exists:
+        return False
+    if dry_run:
+        print(f"[DRY-RUN] Remove {label}: {reg_path}")
+        return True
+    if reg_path.exists() or _is_symlink_or_junction(reg_path):
+        reg_path.unlink()
+    if lock_path.exists() or _is_symlink_or_junction(lock_path):
+        lock_path.unlink()
+    _remove_dir_if_empty(reg_path.parent)
+    print(f"[OK]    Removed {label}: {reg_path}")
+    return True
+
+
+def detect_manual_config_entries(home_dir: Optional[Path] = None) -> Dict[str, bool]:
+    """Read-only inspection of Antigravity config files for manual Gravity Workflow entries."""
+    base_home = Path(home_dir).expanduser().resolve() if home_dir is not None else Path.home().resolve()
+    has_sidecar = False
+    has_legacy_sidecar = False
+    has_statusline = False
+
+    config_path = base_home / ".gemini" / "config" / "config.json"
+    if config_path.is_file():
+        try:
+            cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict) and isinstance(cfg.get("sidecars"), dict):
+                has_sidecar = "gravity-workflow/live-widget" in cfg["sidecars"]
+                has_legacy_sidecar = "gravity/live-widget" in cfg["sidecars"]
+        except (OSError, ValueError):
+            pass
+
+    settings_path = base_home / ".gemini" / "antigravity-cli" / "settings.json"
+    if settings_path.is_file():
+        try:
+            st = json.loads(settings_path.read_text(encoding="utf-8"))
+            if isinstance(st, dict) and "statusLine" in st:
+                raw_sl = json.dumps(st["statusLine"]).lower()
+                has_statusline = "statusline.py" in raw_sl or "gravity" in raw_sl
+        except (OSError, ValueError):
+            pass
+
+    return {
+        "sidecar": has_sidecar,
+        "legacy_sidecar": has_legacy_sidecar,
+        "statusline": has_statusline,
+    }
+
+
+def prune_workspace_from_registry(
+    ws_dir: Path,
+    *,
+    registry_path: Optional[Path] = None,
+    dry_run: bool = False,
+) -> bool:
+    """Remove ws_dir entries from ~/.gemini/gravity/workflow/live_workspaces.json without deleting others."""
+    reg_path = resolve_registry_path(registry_path)
+    if not reg_path.is_file():
+        return False
+
+    try:
+        data = json.loads(reg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+
+    if not isinstance(data, dict) or not isinstance(data.get("workspaces"), list):
+        return False
+
+    ws_resolved = ws_dir.expanduser().resolve()
+    kept: List[Any] = []
+    removed = 0
+    for entry in data["workspaces"]:
+        if not isinstance(entry, dict):
+            kept.append(entry)
+            continue
+        matched = False
+        raw_ws = entry.get("workspace")
+        if isinstance(raw_ws, str) and raw_ws.strip():
+            try:
+                if Path(raw_ws).expanduser().resolve() == ws_resolved:
+                    matched = True
+            except OSError:
+                pass
+        raw_state = entry.get("state_path")
+        if not matched and isinstance(raw_state, str) and raw_state.strip():
+            try:
+                state_resolved = Path(raw_state).expanduser().resolve()
+                if state_resolved == ws_resolved or ws_resolved in state_resolved.parents:
+                    matched = True
+            except OSError:
+                pass
+        if matched:
+            removed += 1
+        else:
+            kept.append(entry)
+
+    if removed == 0:
+        return False
+
+    if dry_run:
+        print(f"[DRY-RUN] Prune {removed} entry(ies) for {ws_resolved} from {reg_path}")
+        return True
+
+    if not kept:
+        reg_path.unlink(missing_ok=True)
+        reg_path.with_suffix(".lock").unlink(missing_ok=True)
+        _remove_dir_if_empty(reg_path.parent)
+    else:
+        _atomic_write_json(reg_path, {"workspaces": kept})
+    print(f"[OK]    Pruned {ws_resolved} from registry ({reg_path})")
+    return True
+
+
+def clean_registry(
+    *,
+    registry_path: Optional[Path] = None,
+    dry_run: bool = False,
+) -> int:
+    """Safely remove the global Live Widget workspace registry (~/.gemini/gravity/workflow/live_workspaces.json)."""
+    reg_path = resolve_registry_path(registry_path)
+    if not _remove_registry_files(reg_path, "global Gravity Workflow registry", dry_run=dry_run):
+        print(f"[INFO]  Global registry not found: {reg_path}")
+    return 0
+
+
+def clean_legacy_artifacts(
+    scope: str = "global",
+    workspace: Optional[Path] = None,
+    target: Optional[Path] = None,
+    *,
+    legacy_registry_path: Optional[Path] = None,
+    dry_run: bool = False,
+) -> int:
+    """Safely remove obsolete v0.1.x 'gravity' plugin and ~/.gravity/live_workspaces.json registry."""
+    legacy_dir = resolve_legacy_plugin_dir(scope, workspace, target)
+    if legacy_dir is not None and (legacy_dir.exists() or _is_symlink_or_junction(legacy_dir)):
+        unsafe_reason = is_unsafe_target(legacy_dir, PLUGIN_SOURCE)
+        if unsafe_reason:
+            print(f"[ERROR] {unsafe_reason}", file=sys.stderr)
+            return 1
+        if is_core_gravity_plugin_dir(legacy_dir):
+            print(f"[INFO]  Preserving Gravity Core plugin at {legacy_dir}")
+        elif not is_legacy_gravity_plugin_dir(legacy_dir):
+            print(
+                f"[ERROR] Refusing to remove non-legacy-Gravity directory: {legacy_dir}",
+                file=sys.stderr,
+            )
+            return 1
+        elif dry_run:
+            print(f"[DRY-RUN] Remove legacy Gravity plugin directory: {legacy_dir}")
+        else:
+            _remove_tree_or_symlink(legacy_dir)
+            print(f"[OK]    Removed legacy 'gravity' plugin from {legacy_dir}")
+
+    leg_reg = resolve_legacy_registry_path(legacy_registry_path)
+    _remove_registry_files(leg_reg, "legacy Gravity registry", dry_run=dry_run)
+    return 0
+
+
+def clean_workspace(
+    ws_dir: Path,
+    *,
+    purge_templates: bool = False,
+    clean_legacy: bool = False,
+    registry_path: Optional[Path] = None,
+    dry_run: bool = False,
+) -> int:
+    """Remove Gravity Workflow runtime state from a workspace without deleting user-modified files."""
+    resolved_ws = ws_dir.expanduser().resolve()
+    unsafe_reason = is_unsafe_workspace_target(resolved_ws)
+    if unsafe_reason:
+        print(f"[ERROR] {unsafe_reason}", file=sys.stderr)
+        return 1
+
+    if not resolved_ws.is_dir():
+        print(f"[ERROR] Workspace directory not found: {resolved_ws}", file=sys.stderr)
+        return 1
+
+    ws_plugin_dir = resolved_ws / ".agents" / "plugins" / PLUGIN_NAME
+    if ws_plugin_dir.exists() or _is_symlink_or_junction(ws_plugin_dir):
+        if not is_gravity_plugin_dir(ws_plugin_dir):
+            print(
+                f"[ERROR] Refusing to remove non-Gravity Workflow directory: {ws_plugin_dir}",
+                file=sys.stderr,
+            )
+            return 1
+
+    legacy_ws_plugin_dir = resolved_ws / ".agents" / "plugins" / LEGACY_PLUGIN_NAME
+    if clean_legacy and (legacy_ws_plugin_dir.exists() or _is_symlink_or_junction(legacy_ws_plugin_dir)):
+        if not is_core_gravity_plugin_dir(
+            legacy_ws_plugin_dir
+        ) and not is_legacy_gravity_plugin_dir(legacy_ws_plugin_dir):
+            print(
+                f"[ERROR] Refusing to remove non-legacy-Gravity directory: {legacy_ws_plugin_dir}",
+                file=sys.stderr,
+            )
+            return 1
+
+    gravity_state_dir = resolved_ws / ".agents" / "gravity-workflow"
+    legacy_state_dir = resolved_ws / ".agents" / "gravity"
+    changed = False
+
+    if gravity_state_dir.exists() or _is_symlink_or_junction(gravity_state_dir):
+        changed = True
+        if dry_run:
+            print(f"[DRY-RUN] Remove workspace Gravity Workflow state: {gravity_state_dir}")
+        else:
+            _remove_tree_or_symlink(gravity_state_dir)
+            print(f"[OK]    Removed {gravity_state_dir}")
+
+    if ws_plugin_dir.exists() or _is_symlink_or_junction(ws_plugin_dir):
+        changed = True
+        if dry_run:
+            print(f"[DRY-RUN] Remove workspace Gravity Workflow plugin: {ws_plugin_dir}")
+        else:
+            _remove_tree_or_symlink(ws_plugin_dir)
+            print(f"[OK]    Removed {ws_plugin_dir}")
+
+    if legacy_state_dir.exists() or _is_symlink_or_junction(legacy_state_dir):
+        if clean_legacy:
+            changed = True
+            if dry_run:
+                print(f"[DRY-RUN] Remove legacy workspace Gravity state: {legacy_state_dir}")
+            else:
+                _remove_tree_or_symlink(legacy_state_dir)
+                print(f"[OK]    Removed legacy {legacy_state_dir}")
+        else:
+            print(
+                f"[INFO]  Legacy workspace state detected at {legacy_state_dir}; "
+                "pass --clean-legacy to remove it."
+            )
+
+    if legacy_ws_plugin_dir.exists() or _is_symlink_or_junction(legacy_ws_plugin_dir):
+        if is_core_gravity_plugin_dir(legacy_ws_plugin_dir):
+            if clean_legacy:
+                print(f"[INFO]  Preserving Gravity Core workspace plugin at {legacy_ws_plugin_dir}")
+        elif clean_legacy:
+            changed = True
+            if dry_run:
+                print(f"[DRY-RUN] Remove legacy workspace Gravity plugin: {legacy_ws_plugin_dir}")
+            else:
+                _remove_tree_or_symlink(legacy_ws_plugin_dir)
+                print(f"[OK]    Removed legacy {legacy_ws_plugin_dir}")
+        elif is_legacy_gravity_plugin_dir(legacy_ws_plugin_dir):
+            print(
+                f"[INFO]  Legacy workspace plugin detected at {legacy_ws_plugin_dir}; "
+                "pass --clean-legacy to remove it."
+            )
+
+    if purge_templates:
+        canonical = _load_canonical_templates()
+        for rel_path, expected_raw in canonical.items():
+            candidate = resolved_ws / rel_path
+            if not candidate.is_file():
+                continue
+            current_norm = candidate.read_text(encoding="utf-8", errors="replace").replace(
+                "\r\n", "\n"
+            ).strip()
+            expected_norm = expected_raw.replace("\r\n", "\n").strip()
+            if current_norm == expected_norm:
+                changed = True
+                if dry_run:
+                    print(f"[DRY-RUN] Remove unmodified template file: {candidate}")
+                else:
+                    candidate.unlink()
+                    print(f"[OK]    Removed unmodified template: {rel_path}")
+            else:
+                print(f"[KEEP]  {rel_path} (modified by user)")
+
+    if not dry_run:
+        _remove_dir_if_empty(resolved_ws / ".agents" / "rules")
+        _remove_dir_if_empty(resolved_ws / ".agents" / "plugins")
+        _remove_dir_if_empty(resolved_ws / ".agents")
+
+    if prune_workspace_from_registry(resolved_ws, registry_path=registry_path, dry_run=dry_run):
+        changed = True
+
+    if not changed:
+        print(f"[INFO]  No Gravity Workflow artifacts found in {resolved_ws}")
+    elif not dry_run:
+        print(f"[OK]    Workspace cleaned: {resolved_ws}")
+
+    return 0
+
+
+def check_uninstall_status(
+    target_dir: Optional[Path],
+    scope: str,
+    method: str,
+    clean_ws: Optional[Path],
+    *,
+    registry_path: Optional[Path] = None,
+    legacy_registry_path: Optional[Path] = None,
+    home_dir: Optional[Path] = None,
+    legacy_dir: Optional[Path] = None,
+) -> int:
+    """Read-only inspection of installed plugin, workspace state, registry, and manual configs."""
+    print("Gravity Workflow Uninstall Check (read-only)")
+    print(f"  Method           : {method} (scope={scope})")
+
+    if target_dir is not None:
+        unsafe_reason = is_unsafe_target(target_dir, PLUGIN_SOURCE)
+        if unsafe_reason:
+            print(f"  Plugin target    : UNSAFE ({unsafe_reason})")
+        elif target_dir.exists() or _is_symlink_or_junction(target_dir):
+            if is_gravity_plugin_dir(target_dir):
+                manifest = read_plugin_manifest(target_dir) or {}
+                ver = manifest.get("version", "unknown")
+                print(f"  Plugin target    : installed at {target_dir} (v{ver})")
+            else:
+                print(f"  Plugin target    : occupied by non-Gravity Workflow directory ({target_dir})")
+        else:
+            print(f"  Plugin target    : not installed ({target_dir})")
+    else:
+        agy_bin = shutil.which("agy")
+        print(f"  Antigravity CLI  : {agy_bin if agy_bin else 'not found on PATH'}")
+
+    if legacy_dir is not None and (legacy_dir.exists() or _is_symlink_or_junction(legacy_dir)):
+        if is_legacy_gravity_plugin_dir(legacy_dir):
+            leg_manifest = read_plugin_manifest(legacy_dir) or {}
+            leg_ver = leg_manifest.get("version", "unknown")
+            print(f"  Legacy plugin    : present at {legacy_dir} (v{leg_ver})")
+        elif is_core_gravity_plugin_dir(legacy_dir):
+            core_manifest = read_plugin_manifest(legacy_dir) or {}
+            core_ver = core_manifest.get("version", "unknown")
+            print(f"  Core plugin      : present at {legacy_dir} (v{core_ver}, preserved)")
+
+    reg_path = resolve_registry_path(registry_path)
+    if reg_path.is_file():
+        print(f"  Live registry    : present ({reg_path})")
+    else:
+        print(f"  Live registry    : absent ({reg_path})")
+
+    leg_reg = resolve_legacy_registry_path(legacy_registry_path)
+    if leg_reg.is_file():
+        print(f"  Legacy registry  : present ({leg_reg})")
+
+    if clean_ws is not None:
+        resolved_ws = clean_ws.expanduser().resolve()
+        ws_unsafe = is_unsafe_workspace_target(resolved_ws)
+        if ws_unsafe:
+            print(f"  Workspace target : UNSAFE ({ws_unsafe})")
+        elif not resolved_ws.is_dir():
+            print(f"  Workspace target : missing ({resolved_ws})")
+        else:
+            has_state = (resolved_ws / ".agents" / "gravity-workflow").exists()
+            has_ws_plugin = (resolved_ws / ".agents" / "plugins" / PLUGIN_NAME).exists()
+            has_legacy_state = (resolved_ws / ".agents" / "gravity").exists()
+            print(
+                f"  Workspace target : {resolved_ws} "
+                f"(.agents/gravity-workflow={'yes' if has_state else 'no'}, "
+                f"ws-plugin={'yes' if has_ws_plugin else 'no'}"
+                f"{', legacy=.agents/gravity' if has_legacy_state else ''})"
+            )
+
+    manual = detect_manual_config_entries(home_dir=home_dir)
+    print(
+        f"  config.json      : sidecar 'gravity-workflow/live-widget' "
+        f"{'detected (manual removal needed)' if manual['sidecar'] else 'not detected'}"
+    )
+    if manual["legacy_sidecar"]:
+        print("  config.json      : legacy sidecar 'gravity/live-widget' detected (manual removal needed)")
+    print(
+        f"  settings.json    : statusLine Gravity Workflow "
+        f"{'detected (manual removal needed)' if manual['statusline'] else 'not detected'}"
+    )
+    return 0
+
+
+def print_post_uninstall_notes(home_dir: Optional[Path] = None) -> None:
+    """Remind the user to manually remove optional entries from Antigravity configs."""
+    manual = detect_manual_config_entries(home_dir=home_dir)
+    print("\nManual cleanup notes (never edited automatically by Gravity Workflow):")
+    sidecar_status = " [detected]" if manual["sidecar"] else ""
+    legacy_sidecar_status = " [detected]" if manual["legacy_sidecar"] else ""
+    statusline_status = " [detected]" if manual["statusline"] else ""
+    print(
+        f"  - Antigravity App sidecar{sidecar_status}: remove 'sidecars.\"gravity-workflow/live-widget\"' "
+        "from ~/.gemini/config/config.json if present."
+    )
+    if manual["legacy_sidecar"]:
+        print(
+            f"  - Legacy App sidecar{legacy_sidecar_status}: remove 'sidecars.\"gravity/live-widget\"' "
+            "from ~/.gemini/config/config.json."
+        )
+    print(
+        f"  - Antigravity CLI /statusline{statusline_status}: remove 'statusLine' Gravity Workflow entry "
+        "from ~/.gemini/antigravity-cli/settings.json if present."
+    )
 
 
 def uninstall_plugin(
@@ -838,6 +1342,7 @@ def uninstall_plugin(
     *,
     method: str = "copy",
     dry_run: bool = False,
+    show_cleanup_hint: bool = True,
 ) -> int:
     """Safely uninstall Gravity Workflow from the target location or via 'agy'."""
     if method == "agy":
@@ -854,11 +1359,12 @@ def uninstall_plugin(
             print("[ERROR] 'agy plugin uninstall' failed.", file=sys.stderr)
             return 1
         print("[OK]    Uninstalled Gravity Workflow via 'agy plugin uninstall'.")
-        print(
-            "[NOTE]  Use 'python uninstall.py --clean-workspace <dir> / --clean-registry' to clean "
-            "project state or ~/.gemini/gravity/workflow/, and remove any manual Gravity Workflow entries from "
-            "~/.gemini/config/config.json or ~/.gemini/antigravity-cli/settings.json."
-        )
+        if show_cleanup_hint:
+            print(
+                "[NOTE]  Use 'python install.py --workspace-only --clean-workspace <dir> / --clean-registry' to clean "
+                "project state or ~/.gemini/gravity/workflow/, and remove any manual Gravity Workflow entries from "
+                "~/.gemini/config/config.json or ~/.gemini/antigravity-cli/settings.json."
+            )
         return 0
 
     assert target_dir is not None
@@ -867,7 +1373,7 @@ def uninstall_plugin(
         print(f"[ERROR] {unsafe_reason}", file=sys.stderr)
         return 1
 
-    if not target_dir.exists() and not target_dir.is_symlink():
+    if not target_dir.exists() and not _is_symlink_or_junction(target_dir):
         print(f"[ERROR] Gravity Workflow is not installed at {target_dir}.", file=sys.stderr)
         return 1
 
@@ -884,16 +1390,73 @@ def uninstall_plugin(
 
     _remove_tree_or_symlink(target_dir)
     print(f"[OK]    Removed Gravity Workflow plugin from {target_dir}")
-    print(
-        "[NOTE]  Use 'python uninstall.py --clean-workspace <dir> / --clean-registry' to clean "
-        "project state or ~/.gemini/gravity/workflow/, and remove any manual Gravity Workflow entries from "
-        "~/.gemini/config/config.json or ~/.gemini/antigravity-cli/settings.json."
-    )
+    if show_cleanup_hint:
+        print(
+            "[NOTE]  Use 'python install.py --workspace-only --clean-workspace <dir> / --clean-registry' to clean "
+            "project state or ~/.gemini/gravity/workflow/, and remove any manual Gravity Workflow entries from "
+            "~/.gemini/config/config.json or ~/.gemini/antigravity-cli/settings.json."
+        )
+    return 0
+
+
+def _run_uninstall(args: argparse.Namespace, target_dir: Optional[Path]) -> int:
+    """Execute unified uninstall, workspace cleanup, registry pruning, and legacy cleanup."""
+    if not args.workspace_only:
+        rc = uninstall_plugin(
+            PLUGIN_SOURCE,
+            target_dir,
+            method=args.method,
+            dry_run=args.dry_run,
+            show_cleanup_hint=False,
+        )
+        if rc != 0:
+            return rc
+
+    clean_legacy = bool(args.clean_legacy or args.all)
+
+    if args.clean_workspace is not None:
+        ws_rc = clean_workspace(
+            args.clean_workspace,
+            purge_templates=args.purge_workspace_templates,
+            clean_legacy=clean_legacy,
+            dry_run=args.dry_run,
+        )
+        if ws_rc != 0:
+            return ws_rc
+
+    if args.clean_registry or args.all:
+        reg_rc = clean_registry(dry_run=args.dry_run)
+        if reg_rc != 0:
+            return reg_rc
+
+    if clean_legacy:
+        leg_rc = clean_legacy_artifacts(
+            scope=args.scope,
+            workspace=args.workspace,
+            target=args.target,
+            dry_run=args.dry_run,
+        )
+        if leg_rc != 0:
+            return leg_rc
+
+    if not args.dry_run:
+        if (
+            not args.workspace_only
+            and args.clean_workspace is None
+            and not args.clean_registry
+            and not args.all
+        ):
+            print(
+                "[NOTE]  Use 'python install.py --workspace-only --clean-workspace <dir> / --clean-registry' "
+                "to clean project state or ~/.gemini/gravity/workflow/."
+            )
+        print_post_uninstall_notes()
+
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Construct the CLI argument parser for the Gravity Workflow installer."""
+    """Construct the CLI argument parser for the Gravity Workflow installer and uninstaller."""
     parser = argparse.ArgumentParser(
         description="Install, upgrade, validate, or uninstall the Gravity Workflow Antigravity plugin.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -905,14 +1468,18 @@ def build_parser() -> argparse.ArgumentParser:
             "  python install.py --scope workspace --workspace /path/to/project\n"
             "  python install.py --init-workspace /path/to/project --mode quickstart\n"
             "  python install.py --uninstall\n"
-            "  python uninstall.py --all --clean-workspace /path/to/project"
+            "  python install.py --uninstall --check --clean-workspace /path/to/project\n"
+            "  python install.py --workspace-only --clean-workspace /path/to/project\n"
+            "  python install.py --workspace-only --clean-workspace /path/to/project --purge-workspace-templates\n"
+            "  python install.py --workspace-only --clean-legacy --clean-workspace /path/to/project\n"
+            "  python install.py --uninstall --all --clean-workspace /path/to/project"
         ),
     )
     parser.add_argument(
         "--scope",
         choices=("global", "workspace"),
         default="global",
-        help="Install globally (~/.gemini/config/plugins/gravity-workflow) or inside a project (.agents/plugins/gravity-workflow).",
+        help="Install or uninstall globally (~/.gemini/config/plugins/gravity-workflow) or inside a project (.agents/plugins/gravity-workflow).",
     )
     parser.add_argument(
         "--workspace",
@@ -930,7 +1497,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--method",
         choices=("copy", "agy"),
         default="copy",
-        help="Installation backend: 'copy' (default, App/IDE/CLI) or 'agy' (delegates to agy CLI).",
+        help="Installation/uninstallation backend: 'copy' (default, App/IDE/CLI) or 'agy' (delegates to agy CLI).",
     )
     parser.add_argument(
         "--init-workspace",
@@ -977,12 +1544,43 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Inspect environment prerequisites and target status without modifying anything.",
+        help="Inspect environment prerequisites and target status (or uninstall status with --uninstall / --workspace-only) without modifying anything.",
     )
     parser.add_argument(
         "--uninstall",
         action="store_true",
-        help="Safely remove an installed Gravity Workflow plugin.",
+        help="Safely remove an installed Gravity Workflow plugin and optional workspace/registry/legacy artifacts.",
+    )
+    parser.add_argument(
+        "--clean-workspace",
+        type=Path,
+        default=None,
+        help="With --uninstall or --workspace-only, remove .agents/gravity-workflow/ (and .agents/plugins/gravity-workflow/) and prune its registry entry.",
+    )
+    parser.add_argument(
+        "--purge-workspace-templates",
+        action="store_true",
+        help="With --clean-workspace, also remove AGENTS.md, mcp_config.json and .agents/rules/* only if unmodified.",
+    )
+    parser.add_argument(
+        "--workspace-only",
+        action="store_true",
+        help="Skip plugin removal and only run --clean-workspace, --clean-registry and/or --clean-legacy.",
+    )
+    parser.add_argument(
+        "--clean-registry",
+        action="store_true",
+        help="With --uninstall or --workspace-only, remove ~/.gemini/gravity/workflow/live_workspaces.json (and empty parent directory).",
+    )
+    parser.add_argument(
+        "--clean-legacy",
+        action="store_true",
+        help="With --uninstall or --workspace-only, remove legacy v0.1.x 'gravity' plugin, ~/.gravity/live_workspaces.json and workspace .agents/gravity/.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="With --uninstall, uninstall the targeted plugin and remove both current and legacy registries/artifacts (+ --clean-workspace if provided).",
     )
     return parser
 
@@ -999,7 +1597,7 @@ def _configure_stdio() -> None:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Entry point for the Gravity Workflow cross-platform installer CLI."""
+    """Entry point for the Gravity Workflow cross-platform installer and uninstaller CLI."""
     _configure_stdio()
     if sys.version_info < (3, 8):
         print("[ERROR] Python 3.8+ is required to run install.py.", file=sys.stderr)
@@ -1007,13 +1605,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
-
-    if not PLUGIN_SOURCE.is_dir() or not is_gravity_plugin_dir(PLUGIN_SOURCE):
-        print(
-            f"[ERROR] Source plugin directory is missing or invalid: {PLUGIN_SOURCE}",
-            file=sys.stderr,
-        )
-        return 1
 
     if args.scope == "workspace" and args.workspace is None:
         print("[ERROR] --workspace PATH is required when --scope is 'workspace'.", file=sys.stderr)
@@ -1026,9 +1617,58 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 2
 
-    if args.uninstall and args.init_workspace is not None:
-        print("[ERROR] --uninstall cannot be combined with --init-workspace.", file=sys.stderr)
+    if args.purge_workspace_templates and args.clean_workspace is None:
+        print(
+            "[ERROR] --purge-workspace-templates requires --clean-workspace PATH.",
+            file=sys.stderr,
+        )
         return 2
+
+    if args.workspace_only and args.all:
+        print("[ERROR] --workspace-only cannot be combined with --all.", file=sys.stderr)
+        return 2
+
+    if (
+        args.workspace_only
+        and args.clean_workspace is None
+        and not args.clean_registry
+        and not args.clean_legacy
+    ):
+        print(
+            "[ERROR] --workspace-only requires --clean-workspace, --clean-registry and/or --clean-legacy.",
+            file=sys.stderr,
+        )
+        return 2
+
+    is_uninstall_mode = bool(args.uninstall or args.workspace_only)
+
+    if is_uninstall_mode and args.init_workspace is not None:
+        print(
+            "[ERROR] --uninstall / --workspace-only cannot be combined with --init-workspace.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not is_uninstall_mode and (
+        args.clean_workspace is not None
+        or args.purge_workspace_templates
+        or args.clean_registry
+        or args.clean_legacy
+        or args.all
+    ):
+        print(
+            "[ERROR] Cleanup options (--clean-workspace, --purge-workspace-templates, "
+            "--clean-registry, --clean-legacy, --all) require --uninstall or --workspace-only.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not PLUGIN_SOURCE.is_dir() or not is_gravity_plugin_dir(PLUGIN_SOURCE):
+        print(
+            f"[ERROR] Source plugin directory is missing or invalid: {PLUGIN_SOURCE}",
+            file=sys.stderr,
+        )
+        return 1
 
     target_dir: Optional[Path] = None
     legacy_dir: Optional[Path] = None
@@ -1037,6 +1677,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         legacy_dir = resolve_legacy_plugin_dir(args.scope, args.workspace, args.target)
 
     if args.check:
+        if is_uninstall_mode:
+            return check_uninstall_status(
+                target_dir,
+                args.scope,
+                args.method,
+                args.clean_workspace,
+                legacy_dir=legacy_dir,
+            )
         return check_environment(
             PLUGIN_SOURCE,
             target_dir,
@@ -1045,13 +1693,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             legacy_dir=legacy_dir,
         )
 
-    if args.uninstall:
-        return uninstall_plugin(
-            PLUGIN_SOURCE,
-            target_dir,
-            method=args.method,
-            dry_run=args.dry_run,
-        )
+    if is_uninstall_mode:
+        return _run_uninstall(args, target_dir)
 
     if args.method == "agy":
         rc = install_agy(PLUGIN_SOURCE, dry_run=args.dry_run)

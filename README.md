@@ -128,43 +128,43 @@ See [`plugin/README.md`](plugin/README.md) for the plugin's full French document
 
 `v0.2.0` removes all runtime legacy shims (`.agents/gravity/` is no longer recognized):
 1. **Plugin:** `python install.py` (`--method copy`) installs `~/.gemini/config/plugins/gravity-workflow/` and removes a legacy v0.1.x workflow `~/.gemini/config/plugins/gravity` unless `--keep-legacy` is passed (while preserving any [`gravity`](https://github.com/BSourichanh/gravity) Core plugin having `config/module.json` `"id": "core"`). If you installed via CLI, run `agy plugin uninstall gravity` (only for v0.1.x legacy) and `agy plugin install ./plugin`.
-2. **Registry & Workspace State:** Clean legacy `.agents/gravity/` and `~/.gravity/live_workspaces.json` via `python uninstall.py --clean-legacy --workspace-only --clean-workspace <target-project-dir>`, then re-initialize the project with `/gravity-workflow` or `init_workspace.py`.
+2. **Registry & Workspace State:** Clean legacy `.agents/gravity/` and `~/.gravity/live_workspaces.json` via `python install.py --workspace-only --clean-legacy --clean-workspace <target-project-dir>`, then re-initialize the project with `/gravity-workflow` or `init_workspace.py`.
 3. **App / CLI Configs:** Update `~/.gemini/config/config.json` (`gravity-workflow/live-widget`) and `~/.gemini/antigravity-cli/settings.json` (`~/.gemini/config/plugins/gravity-workflow/observability/statusline.py`).
 
 ---
 
 ## Uninstallation
 
-[`uninstall.py`](uninstall.py) safely removes the Gravity Workflow plugin, optional workspace runtime state (`.agents/gravity-workflow/`), and the centralized Live Widget registry (`~/.gemini/gravity/workflow/live_workspaces.json`, resolved via `$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/`) while refusing unsafe targets, preserving any installed `gravity` Core plugin, and keeping user-customized files (`python install.py --uninstall` also remains supported for plugin-only removal):
+[`install.py`](install.py) (`--uninstall` / `--workspace-only`) safely removes the Gravity Workflow plugin, optional workspace runtime state (`.agents/gravity-workflow/`), and the centralized Live Widget registry (`~/.gemini/gravity/workflow/live_workspaces.json`, resolved via `$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/`) while refusing unsafe targets, preserving any installed `gravity` Core plugin, and keeping user-customized files (`uninstall.py` remains as a deprecated wrapper printing `[DEPRECATED]` to `stderr` and forwarding to `install.py --uninstall`):
 
 ```bash
 # Inspect plugin, workspace, registry, legacy artifacts, and manual config entries (read-only)
-python uninstall.py --check
+python install.py --uninstall --check
 
 # Preview full cleanup (including legacy ~/.gravity and .agents/gravity/) without modifying disk
-python uninstall.py --dry-run --all --clean-workspace <target-project-dir>
+python install.py --uninstall --dry-run --all --clean-workspace <target-project-dir>
 
 # Uninstall the global plugin only
-python uninstall.py
+python install.py --uninstall
 
 # Clean Gravity Workflow runtime state (.agents/gravity-workflow/) in a project without touching AGENTS.md or rules
-python uninstall.py --workspace-only --clean-workspace <target-project-dir>
+python install.py --workspace-only --clean-workspace <target-project-dir>
 
 # Also remove unmodified template files (keeps any file edited by the user)
-python uninstall.py --workspace-only --clean-workspace <target-project-dir> --purge-workspace-templates
+python install.py --workspace-only --clean-workspace <target-project-dir> --purge-workspace-templates
 
 # Clean legacy v0.1.x artifacts (~/.gravity/live_workspaces.json and .agents/gravity/)
-python uninstall.py --clean-legacy --workspace-only --clean-workspace <target-project-dir>
+python install.py --workspace-only --clean-legacy --clean-workspace <target-project-dir>
 
 # Uninstall plugin + global Live Widget registry + legacy artifacts (+ optional project cleanup)
-python uninstall.py --all --clean-workspace <target-project-dir>
-python uninstall.py --clean-registry --workspace-only
+python install.py --uninstall --all --clean-workspace <target-project-dir>
+python install.py --workspace-only --clean-registry
 
 # Uninstall via Antigravity CLI
-python uninstall.py --method agy
+python install.py --uninstall --method agy
 ```
 
-> **Note:** `uninstall.py` never edits `~/.gemini/config/config.json` or `~/.gemini/antigravity-cli/settings.json` directly; if `gravity-workflow/live-widget`, legacy `gravity/live-widget`, or `statusLine` entries are detected, it reminds you to remove them manually.
+> **Note:** `install.py --uninstall` never edits `~/.gemini/config/config.json` or `~/.gemini/antigravity-cli/settings.json` directly; if `gravity-workflow/live-widget`, legacy `gravity/live-widget`, or `statusLine` entries are detected, it reminds you to remove them manually.
 
 ---
 
@@ -172,10 +172,10 @@ python uninstall.py --method agy
 
 | Path | Purpose |
 |---|---|
-| [`install.py`](install.py) | Cross-platform installer for `plugin/` with Windows adaptation, Core-safe legacy cleanup, strict validation, and optional workspace bootstrapping |
-| [`uninstall.py`](uninstall.py) | Cross-platform uninstaller for `plugin/`, workspace `.agents/gravity-workflow/` cleanup, centralized registry pruning, and `--clean-legacy` |
-| [`tests/test_install.py`](tests/test_install.py) | Unit tests for `install.py` |
-| [`tests/test_uninstall.py`](tests/test_uninstall.py) | Unit tests for `uninstall.py` |
+| [`install.py`](install.py) | Unified cross-platform installer and uninstaller for `plugin/` with Windows adaptation, Core-safe legacy cleanup, workspace/registry cleanup, and strict validation |
+| [`uninstall.py`](uninstall.py) | Deprecated thin wrapper (`[DEPRECATED]` on `stderr`) delegating to `install.py --uninstall` |
+| [`tests/test_install.py`](tests/test_install.py) | Unit tests for `install.py` (install, upgrade, rollback, unified uninstall & cleanup) |
+| [`tests/test_uninstall.py`](tests/test_uninstall.py) | Unit tests for the deprecated `uninstall.py` wrapper and CLI parity |
 | [`plugin/`](plugin/) | Standalone Antigravity plugin ([manifest](plugin/plugin.json), [module contract](plugin/config/module.json), skills, subagents, hooks, workflows, evals, observability, sidecar, scripts) |
 | [`workspace-template/`](workspace-template/) | Reference 13-file project workspace generated by [`plugin/scripts/init_workspace.py`](plugin/scripts/init_workspace.py) |
 | [`docs/`](docs/README.md) | Modular living documentation kept in sync with the codebase (French) |

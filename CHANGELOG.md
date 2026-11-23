@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Removed the `slow`/`fast` axis (accepted as deprecated no-op aliases), enforced ephemeral-only `unsafe` / `--no-verify` (never persisted in `profile.json`), and standardized `caveman` default to `"lite"` across all 3 profiles.
 - **Validators, Templates & Living Documentation (`plugin/scripts/{init_workspace,validate,test_unit}.py`, `plugin/scripts/validators/{base,workspace_validator}.py`, `workspace-template/`, `docs/`, `README.md`, `plugin/README.md`):**
   - Isolated `validators/base.py` dry-runs via `GRAVITY_WORKFLOW_HOME`, updated `workspace-template/` and `workspace_validator.py` for v2 profile schema, and synchronized all living docs.
+- **Unified Installer / Uninstaller Lifecycle & Deprecated `uninstall.py` Wrapper (`install.py`, `uninstall.py`, `tests/test_{install,uninstall}.py`, `AGENTS.md`, `docs/`, `README.md`):**
+  - Consolidated `--clean-workspace`, `--purge-workspace-templates`, `--workspace-only`, `--clean-registry`, `--clean-legacy`, `--all`, read-only `--uninstall --check` / `--workspace-only --check`, and Core-safe (`is_core_gravity_plugin_dir`) cleanup directly into `install.py`, enforcing `--uninstall` / `--workspace-only` guards against `--init-workspace` (exit `2`).
+  - Reduced `uninstall.py` (`717` lines -> `<= 50` lines) to a deprecated thin wrapper emitting `[DEPRECATED]` to `stderr`, prepending `--uninstall` when neither `--uninstall` nor `--workspace-only` is passed, and delegating to `install.main()`.
 
 ### Fixed
 - **P0 Runtime Imports & Planner Skip in `review_pipeline.py` and `run_suite.py` (`plugin/workflows/review_pipeline.py`, `plugin/evals/run_suite.py`):**

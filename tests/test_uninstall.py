@@ -37,23 +37,34 @@ def _run_uninstall_quiet(argv: List[str]) -> tuple:
 
 class TestGravityUninstaller(unittest.TestCase):
     def setUp(self) -> None:
+        self._prev_wf_home = os.environ.get("GRAVITY_WORKFLOW_HOME")
         self._prev_reg = os.environ.get("GRAVITY_WORKFLOW_REGISTRY_PATH")
         self._prev_leg_reg = os.environ.get("GRAVITY_WORKFLOW_LEGACY_REGISTRY_PATH")
         self._tmp_reg_dir = tempfile.TemporaryDirectory()
+        self._fake_home = Path(self._tmp_reg_dir.name) / "home"
+        self._fake_home.mkdir(parents=True, exist_ok=True)
         self._default_reg = (
-            Path(self._tmp_reg_dir.name)
+            self._fake_home
             / ".gemini"
             / "gravity"
             / "workflow"
             / "live_workspaces.json"
         )
         self._default_leg_reg = (
-            Path(self._tmp_reg_dir.name) / ".gravity" / "live_workspaces.json"
+            self._fake_home / ".gravity" / "live_workspaces.json"
         )
+        os.environ["GRAVITY_WORKFLOW_HOME"] = str(self._fake_home / ".gemini" / "gravity" / "workflow")
         os.environ["GRAVITY_WORKFLOW_REGISTRY_PATH"] = str(self._default_reg)
         os.environ["GRAVITY_WORKFLOW_LEGACY_REGISTRY_PATH"] = str(self._default_leg_reg)
+        self._home_patcher = mock.patch("pathlib.Path.home", return_value=self._fake_home)
+        self._home_patcher.start()
 
     def tearDown(self) -> None:
+        self._home_patcher.stop()
+        if self._prev_wf_home is None:
+            os.environ.pop("GRAVITY_WORKFLOW_HOME", None)
+        else:
+            os.environ["GRAVITY_WORKFLOW_HOME"] = self._prev_wf_home
         if self._prev_reg is None:
             os.environ.pop("GRAVITY_WORKFLOW_REGISTRY_PATH", None)
         else:
@@ -71,8 +82,9 @@ class TestGravityUninstaller(unittest.TestCase):
             self.assertEqual(_run_install_quiet(["--target", str(target)]), 0)
             self.assertTrue((target / "plugin.json").is_file())
 
-            rc, _, _ = _run_uninstall_quiet(["--target", str(target)])
+            rc, _, err = _run_uninstall_quiet(["--target", str(target)])
             self.assertEqual(rc, 0)
+            self.assertIn("[DEPRECATED]", err)
             self.assertFalse(target.exists())
 
             ws = base / "proj"
@@ -83,10 +95,11 @@ class TestGravityUninstaller(unittest.TestCase):
             ws_plugin = ws / ".agents" / "plugins" / "gravity-workflow"
             self.assertTrue((ws_plugin / "plugin.json").is_file())
 
-            rc_ws, _, _ = _run_uninstall_quiet(
+            rc_ws, _, err_ws = _run_uninstall_quiet(
                 ["--scope", "workspace", "--workspace", str(ws)]
             )
             self.assertEqual(rc_ws, 0)
+            self.assertIn("[DEPRECATED]", err_ws)
             self.assertFalse(ws_plugin.exists())
 
     def test_refuses_unsafe_and_non_gravity_targets(self) -> None:
@@ -175,15 +188,16 @@ class TestGravityUninstaller(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            manual = uninstall.detect_manual_config_entries(home_dir=fake_home)
+            manual = install.detect_manual_config_entries(home_dir=fake_home)
             self.assertTrue(manual["sidecar"])
             self.assertTrue(manual["legacy_sidecar"])
             self.assertTrue(manual["statusline"])
 
-            rc_chk, out_chk, _ = _run_uninstall_quiet(
+            rc_chk, out_chk, err_chk = _run_uninstall_quiet(
                 ["--check", "--target", str(target), "--clean-workspace", str(ws)]
             )
             self.assertEqual(rc_chk, 0)
+            self.assertIn("[DEPRECATED]", err_chk)
             self.assertIn("Gravity Workflow Uninstall Check", out_chk)
 
             rc_dry, out_dry, _ = _run_uninstall_quiet(
@@ -441,23 +455,23 @@ class TestGravityUninstaller(unittest.TestCase):
 
                 with mock.patch("pathlib.Path.home", return_value=fake_home):
                     self.assertEqual(
-                        uninstall.default_workflow_home(),
+                        install.default_workflow_home(),
                         (fake_home / ".gemini" / "gravity" / "workflow").resolve(),
                     )
                     self.assertEqual(
-                        uninstall.resolve_registry_path(),
+                        install.resolve_registry_path(),
                         (fake_home / ".gemini" / "gravity" / "workflow" / "live_workspaces.json").resolve(),
                     )
 
                     os.environ["GRAVITY_HOME"] = str(gravity_home)
                     self.assertEqual(
-                        uninstall.resolve_registry_path(),
+                        install.resolve_registry_path(),
                         (gravity_home / "workflow" / "live_workspaces.json").resolve(),
                     )
 
                     os.environ["GRAVITY_WORKFLOW_HOME"] = str(wf_home)
                     self.assertEqual(
-                        uninstall.resolve_registry_path(),
+                        install.resolve_registry_path(),
                         (wf_home / "live_workspaces.json").resolve(),
                     )
         finally:
@@ -540,12 +554,38 @@ class TestGravityUninstaller(unittest.TestCase):
             self.assertFalse(link_state.exists() or link_state.is_symlink())
             self.assertTrue((real_state / "PROGRESS.md").is_file())
 
+    def test_wrapper_line_count_deprecation_and_argv_forwarding(self) -> None:
+        wrapper_lines = (REPO_ROOT / "uninstall.py").read_text(encoding="utf-8").splitlines()
+        self.assertLessEqual(len(wrapper_lines), 50)
+
+        with mock.patch.object(install, "main", return_value=7) as mocked_main:
+            orig_args = ["--check", "--dry-run", "--clean-registry"]
+            rc1, _, err1 = _run_uninstall_quiet(orig_args)
+            self.assertEqual(rc1, 7)
+            self.assertIn("[DEPRECATED] Use 'python install.py --uninstall ...' instead of uninstall.py.", err1)
+            mocked_main.assert_called_once_with(
+                ["--uninstall", "--check", "--dry-run", "--clean-registry"]
+            )
+            self.assertEqual(orig_args, ["--check", "--dry-run", "--clean-registry"])
+
+        with mock.patch.object(install, "main", return_value=0) as mocked_main:
+            rc2, _, err2 = _run_uninstall_quiet(["--workspace-only", "--clean-registry"])
+            self.assertEqual(rc2, 0)
+            self.assertIn("[DEPRECATED]", err2)
+            mocked_main.assert_called_once_with(["--workspace-only", "--clean-registry"])
+
+        with mock.patch.object(install, "main", return_value=0) as mocked_main:
+            rc3, _, err3 = _run_uninstall_quiet(["--uninstall", "--all"])
+            self.assertEqual(rc3, 0)
+            self.assertIn("[DEPRECATED]", err3)
+            mocked_main.assert_called_once_with(["--uninstall", "--all"])
+
     def test_stdlib_only_ast(self) -> None:
         stdlib_names = getattr(sys, "stdlib_module_names", None)
         if not stdlib_names:
             self.skipTest("sys.stdlib_module_names requires Python 3.10+")
 
-        allowed = set(stdlib_names) | {"install", "uninstall", "init_workspace", "state_writer"}
+        allowed = set(stdlib_names) | {"install", "uninstall"}
         for py_path in (REPO_ROOT / "uninstall.py", Path(__file__).resolve()):
             tree = ast.parse(py_path.read_text(encoding="utf-8"), filename=str(py_path))
             for node in ast.walk(tree):

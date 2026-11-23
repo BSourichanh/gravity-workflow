@@ -4,7 +4,7 @@
 Harnais multi-agents natif Google Antigravity, 100 % sans dépendance :
 - `plugin/` : moteur autonome (`plugin.json` 9 champs, `config/module.json` v1 `id: "workflow"`, skills `/gravity-workflow` & `/caveman`, agents, hooks fail-closed, workflows, evals, observabilité, sidecar transition `4789`).
 - `workspace-template/` : empreinte cible (13 fichiers).
-- `install.py`, `uninstall.py` : installeur/désinstalleur (`GRAVITY_WORKFLOW_HOME` > `GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/`) ; [`docs/`](docs/README.md) : documentation vivante.
+- `install.py` : installeur & désinstalleur unifiés (`install.py --uninstall`, wrapper déprécié `uninstall.py`, stockage `GRAVITY_WORKFLOW_HOME` > `GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/`) ; [`docs/`](docs/README.md) : documentation vivante.
 - **Périmètre séparé :** coûts, tokens et historiques gérés dans `../gravity-metrics`, hub [`../gravity`](../gravity/).
 
 ## Invariants
