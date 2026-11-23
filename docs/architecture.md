@@ -33,7 +33,16 @@ plugin/
 │       └── SKILL.md                    # Skill compagnon /caveman (intensités, commit, compress)
 ├── hooks/
 │   ├── hook_runtime.py                 # Stdin threadé, emit_ok/emit_json, résolution workspace, verrous
-│   ├── safety_policy.py                # Règles pures deny / force_ask / allow
+│   ├── safety_policy.py                # Façade rétrocompatible (<= 220 L) vers policy/
+│   ├── policy/                         # 7 sous-modules SRP deny / force_ask / allow
+│   │   ├── __init__.py
+│   │   ├── constants.py                # Tables statiques, regex, secrets, destructeurs
+│   │   ├── paths.py                    # Normalisation chemins, protections plugin/harnais/secrets
+│   │   ├── shell_parser.py             # Tokenisation PowerShell/POSIX, sous-expressions, redirections
+│   │   ├── git_and_fs.py               # Règles Git (force-push/config -c) et rm/secrets/DB
+│   │   ├── python_ast.py               # Inspection AST Python découpée en helpers par famille
+│   │   ├── inline_scripts.py           # Extraction/inspection python -c, node -e, perl/ruby, stdin
+│   │   └── evaluator.py                # Orchestration _evaluate_shell_command et décisions fail-closed
 │   ├── pre_tool_guard.py               # Hook PreToolUse fail-closed (chmod 0755)
 │   ├── post_tool_format.py             # Hook PostToolUse auto-formatage (chmod 0755)
 │   ├── session_start_caveman.py        # Hook SessionStart injection Caveman (chmod 0755)

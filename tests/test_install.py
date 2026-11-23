@@ -79,7 +79,37 @@ class TestGravityInstaller(unittest.TestCase):
             self.assertTrue((target / "skills" / "gravity-workflow" / "SKILL.md").is_file())
             self.assertTrue((target / "skills" / "caveman" / "SKILL.md").is_file())
             self.assertTrue((target / "hooks" / "session_start_caveman.py").is_file())
+            for rel_policy in (
+                "__init__.py",
+                "constants.py",
+                "paths.py",
+                "shell_parser.py",
+                "git_and_fs.py",
+                "python_ast.py",
+                "inline_scripts.py",
+                "evaluator.py",
+            ):
+                self.assertTrue((target / "hooks" / "policy" / rel_policy).is_file())
             self.assertEqual(list(target.rglob("__pycache__")), [])
+
+            isolated_ws = Path(tmp) / "isolated-ws"
+            isolated_ws.mkdir()
+            guard_proc = subprocess.run(
+                [sys.executable, "-B", str(target / "hooks" / "pre_tool_guard.py")],
+                cwd=str(target),
+                input=json.dumps(
+                    {
+                        "cwd": str(isolated_ws),
+                        "toolCall": {"name": "read_file", "args": {"AbsolutePath": ".env"}},
+                    }
+                ),
+                text=True,
+                encoding="utf-8",
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(guard_proc.returncode, 0)
+            self.assertEqual(json.loads(guard_proc.stdout).get("decision"), "deny")
 
             if os.name == "nt" and not install.has_real_python3():
                 installed_hooks = (target / "hooks.json").read_text(encoding="utf-8")

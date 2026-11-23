@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Modular PreToolUse Security Policy Package (`plugin/hooks/policy/`, `plugin/hooks/safety_policy.py`, `plugin/scripts/validators/plugin_validator.py`, `tests/test_install.py`, `docs/`):**
+  - Split monolithic `plugin/hooks/safety_policy.py` (`5 384` lines) into 7 SRP stdlib submodules under `plugin/hooks/policy/` (`__init__.py`, `constants.py`, `paths.py`, `shell_parser.py`, `git_and_fs.py`, `python_ast.py`, `inline_scripts.py`, `evaluator.py`) with 100% behavior parity.
+  - Reduced `plugin/hooks/safety_policy.py` to a thin backward-compatible facade (`169` lines, `<= 220` L) re-exporting all public and internal symbols (including `HOOKS_DIR` monkeypatch compatibility) consumed by `pre_tool_guard.py`, validators, and `tests/test_safety_*.py`.
+  - Updated `local_mods` in `plugin/scripts/validators/plugin_validator.py` to allow `policy` and its submodules under strict stdlib-only AST validation, added isolated installed-copy `policy/` + `pre_tool_guard.py` verification in `tests/test_install.py`, and updated `docs/architecture.md`, `docs/safety-and-hooks.md`, and `plugin/skills/gravity-workflow/references/06-safety-hooks.md`.
 - **Modular Unit Test Suite & Thin `test_unit.py` Launcher (`tests/test_*.py`, `tests/_unit_helpers.py`, `plugin/scripts/test_unit.py`, `docs/`):**
   - Split monolithic `plugin/scripts/test_unit.py` (`2 371` lines) into 9 domain-focused stdlib test modules under `tests/` (`test_safety_paths.py`, `test_safety_shell.py`, `test_safety_python_ast.py`, `test_safety_inline_scripts.py`, `test_profile_engine.py`, `test_caveman.py`, `test_hooks_runtime.py`, `test_validators.py`, `test_sidecar_widget.py`) sharing `tests/_unit_helpers.py`.
   - Reduced `plugin/scripts/test_unit.py` to a `32`-line stdlib-only (`unittest`, `sys`, `pathlib`) backward-compatible launcher running all unit suites in `tests/` while excluding slow installer/uninstaller integration suites (`test_install.py`, `test_uninstall.py`).

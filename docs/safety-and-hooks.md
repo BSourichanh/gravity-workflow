@@ -10,9 +10,9 @@ Antigravity exécute les commandes de `hooks.json` depuis **la racine du plugin*
 
 ---
 
-## Garde-fou `PreToolUse` ([`pre_tool_guard.py`](../plugin/hooks/pre_tool_guard.py) + [`safety_policy.py`](../plugin/hooks/safety_policy.py))
+## Garde-fou `PreToolUse` ([`pre_tool_guard.py`](../plugin/hooks/pre_tool_guard.py) + [`safety_policy.py`](../plugin/hooks/safety_policy.py) -> [`policy/`](../plugin/hooks/policy/))
 
-Le matcher couvre les outils shell (`run_command`, `execute_command`, `bash`, `shell`), `run_workflow`, d'écriture (`write_to_file`, `write_file`, `replace_file_content`, `edit_file`, `multi_replace_file_content`), de lecture/recherche (`view_file`, `read_file`, `grep_search`, `search_files`, `list_dir`, `find_by_name`) et `call_mcp_tool`. Il reste **toujours actif**, même en modes `fast` et `unsafe`.
+La politique de sécurité est structurée en **7 sous-modules SRP** sous `plugin/hooks/policy/` (`constants.py`, `paths.py`, `shell_parser.py`, `git_and_fs.py`, `python_ast.py`, `inline_scripts.py`, `evaluator.py`) derrière la façade mince rétrocompatible [`safety_policy.py`](../plugin/hooks/safety_policy.py). Le matcher couvre les outils shell (`run_command`, `execute_command`, `bash`, `shell`), `run_workflow`, d'écriture (`write_to_file`, `write_file`, `replace_file_content`, `edit_file`, `multi_replace_file_content`), de lecture/recherche (`view_file`, `read_file`, `grep_search`, `search_files`, `list_dir`, `find_by_name`) et `call_mcp_tool`. Il reste **toujours actif**, même en modes `fast` et `unsafe`.
 
 Pour l'analyse des commandes shell sans faux positifs inter-commandes ni contournement par guillemets :
 - **`_split_shell_chains()` / `split_shell_segments()` :** découpe la ligne de commande en chaînes de pipes (`;`, `&&`, `||`, `&` *(hors redirections `2>&1`/`&>` et appel PowerShell `&` en tête)*, `\n`) puis en étapes `|` uniquement hors guillemets et hors here-strings PowerShell (`@'\n...\n'@` et `@"\n...\n"@`), préserve les backslashes Windows (`C:\...`) et extrait récursivement (profondeur bornée à `4`) les sous-commandes `$(...)` et `` `...` `` hors single-quotes.
