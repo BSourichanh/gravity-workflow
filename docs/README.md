@@ -15,7 +15,7 @@ Cette documentation remplace la spécification statique monolithique par des fic
 | [`agents-and-workflows.md`](agents-and-workflows.md) | Sous-agents (`planner`, `builder`, `reviewer` indépendant), pipeline de revue et moteurs natifs | `agents/*.md`, `workflows/review_pipeline.py` |
 | [`safety-and-hooks.md`](safety-and-hooks.md) | Garde-fous `PreToolUse` fail-closed, `SessionStart`, `PostToolUse`, `Stop`, règles YAML et budget contexte | `hooks.json`, `hooks/*.py`, `.agents/rules/*.md` |
 | [`evals-and-learning.md`](evals-and-learning.md) | Suite d'évaluations parallèle à double filtre et boucle d'apprentissage `/learn` | `evals/cases.json`, `eval_checks.py`, `run_suite.py` |
-| [`observability.md`](observability.md) | Micro-carte, `/gravity-workflow status`, `/statusline` CLI, sidecar Live Widget (transition vers `gravity` Core UI) et écriture atomique | `state_writer.py`, `statusline.py`, `sidecars/live-widget/` |
+| [`observability.md`](observability.md) | Micro-carte, `/gravity-workflow status`, `/statusline` CLI, cockpit MCP App `/gravity dashboard` (`gravity` Core) et écriture atomique | `state_writer.py`, `statusline.py`, `profile_engine.py` |
 | [`validation-and-development.md`](validation-and-development.md) | Commandes strictes POSIX / PowerShell, suites de tests et checklist de contribution | `validate.py`, `scripts/test_unit.py`, `tests/test_install.py`, `tests/test_uninstall.py` |
 
 ---
@@ -40,5 +40,5 @@ Toute modification apportée au code doit mettre à jour la ou les fiches corres
 | `agents/*.md`, `workflows/review_pipeline.py`, références routage | [`agents-and-workflows.md`](agents-and-workflows.md) |
 | `hooks.json`, `hooks/*.py`, `.agents/rules/*.md` | [`safety-and-hooks.md`](safety-and-hooks.md) |
 | `evals/cases.json`, `evals/eval_checks.py`, `evals/run_suite.py` | [`evals-and-learning.md`](evals-and-learning.md) |
-| `observability/state_writer.py`, `statusline.py`, `sidecars/live-widget/` | [`observability.md`](observability.md) |
+| `observability/state_writer.py`, `statusline.py`, `profile_engine.py` | [`observability.md`](observability.md) |
 | `scripts/validate.py`, `scripts/validators/`, `scripts/test_unit.py`, `tests/test_install.py`, `tests/test_uninstall.py` | [`validation-and-development.md`](validation-and-development.md) |

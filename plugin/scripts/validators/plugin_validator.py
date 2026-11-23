@@ -276,7 +276,7 @@ def _validate_templates_and_repo_charter(root: Path, report: Report) -> None:
 
 
 def validate_plugin(root: Path, report: Report) -> None:
-    """Audite le manifeste, le contrat module, le logo, les skills, les agents, les hooks, le sidecar et le moteur."""
+    """Audite le manifeste, le contrat module, le logo, les skills, les agents, les hooks et le moteur."""
     manifest_path = root / "plugin.json"
     if not manifest_path.is_file():
         report.error("plugin.json introuvable à la racine du plugin.")
@@ -331,12 +331,10 @@ def validate_plugin(root: Path, report: Report) -> None:
         "evaluator",
         "eval_checks",
         "init_workspace",
-        "server",
     }
     exec_scripts = {
         Path("scripts/validate.py"),
         Path("scripts/init_workspace.py"),
-        Path("sidecars/live-widget/server.py"),
         Path("hooks/pre_tool_guard.py"),
         Path("hooks/post_tool_format.py"),
         Path("hooks/session_start_caveman.py"),
@@ -356,25 +354,11 @@ def validate_plugin(root: Path, report: Report) -> None:
             if py_file.relative_to(root) in exec_scripts:
                 check_executable(py_file, report)
 
-    sidecar_json = root / "sidecars/live-widget/sidecar.json"
-    if sidecar_json.is_file():
-        try:
-            sc_raw = sidecar_json.read_text(encoding="utf-8")
-            if "${workspaceFolder}" in sc_raw:
-                report.error("sidecar.json contient le placeholder non supporté '${workspaceFolder}'.")
-            sc = json.loads(sc_raw)
-            for arg in sc.get("args", []):
-                if str(arg).endswith(".py"):
-                    target = sidecar_json.parent / arg
-                    if not target.is_file():
-                        report.error(f"Script Sidecar manquant : {target}")
-                    else:
-                        check_executable(target, report)
-                        check_stdlib_only(target, report, local_modules=local_mods)
-        except Exception as exc:
-            report.error(f"sidecar.json invalide : {exc}")
-    else:
-        report.warn("sidecars/live-widget/sidecar.json absent.")
+    if (root / "sidecars" / "live-widget").exists():
+        report.warn(
+            "Vestige transitoire détecté : sidecars/live-widget/ doit être retiré "
+            "(remplacé par /gravity dashboard)."
+        )
 
     for legacy_skill in ("gravity", "gravity-review", "gravity-evals", "gravity-status"):
         if (root / "skills" / legacy_skill).exists():

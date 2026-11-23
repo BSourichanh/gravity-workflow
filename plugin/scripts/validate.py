@@ -74,27 +74,6 @@ def _fix_python_cmd(plugin_root: Path) -> int:
             print(f"[FIXED] {hooks_json} -> '{py_cmd}'")
             updated_files += 1
 
-    sidecar_json = plugin_root / "sidecars/live-widget/sidecar.json"
-    if sidecar_json.is_file():
-        sc_data = json.loads(sidecar_json.read_text(encoding="utf-8"))
-        changed = False
-        if isinstance(sc_data, dict) and sc_data.get("command") == "python3":
-            parts = py_cmd.split()
-            sc_data["command"] = parts[0]
-            extra_args = parts[1:]
-            if extra_args:
-                existing = [str(a) for a in (sc_data.get("args") or [])]
-                if existing[: len(extra_args)] != extra_args:
-                    sc_data["args"] = extra_args + existing
-            changed = True
-        if changed:
-            sidecar_json.write_text(
-                json.dumps(sc_data, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
-            print(f"[FIXED] {sidecar_json} -> '{py_cmd}'")
-            updated_files += 1
-
     if updated_files == 0:
         print(f"[INFO]  Aucun fichier à adapter vers '{py_cmd}'.")
     return 0
@@ -124,7 +103,7 @@ def main() -> int:
     parser.add_argument(
         "--fix-python-cmd",
         action="store_true",
-        help="Adapte 'python3' vers 'python' ou 'py -3' dans hooks.json et sidecar.json sous Windows.",
+        help="Adapte 'python3' vers 'python' ou 'py -3' dans hooks.json sous Windows.",
     )
     args = parser.parse_args()
 

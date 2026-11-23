@@ -115,10 +115,6 @@ class TestGravityInstaller(unittest.TestCase):
                 installed_hooks = (target / "hooks.json").read_text(encoding="utf-8")
                 self.assertNotIn('"python3 ', installed_hooks)
                 self.assertIn("hooks/session_start_caveman.py", installed_hooks)
-                sidecar_cfg = json.loads(
-                    (target / "sidecars" / "live-widget" / "sidecar.json").read_text(encoding="utf-8")
-                )
-                self.assertNotEqual(sidecar_cfg.get("command"), "python3")
 
         source_hooks_after = (install.PLUGIN_SOURCE / "hooks.json").read_text(encoding="utf-8")
         self.assertEqual(source_hooks_before, source_hooks_after)
@@ -187,7 +183,7 @@ class TestGravityInstaller(unittest.TestCase):
 
             def locked_rename(src: str, dst: str) -> None:
                 if Path(src).resolve() == target.resolve():
-                    err = PermissionError(13, "Directory locked by running sidecar")
+                    err = PermissionError(13, "Directory locked by running process")
                     err.winerror = 32  # type: ignore[attr-defined]
                     raise err
                 real_rename(src, dst)
@@ -198,7 +194,6 @@ class TestGravityInstaller(unittest.TestCase):
 
             self.assertTrue((target / "plugin.json").is_file())
             self.assertTrue((target / "hooks" / "pre_tool_guard.py").is_file())
-            self.assertTrue((target / "sidecars" / "live-widget" / "server.py").is_file())
             self.assertFalse(stale_file.exists())
             self.assertFalse(stale_sub.parent.exists())
             self.assertEqual(
@@ -213,15 +208,15 @@ class TestGravityInstaller(unittest.TestCase):
             ]
             self.assertEqual(leftovers, [])
 
-            # Sur Windows, valider aussi avec un vrai verrou OS sur sidecars/live-widget
+            # Sur Windows, valider aussi avec un vrai verrou OS sur hooks/
             if os.name == "nt":
                 stale_win = target / "stale_win.txt"
                 stale_win.write_text("stale-win", encoding="utf-8")
                 readme.write_text("OUTDATED WIN", encoding="utf-8")
-                sidecar_dir = target / "sidecars" / "live-widget"
+                hooks_dir = target / "hooks"
                 holder = subprocess.Popen(
                     [sys.executable, "-c", "import time; time.sleep(60)"],
-                    cwd=str(sidecar_dir),
+                    cwd=str(hooks_dir),
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
@@ -229,7 +224,7 @@ class TestGravityInstaller(unittest.TestCase):
                     rc_win = _run_quiet(["--target", str(target), "--force", "--skip-validate"])
                     self.assertEqual(rc_win, 0)
                     self.assertTrue((target / "plugin.json").is_file())
-                    self.assertTrue((sidecar_dir / "server.py").is_file())
+                    self.assertTrue((hooks_dir / "pre_tool_guard.py").is_file())
                     self.assertFalse(stale_win.exists())
                     self.assertEqual(
                         readme.read_bytes(),
@@ -504,7 +499,21 @@ class TestGravityInstaller(unittest.TestCase):
             self.assertEqual(_run_quiet(["--target", str(target), "--dry-run"]), 0)
             self.assertFalse(target.parent.exists())
 
+            rc_dry_strict, out_dry_strict, _ = _run_capture(
+                ["--target", str(target), "--dry-run", "--strict", "--skip-validate"]
+            )
+            self.assertEqual(rc_dry_strict, 0)
+            self.assertIn("validate.py --strict", out_dry_strict)
+            self.assertFalse(target.parent.exists())
+
             self.assertEqual(_run_quiet(["--target", str(target), "--check"]), 0)
+            self.assertFalse(target.parent.exists())
+
+            rc_chk_strict, out_chk_strict, _ = _run_capture(
+                ["--target", str(target), "--check", "--strict"]
+            )
+            self.assertEqual(rc_chk_strict, 0)
+            self.assertIn("Strict validation: PASSED", out_chk_strict)
             self.assertFalse(target.parent.exists())
 
     def test_uninstall_removes_installed_gravity(self) -> None:

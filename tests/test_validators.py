@@ -339,6 +339,21 @@ class TestPluginValidator(unittest.TestCase):
                 validate_plugin(plugin_dir, rep_ref)
                 self.assertTrue(any("style-examples.md" in err for err in rep_ref.errors), rep_ref.errors)
 
+    def test_warns_only_if_retired_sidecar_vestige_reappears(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp) / "plugin"
+            self._build_minimal_plugin(plugin_dir)
+            with mock.patch.object(plugin_validator, "run_hook_dry_runs"):
+                rep_clean = Report()
+                validate_plugin(plugin_dir, rep_clean)
+                self.assertTrue(rep_clean.ok(strict=True), f"Warnings/erreurs inattendus: {rep_clean.errors} {rep_clean.warnings}")
+
+                (plugin_dir / "sidecars" / "live-widget").mkdir(parents=True)
+                rep_vestige = Report()
+                validate_plugin(plugin_dir, rep_vestige)
+                self.assertEqual(rep_vestige.errors, [])
+                self.assertTrue(any("sidecars/live-widget" in w for w in rep_vestige.warnings), rep_vestige.warnings)
+
 
 class TestFrontmatterParser(unittest.TestCase):
     def test_scalars_blocks_and_lists(self) -> None:

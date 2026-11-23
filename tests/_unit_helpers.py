@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Helpers partagés pour les suites de tests unitaires (100 % stdlib)."""
 
-import importlib.util
 import os
 import sys
 import tempfile
@@ -20,16 +19,6 @@ def ensure_plugin_paths() -> Path:
         if path_str not in sys.path:
             sys.path.insert(0, path_str)
     return PLUGIN_ROOT
-
-
-def load_live_widget_server():
-    """Charge dynamiquement plugin/sidecars/live-widget/server.py."""
-    server_path = PLUGIN_ROOT / "sidecars/live-widget/server.py"
-    spec = importlib.util.spec_from_file_location("live_widget_server", server_path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def make_gravity_workspace(base: Path, name: str = "gravity_ws") -> Path:

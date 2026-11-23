@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests unitaires de state_writer et du registre centralisé du sidecar live-widget."""
+"""Tests unitaires de state_writer et du registre centralisé live_workspaces.json."""
 
 import json
 import os
@@ -8,14 +8,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from _unit_helpers import ensure_plugin_paths, load_live_widget_server
+from _unit_helpers import ensure_plugin_paths
 
 ensure_plugin_paths()
 
 import state_writer  # noqa: E402
 
 
-class TestStateWriterAndSidecarWidget(unittest.TestCase):
+class TestStateWriterAndCentralRegistry(unittest.TestCase):
     def test_atomic_write_and_max_events_cap(self) -> None:
         prev_skip = os.environ.get("GRAVITY_WORKFLOW_SKIP_REGISTRY")
         os.environ["GRAVITY_WORKFLOW_SKIP_REGISTRY"] = "1"
@@ -44,7 +44,6 @@ class TestStateWriterAndSidecarWidget(unittest.TestCase):
                 os.environ["GRAVITY_WORKFLOW_SKIP_REGISTRY"] = prev_skip
 
     def test_centralized_storage_precedence_and_monkeypatch_compat(self) -> None:
-        server = load_live_widget_server()
         env_keys = (
             "GRAVITY_WORKFLOW_HOME",
             "GRAVITY_HOME",
@@ -72,8 +71,6 @@ class TestStateWriterAndSidecarWidget(unittest.TestCase):
                         state_writer.resolve_registry_path(),
                         (fake_home / ".gemini" / "gravity" / "workflow" / "live_workspaces.json").resolve(),
                     )
-                    self.assertEqual(server.default_workflow_home(), state_writer.default_workflow_home())
-                    self.assertEqual(server.resolve_registry_path(), state_writer.resolve_registry_path())
 
                     os.environ["GRAVITY_HOME"] = str(gravity_home)
                     self.assertEqual(
@@ -81,7 +78,7 @@ class TestStateWriterAndSidecarWidget(unittest.TestCase):
                         (gravity_home / "workflow").resolve(),
                     )
                     self.assertEqual(
-                        server.resolve_registry_path(),
+                        state_writer.resolve_registry_path(),
                         (gravity_home / "workflow" / "live_workspaces.json").resolve(),
                     )
 
@@ -89,10 +86,6 @@ class TestStateWriterAndSidecarWidget(unittest.TestCase):
                     self.assertEqual(state_writer.default_workflow_home(), wf_home.resolve())
                     self.assertEqual(
                         state_writer.resolve_registry_path(),
-                        (wf_home / "live_workspaces.json").resolve(),
-                    )
-                    self.assertEqual(
-                        server.resolve_registry_path(),
                         (wf_home / "live_workspaces.json").resolve(),
                     )
 
@@ -106,7 +99,8 @@ class TestStateWriterAndSidecarWidget(unittest.TestCase):
                     )
                     reg_file = wf_home / "live_workspaces.json"
                     self.assertTrue(reg_file.is_file())
-                    registered = server._load_registered_workspaces()
+                    reg_payload = json.loads(reg_file.read_text(encoding="utf-8"))
+                    registered = reg_payload["workspaces"]
                     self.assertEqual(len(registered), 1)
                     self.assertEqual(Path(registered[0]["state_path"]).resolve(), state_file.resolve())
                     self.assertEqual(Path(registered[0]["workspace_path"]).resolve(), ws.resolve())
@@ -116,21 +110,16 @@ class TestStateWriterAndSidecarWidget(unittest.TestCase):
                     self.assertEqual(default_state.parent.parent, wf_home.resolve() / "workspaces")
                     self.assertIn(state_writer.workspace_slug_hash(ws), str(default_state))
 
-                    # Explicit REGISTRY_PATH monkeypatch remains supported in both state_writer and server
+                    # Explicit REGISTRY_PATH monkeypatch remains supported in state_writer
                     patched_reg = base / "patched" / "live_workspaces.json"
                     with mock.patch.object(state_writer, "REGISTRY_PATH", patched_reg):
                         self.assertEqual(state_writer.resolve_registry_path(), patched_reg)
-                        self.assertEqual(server.resolve_registry_path(), patched_reg)
                         state_writer.update_live_state(
                             stage="patched",
                             state_path=state_file,
                             workspace_root=ws,
                         )
                         self.assertTrue(patched_reg.is_file())
-
-                    server_reg = base / "server_only" / "live_workspaces.json"
-                    with mock.patch.object(server, "REGISTRY_PATH", server_reg):
-                        self.assertEqual(server.resolve_registry_path(), server_reg)
 
                     os.environ["GRAVITY_WORKFLOW_REGISTRY_PATH"] = str(explicit_reg)
                     self.assertEqual(state_writer.resolve_registry_path(), explicit_reg.resolve())

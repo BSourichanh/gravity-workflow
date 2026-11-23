@@ -25,7 +25,6 @@ LEGACY_REGISTRY_PATH = Path.home() / ".gravity" / "live_workspaces.json"
 EXEC_SCRIPTS: Tuple[str, ...] = (
     "scripts/validate.py",
     "scripts/init_workspace.py",
-    "sidecars/live-widget/server.py",
     "hooks/pre_tool_guard.py",
     "hooks/post_tool_format.py",
     "hooks/session_start_caveman.py",
@@ -243,26 +242,18 @@ def print_next_steps(
         print("  - Open any project in Antigravity and run /gravity-workflow to initialize it,")
         print("    or run: python install.py --init-workspace <target-project-dir>")
     print(
-        "\nOptional (Antigravity App Live Widget sidecar on http://127.0.0.1:4789):\n"
-        "  Manually add the following block to ~/.gemini/config/config.json\n"
-        "  (never let an agent edit config.json directly):"
-    )
-    print(
-        '  {\n'
-        '    "sidecars": {\n'
-        '      "gravity-workflow/live-widget": {\n'
-        '        "enabled": true\n'
-        '      }\n'
-        '    }\n'
-        '  }'
+        "\nUnified Dashboard (Antigravity App MCP App):\n"
+        "  - Invoke /gravity dashboard (from the 'gravity' Core plugin) to view live workflow state.\n"
+        "  - Note: the legacy HTTP sidecar (port 4789) is retired; if an older entry remains in\n"
+        "    ~/.gemini/config/config.json, manually remove 'sidecars.\"gravity-workflow/live-widget\"'."
     )
     if legacy_kept or LEGACY_REGISTRY_PATH.is_file():
         print(
             "\nMigration note (from v0.1.x 'gravity'):\n"
             "  - In existing initialized projects, rename .agents/gravity/ -> .agents/gravity-workflow/\n"
             "    (or re-run /gravity-workflow init).\n"
-            "  - Update any manual 'gravity/live-widget' entry in ~/.gemini/config/config.json to\n"
-            "    'gravity-workflow/live-widget', and optionally run:\n"
+            "  - Remove any manual 'gravity/live-widget' or 'gravity-workflow/live-widget' entry\n"
+            "    from ~/.gemini/config/config.json, and optionally run:\n"
             "      python install.py --workspace-only --clean-legacy"
         )
 
@@ -273,6 +264,8 @@ def check_environment(
     scope: str,
     method: str,
     legacy_dir: Optional[Path] = None,
+    *,
+    strict: bool = False,
 ) -> int:
     """Inspect prerequisites and current install status without modifying anything."""
     src_manifest = read_plugin_manifest(plugin_src) or {}
@@ -318,6 +311,13 @@ def check_environment(
             print(f"  Core plugin      : detected at {legacy_dir} (v{core_ver}) [preserved]")
     if LEGACY_REGISTRY_PATH.is_file():
         print(f"  Legacy registry  : present ({LEGACY_REGISTRY_PATH})")
+    if strict:
+        val_proc = run_plugin_validation(plugin_src)
+        if val_proc.returncode != 0:
+            print("  Strict validation: FAILED", file=sys.stderr)
+            _print_process_output(val_proc)
+            return 1
+        print("  Strict validation: PASSED (0 error, 0 warning)")
     return 0
 
 
@@ -649,7 +649,7 @@ def install_copy(
                 except (OSError, shutil.Error) as sync_exc:
                     print(
                         f"[ERROR] In-place update failed because a target file is locked: {sync_exc}\n"
-                        "Stop any running Gravity Workflow sidecar/process and re-run with --force.",
+                        "Stop any running Gravity Workflow process and re-run with --force.",
                         file=sys.stderr,
                     )
                     return 1
@@ -689,7 +689,7 @@ def install_copy(
     return 0
 
 
-def install_agy(plugin_src: Path, *, dry_run: bool = False) -> int:
+def install_agy(plugin_src: Path, *, dry_run: bool = False, strict: bool = False) -> int:
     """Validate and install Gravity Workflow using the Antigravity CLI ('agy')."""
     agy_bin = shutil.which("agy")
     if not agy_bin:
@@ -700,12 +700,16 @@ def install_agy(plugin_src: Path, *, dry_run: bool = False) -> int:
         )
         return 1
 
+    val_cmd = [agy_bin, "plugin", "validate", str(plugin_src)]
+    if strict:
+        val_cmd.append("--strict")
+
     if dry_run:
-        print(f"[DRY-RUN] {agy_bin} plugin validate {plugin_src}")
+        print(f"[DRY-RUN] {' '.join(val_cmd)}")
         print(f"[DRY-RUN] {agy_bin} plugin install {plugin_src}")
         return 0
 
-    val_proc = _run_subprocess([agy_bin, "plugin", "validate", str(plugin_src)])
+    val_proc = _run_subprocess(val_cmd)
     _print_process_output(val_proc)
     if val_proc.returncode != 0:
         print("[ERROR] 'agy plugin validate' failed.", file=sys.stderr)
@@ -1540,6 +1544,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip strict validation during install and workspace initialization.",
     )
     parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Enforce strict validation (enabled by default; overrides --skip-validate and validates source in --check).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Preview planned operations without modifying files or running mutating commands.",
@@ -1694,13 +1703,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.scope,
             args.method,
             legacy_dir=legacy_dir,
+            strict=args.strict,
         )
 
     if is_uninstall_mode:
         return _run_uninstall(args, target_dir)
 
+    effective_skip_validate = bool(args.skip_validate and not args.strict)
+
     if args.method == "agy":
-        rc = install_agy(PLUGIN_SOURCE, dry_run=args.dry_run)
+        rc = install_agy(PLUGIN_SOURCE, dry_run=args.dry_run, strict=args.strict)
     else:
         assert target_dir is not None
         rc = install_copy(
@@ -1708,7 +1720,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             target_dir,
             force=args.force,
             no_fix_python=args.no_fix_python,
-            skip_validate=args.skip_validate,
+            skip_validate=effective_skip_validate,
             dry_run=args.dry_run,
         )
 
@@ -1734,7 +1746,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.init_workspace,
             mode=args.mode,
             force_workspace=args.force_workspace,
-            skip_validate=args.skip_validate,
+            skip_validate=effective_skip_validate,
             dry_run=args.dry_run,
         )
         if ws_rc != 0:

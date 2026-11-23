@@ -185,7 +185,7 @@ def _atomic_write_json(target: Path, payload: Dict[str, Any]) -> None:
 
 
 def _register_active_workspace(ws_root: Path, state_file: Path) -> None:
-    """Enregistre le workspace actif dans live_workspaces.json pour le Sidecar."""
+    """Enregistre le workspace actif dans live_workspaces.json pour le dashboard gravity Core."""
     if os.environ.get("GRAVITY_WORKFLOW_SKIP_REGISTRY") == "1":
         return
     try:

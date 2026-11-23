@@ -13,7 +13,7 @@ Conduis l'échange autour de 5 axes obligatoires :
 2. **Livrable principal** : quel artefact concret est attendu en sortie (Pull Request, patch de code, rapport Markdown, audit JSON, migration) ?
 3. **Sources de vérité** : quels documents, schémas, tests ou référentiels font foi en cas de doute ?
 4. **3 Lignes rouges absolues** : quels sont les 3 interdits formels qu'aucun agent ne doit jamais franchir (ex. accès aux secrets, commandes destructrices, modification non autorisée de production) ?
-5. **Plan, modèles & surfaces cibles** : l'équipe utilise-t-elle **Free/Plus** (`Gemini 3.8 Flash` uniquement côté Gemini), **Google AI Pro/Ultra** (`Gemini 4 Neon`, `Carbon`, `Argon`, `Hydrogen`, `Orchestrator`, `/boost`, `/teamwork`), **Gemini Enterprise / Pay As You Go**, ou **`GEMINI_API_KEY`** ? Quelles surfaces sont visées (App, CLI `agy`, IDE) ? Ce choix conditionne l'usage de `model: pro` vs `inherit`, du sidecar (App uniquement) et de `trigger: manual` (absent du CLI).
+5. **Plan, modèles & surfaces cibles** : l'équipe utilise-t-elle **Free/Plus** (`Gemini 3.8 Flash` uniquement côté Gemini), **Google AI Pro/Ultra** (`Gemini 4 Neon`, `Carbon`, `Argon`, `Hydrogen`, `Orchestrator`, `/boost`, `/teamwork`), **Gemini Enterprise / Pay As You Go**, ou **`GEMINI_API_KEY`** ? Quelles surfaces sont visées (App, CLI `agy`, IDE) ? Ce choix conditionne l'usage de `model: pro` vs `inherit`, du cockpit MCP App `/gravity dashboard` (App uniquement) et de `trigger: manual` (absent du CLI).
 
 ## Règle de gestion des ambiguïtés
 Toute question ouverte, idée hors périmètre ou arbitrage différé durant l'interview est immédiatement consigné dans `.agents/gravity-workflow/BACKLOG.md` afin de ne pas bloquer l'avancement.

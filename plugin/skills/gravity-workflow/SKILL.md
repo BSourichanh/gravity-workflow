@@ -57,4 +57,4 @@ Charge **uniquement** la fiche requise :
 - `references/06-safety-hooks.md` *(Garde-fous & hooks)*
 - `references/07-eval-suite.md` *(Suite d'évaluations)*
 - `references/08-session-learning.md` *(Adaptation `evo`, Metrics & `/learn`)*
-- `references/09-observability-dashboard.md` *(Observabilité, `status` & Live Widget)*
+- `references/09-observability-dashboard.md` *(Observabilité, `status` & `/gravity dashboard`)*
