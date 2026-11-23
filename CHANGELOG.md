@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-24
+
 ### Changed
 - **Retired Transitional Sidecar `4789`, UX Docs Alignment & `--strict` CLI Parity (`plugin/config/module.json`, `plugin/plugin.json`, `install.py`, `plugin/scripts/`, `tests/`, `README.md`, `plugin/README.md`, `docs/`):**
   - Removed the transitional HTTP/SSE sidecar directory (`plugin/sidecars/live-widget/server.py`, `sidecar.json`), switched `plugin/config/module.json` `ui` from `transition-sidecar` to `{"mode": "none", "target": "gravity"}` (replaced by `gravity` Core's unified `/gravity dashboard` MCP App), and preserved atomic `state_writer.py` persistence (`live_workspaces.json` + `workspaces/<slug>-<sha256_8>/live_state.json`).
