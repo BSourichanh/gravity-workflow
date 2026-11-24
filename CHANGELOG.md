@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Root-Only `gravity-metrics` Session Closure Protocol (`plugin/skills/gravity-workflow/references/08-session-learning.md`, `plugin/skills/gravity-workflow/SKILL.md`, `docs/observability.md`):**
+  - Documented optional post-commit/push `gravity-metrics` archival (`cli.py archive <conversation_id> -l "<projet>-<slug>" --workspace .`, with `--update-sealed` on a later `git push` and never `--force`) with silent no-op when `gravity-metrics` is not installed and zero Python coupling.
+  - Explicitly restricted archival to root mono-repo sessions, forbidding execution by subagents (`planner`, `builder`, `reviewer`), `swarm` workers, and Gravity Bridge child sessions (`[GRAVITY-BRIDGE | ...]` or `depth >= 1`).
+
 ### Fixed
 - **False Positive in `PreToolUse` Harness Protection on Read Commands with `2>/dev/null` (`plugin/hooks/policy/git_and_fs.py`, `tests/test_safety_paths.py`):**
   - Separated `cmd_writes_or_execs` (`HARNESS_WRITE_OR_EXEC_HEADS`, `_is_python_head`, `sed -i`) from `has_redir` (`_has_unquoted_redirection`) in `_segment_targets_harness()` so non-writing commands with redirections (e.g. `grep -rn ... hooks/ 2>/dev/null`, `ls ... 2>/dev/null`, `cat ... 2>/dev/null`) only inspect redirection targets (`_extract_redirection_targets()`) against `is_harness_protected()`, while preserving strict `deny` on write/exec commands and output redirections (`>`, `>>`) targeting protected harness or `.agents/rules/` paths.

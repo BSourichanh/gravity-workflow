@@ -8,16 +8,17 @@ description: Chef d'orchestre unifié Gravity Workflow : 3 profils (quick, stand
 *(Skill principal `/gravity-workflow` ou `/gravity-workflow:gravity-workflow`, compagnon `/caveman`.)*
 
 ## Contraintes absolues
-- **Stockage centralisé, zéro pollution :** hooks, `Live` et `profile_engine.py` fonctionnent sur tout dépôt sans `init` sous `$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/workspaces/<slug>-<sha256_8>/` (repli lecture seule `.agents/gravity-workflow/profile.json`). `.agents/` reste optionnel (`init`).
+- **Stockage centralisé :** hooks, `Live` et `profile_engine.py` tournent sans `init` sous `$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/workspaces/<slug>-<sha256_8>/` (repli RO `.agents/gravity-workflow/profile.json`). `.agents/` reste optionnel (`init`).
 - **Garde-fous `PreToolUse` fail-closed toujours ON :** secrets, commandes destructrices et auto-protection restent actifs même avec `unsafe` / `--no-verify`.
 - **Zéro jargon mécanique & anti-écrasement :** n'utilise jamais de numérotation artificielle ; n'écrase jamais un fichier existant sans diff validé.
 - **Git & versioning (chef d'orchestre uniquement) :** avant `commit`/`push`/tag/release (accord requis), appliquer `.agents/rules/05-git-versioning.md` (`dev`/branche dédiée, vérifs, *Conventional Commits*, SemVer + `CHANGELOG.md`, tags `vX.Y.Z`) ; interdit aux sous-agents et `swarm`.
+- **Clôture `gravity-metrics` (racine mono-dépôt seule) :** après vérifs et `commit`/`push`, archiver via `references/08-session-learning.md` (`--update-sealed` si `push` ultérieur) ; interdit aux sous-agents, `swarm` et enfants Bridge.
 - **Budget & outils natifs :** `AGENTS.md`/`GEMINI.md` + règles `always_on` `< 20 000` tokens (`<= 24 000` o/fichier). Appelle directement `run_workflow`, `swarm`, `ask_question`, `invoke_subagent` ; recommande `/boost`, `/teamwork`, `/grill-me`, `/learn` à l'utilisateur.
 - **Python & profil :** utilise `python3`, `python` ou `py -3` selon `PATH` ; passe toujours par `observability/profile_engine.py`.
 
 ## 1. Grammaire 3 axes & CLI (`profile_engine.py`)
 
-Mots-clés positionnels en tête (**mot entier** uniquement) ou sous-commandes (`status`, `evals`, `init` seuls ou avec leurs arguments dédiés) :
+Mots-clés positionnels en tête (**mot entier**) ou sous-commandes (`status`, `evals`, `init`) :
 - **Mode (`quick` | `standard` | `deep` | `evo`) :** `quick`*(low)*, `standard`*(défaut, medium)*, `deep`*(high/ultra)* verrouillent (`locked: true`) ; `evo`*(evolutive)* active le mode consultatif (`locked: false`, `suggested_profile` au `Stop` avec signaux `metrics` bornés `[-5, +10]`). `slow`/`fast` tolérés sans effet.
 - **Vérif éphémère (`unsafe` | `--no-verify`) :** désactive revue/tests pour **1 tâche ou 1 `run_workflow`**, jamais persistée (`PreToolUse` reste ON).
 - **Concision (`/caveman`) :** défaut `lite` (`auto` passe à `full` si contexte/coût output élevé via `metrics` ; `evals/` exclu).

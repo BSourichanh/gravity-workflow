@@ -23,6 +23,24 @@ Ne jamais « bricoler » un prompt global de façon empirique. Dès qu'une corre
    - Ajouter immédiatement un nouveau cas dans `.agents/gravity-workflow/evals/cases.json` reproduisant l'anomalie corrigée (avec au moins un prédicat `auto_checks`).
    - Rejouer `/gravity-workflow evals` (via l'outil `run_workflow`) pour vérifier l'intégration avant la prochaine release.
 
+## 3. Clôture finale `gravity-metrics` (session racine mono-dépôt uniquement)
+Dans une session `/gravity-workflow` autonome (hors atelier `gravity-architect`), la clôture finale de la fenêtre `gravity-metrics` évite de laisser la session dans la file « À archiver ». Ce mécanisme reste **100 % découplé en Python** (zéro import ni écriture depuis le plugin) et doit être un **no-op silencieux** si `~/.gemini/config/plugins/gravity-metrics/scripts/cli.py` n'existe pas.
+
+- **Déclenchement :** uniquement **après** le passage au vert de toutes les vérifications obligatoires, le `git commit` et l'éventuel `git push` demandé par l'utilisateur.
+- **Commande en toute fin de séquence :**
+  ```bash
+  if [ -f "$HOME/.gemini/config/plugins/gravity-metrics/scripts/cli.py" ]; then
+    python3 ~/.gemini/config/plugins/gravity-metrics/scripts/cli.py archive <conversation_id> -l "<projet>-<slug>" --workspace .
+  fi
+  ```
+- **Mise à jour post-archivage :** si un `git push` est demandé un tour plus tard dans la même conversation déjà archivée, mettre à jour l'archive scellée via `--update-sealed` (**sans jamais passer `--force`**) :
+  ```bash
+  python3 ~/.gemini/config/plugins/gravity-metrics/scripts/cli.py archive <conversation_id> --update-sealed --workspace .
+  ```
+- **Interdiction absolue de périmètre :**
+  - Strictement réservé à l'agent **racine** d'une session mono-dépôt.
+  - **Interdit** aux sous-agents (`planner`, `builder`, `reviewer`), aux workers `swarm` et aux conversations enfants Gravity Bridge (`[GRAVITY-BRIDGE | ...]` ou `depth >= 1`), afin de ne jamais sceller prématurément une conversation enfant avant son callback vers l'atelier appelant (ces sessions étant déjà agrégées par la session racine).
+
 ## Checkpoint déterministe
 - Dry-run sur `stop_session_logger.py` (avec un payload `Stop` Antigravity) alimente `runs.jsonl` et met à jour `profile.json` dans le stockage centralisé `$GRAVITY_HOME/workflow/workspaces/<hash>/` (zéro fichier écrit dans le workspace cible), émet `{}` et sort en `exit=0`.
 - Au moins un cycle complet de double boucle `/learn` (1 règle conditionnelle + 1 cas dans `.agents/gravity-workflow/evals/cases.json`) est documenté ou vérifié.
