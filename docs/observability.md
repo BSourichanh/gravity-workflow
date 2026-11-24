@@ -34,7 +34,7 @@ Les formats compacts produits par `profile_engine.format_mode_badge()` et `profi
 ## Activation utilisateur (App & CLI)
 
 ### 1. Cockpit unifié `/gravity dashboard` (`Antigravity App`)
-Invoquer `/gravity dashboard` depuis le plugin Core `gravity` (ou ouvrir **Plugins → Gravity**). Si une ancienne entrée manuelle `"gravity-workflow/live-widget"` ou `"gravity/live-widget"` subsiste sous `"sidecars"` dans `~/.gemini/config/config.json`, la retirer manuellement *(un agent ne doit jamais modifier `config.json`)*.
+Invoquer `/gravity dashboard` depuis le plugin Core `gravity` (ou ouvrir la **barre latérale gauche (`Gravity`)** ou le **menu `+` du panneau latéral droit**). Si une ancienne entrée manuelle `"gravity-workflow/live-widget"` ou `"gravity/live-widget"` subsiste sous `"sidecars"` dans `~/.gemini/config/config.json`, la retirer manuellement *(un agent ne doit jamais modifier `config.json`)*.
 
 ### 2. `/statusline` (`CLI agy`)
 Configurer dans `~/.gemini/antigravity-cli/settings.json` :

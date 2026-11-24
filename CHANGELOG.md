@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **False Positive in `PreToolUse` Harness Protection on Read Commands with `2>/dev/null` (`plugin/hooks/policy/git_and_fs.py`, `tests/test_safety_paths.py`):**
   - Separated `cmd_writes_or_execs` (`HARNESS_WRITE_OR_EXEC_HEADS`, `_is_python_head`, `sed -i`) from `has_redir` (`_has_unquoted_redirection`) in `_segment_targets_harness()` so non-writing commands with redirections (e.g. `grep -rn ... hooks/ 2>/dev/null`, `ls ... 2>/dev/null`, `cat ... 2>/dev/null`) only inspect redirection targets (`_extract_redirection_targets()`) against `is_harness_protected()`, while preserving strict `deny` on write/exec commands and output redirections (`>`, `>>`) targeting protected harness or `.agents/rules/` paths.
+- **Dashboard Access Label in `docs/observability.md` (`docs/observability.md`):**
+  - Updated the `/gravity dashboard` access instructions to reference `la **barre latérale gauche (`Gravity`)** ou le **menu `+` du panneau latéral droit**`.
 
 ## [0.4.0] - 2026-11-24
 
