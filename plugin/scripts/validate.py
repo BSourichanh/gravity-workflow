@@ -67,10 +67,8 @@ def _fix_python_cmd(plugin_root: Path) -> int:
                                 h["command"] = new_cmd
                                 changed = True
         if changed:
-            hooks_json.write_text(
-                json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
+            with hooks_json.open("w", encoding="utf-8", newline="\n") as fh:
+                fh.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
             print(f"[FIXED] {hooks_json} -> '{py_cmd}'")
             updated_files += 1
 

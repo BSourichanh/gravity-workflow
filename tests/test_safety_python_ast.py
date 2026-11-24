@@ -14,6 +14,7 @@ from _unit_helpers import (
 ensure_plugin_paths()
 
 import safety_policy  # noqa: E402
+from policy.python_ast import _raw_code_hard_deny_check  # noqa: E402
 
 
 class TestSafetyPythonAst(unittest.TestCase):
@@ -170,6 +171,112 @@ class TestSafetyPythonAst(unittest.TestCase):
                 "python -c \"import re; pat = r'\\.env'; print(re.search(pat, 'x'))\"",
             )
             assert_run_commands_decision(self, safety_policy, (gravity_ws, plain_ws), allow_cmds, "allow", "ast_allow")
+
+    def test_harness_readonly_allowed_and_mutations_or_secrets_denied(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ws_root = make_gravity_workspace(base, "ws_ro")
+            plain_ws = base / "plain_ro"
+            plain_ws.mkdir()
+
+            readonly_allow_cmds = (
+                'python -c "from pathlib import Path; print(Path(\'.agents/hooks.json\').read_text(encoding=\'utf-8\'))"',
+                'python -c "from pathlib import Path; print(len(Path(\'.agents/rules/01-safety-boundaries.md\').read_bytes()))"',
+                'python -c "print(open(\'.agents/hooks.json\').read())"',
+                'python -c "print(open(\'.agents/hooks.json\', \'r\', encoding=\'utf-8\').read())"',
+                'python -c "with open(\'.agents/hooks.json\', \'rb\') as f: print(len(f.read()))"',
+                'python -c "from pathlib import Path\nwith Path(\'.agents/hooks.json\').open(\'rt\', encoding=\'utf-8\') as f:\n    print(f.read().splitlines())"',
+                'python -c "import json; print(json.load(open(\'.agents/hooks.json\')))"',
+                'python -c "from pathlib import Path; p = Path(\'.agents/rules/01-safety-boundaries.md\'); print(p.exists(), p.is_file(), p.is_dir(), p.is_symlink(), p.stat().st_size, p.lstat().st_size, p.name, p.stem, p.suffix, p.parent.name, p.parts)"',
+                'python -c "from pathlib import Path\nfor f in sorted(Path(\'.agents/gravity-workflow/hooks\').glob(\'*.py\')):\n    print(f.name, len(f.read_text().splitlines()))"',
+                'python -c "from pathlib import Path; print([f.name for f in Path(\'.agents/gravity-workflow/hooks\').rglob(\'*.py\')])"',
+                'python -c "from pathlib import Path\nfor f in Path(\'.agents/gravity-workflow/hooks\').iterdir():\n    if f.is_file(): print(f.read_text())"',
+                'python -c "import os; print(sorted(os.listdir(\'.agents/gravity-workflow/hooks\')))"',
+                'python -c "import os\nwith os.scandir(\'.agents/gravity-workflow/hooks\') as it:\n    print([e.name for e in it])"',
+                'python -c "import os\nfor r, dirs, files in os.walk(\'.agents/gravity-workflow/hooks\'):\n    print(r, len(files))"',
+                'python -c "import os; p = os.path.join(\'.agents\', \'hooks.json\'); print(os.path.exists(p), os.access(p, os.R_OK), os.fspath(p))"',
+                'python -c "p = \'.agents/hooks.json\'; compile(open(p).read(), p, \'exec\')"',
+                'python -c "import os; print(repr(str(os.path.join(\'.agents\', \'hooks.json\'))))"',
+            )
+            assert_run_commands_decision(
+                self, safety_policy, (ws_root, plain_ws), readonly_allow_cmds, "allow", "harness_ro_allow"
+            )
+
+            mutation_and_secret_deny_cmds = (
+                'python -c "from pathlib import Path; Path(\'.agents/hooks.json\').write_text(\'{}\')"',
+                'python -c "from pathlib import Path; Path(\'.agents/hooks.json\').write_bytes(b\'{}\')"',
+                'python -c "open(\'.agents/hooks.json\', \'w\').write(\'{}\')"',
+                'python -c "open(\'.agents/hooks.json\', \'a\').write(\'{}\')"',
+                'python -c "open(\'.agents/hooks.json\', \'r+\').write(\'{}\')"',
+                'python -c "m = input(); open(\'.agents/hooks.json\', m)"',
+                'python -c "from pathlib import Path; Path(\'.agents/hooks.json\').open(\'w\').write(\'{}\')"',
+                'python -c "from pathlib import Path; Path(\'.agents/hooks.json\').unlink()"',
+                'python -c "from pathlib import Path; Path(\'.agents/gravity-workflow/hooks\').rmdir()"',
+                'python -c "from pathlib import Path; Path(\'.agents/hooks.json\').rename(\'x\')"',
+                'python -c "from pathlib import Path; Path(\'.agents/hooks.json\').replace(\'x\')"',
+                'python -c "from pathlib import Path; Path(\'.agents/hooks.json\').chmod(0o777)"',
+                'python -c "from pathlib import Path; Path(\'.agents/hooks.json\').touch()"',
+                'python -c "from pathlib import Path; Path(\'.agents/gravity-workflow/hooks\').mkdir()"',
+                'python -c "from pathlib import Path; Path(\'.agents/hooks.json\').symlink_to(\'x\')"',
+                'python -c "from pathlib import Path; Path(\'.agents/hooks.json\').hardlink_to(\'x\')"',
+                'python -c "import shutil; shutil.copy(\'.agents/hooks.json\', \'/tmp/x\')"',
+                'python -c "import os; os.remove(\'.agents/hooks.json\')"',
+                'python -c "import os; os.unlink(\'.agents/hooks.json\')"',
+                'python -c "import os; os.rmdir(\'.agents/gravity-workflow/hooks\')"',
+                'python -c "import os; os.rename(\'.agents/hooks.json\', \'x\')"',
+                'python -c "import os; os.replace(\'.agents/hooks.json\', \'x\')"',
+                'python -c "import os; os.chmod(\'.agents/hooks.json\', 0o777)"',
+                'python -c "import os; os.open(\'.agents/hooks.json\', os.O_RDONLY)"',
+                'python -c "from pathlib import Path; getattr(Path(\'.agents/hooks.json\'), \'unlink\')()"',
+                'python -c "from pathlib import Path\nfor f in Path(\'.agents/gravity-workflow/hooks\').glob(\'*.py\'):\n    f.unlink()"',
+                'python -c "import subprocess; subprocess.run([\'echo\', \'ok\'], cwd=\'.agents/gravity-workflow/hooks\')"',
+                'python -c "def custom(x): return x\ncustom(\'.agents/hooks.json\')"',
+                'python -c "from os import unlink as print; print(\'.agents/hooks.json\')"',
+                'python -c "import os; open = os.unlink; open(\'.agents/hooks.json\')"',
+                'python -c "import os\ndef print(p): os.unlink(p)\nprint(\'.agents/hooks.json\')"',
+                'python -c "import shutil as os; os.rmtree(\'.agents/gravity-workflow/hooks\')"',
+                'python -c "from os import *\nopen(\'.agents/hooks.json\', 0)"',
+                'python -c "import os; open(\'.agents/hooks.json\', \'r\', -1, None, None, None, True, lambda p, f: os.unlink(p))"',
+                'python -c "from pathlib import Path; Path(\'.agents/hooks.json\').open(\'r\', -1, None, None, None, None)"',
+                'python -c "m = \'r\'; m = input(); open(\'.agents/hooks.json\', m)"',
+                'python -c "open(\'.agents/hooks.json\', \'r\' if True else input())"',
+                'python -c "m = \'r\'\ndef f(m): open(\'.agents/hooks.json\', m)\nf(\'w\')"',
+                'python -c "from pathlib import Path; print(Path(\'.env\').read_text())"',
+                'python -c "import os; print(os.environ.get(\'HOME\'))"',
+            )
+            assert_run_commands_decision(
+                self, safety_policy, (ws_root, plain_ws), mutation_and_secret_deny_cmds, "deny", "harness_mut_deny"
+            )
+
+            # Repli brut (_raw_code_hard_deny_check) : lecture pure autorisée, mutation/secret bloqués
+            raw_ro = "from pathlib import Path\nprint(Path('.agents/hooks.json').read_text())\nif True:"
+            self.assertIsNone(_raw_code_hard_deny_check(raw_ro, ws_root, "python -c"))
+            self.assertEqual(safety_policy.inspect_inline_python_code(raw_ro, ws_root)[0], "allow")
+            raw_open_ro = "print(open('.agents/hooks.json', 'r').read())\nif True:"
+            self.assertIsNone(_raw_code_hard_deny_check(raw_open_ro, ws_root, "python -c"))
+            self.assertEqual(safety_policy.inspect_inline_python_code(raw_open_ro, ws_root)[0], "allow")
+            res_wf_ro = safety_policy.inspect_workflow_code(raw_ro, ws_root)
+            self.assertIsNotNone(res_wf_ro)
+            assert res_wf_ro is not None
+            self.assertEqual(res_wf_ro[0], "force_ask")
+
+            for raw_bad in (
+                "open('.agents/hooks.json', 'w').write('{}')\nif True:",
+                "open('.agents/hooks.json', 'r', -1, None, None, None, True, evil)\nif True:",
+                "from pathlib import Path\nPath('.agents/hooks.json').unlink()\nif True:",
+                "import os\nos.remove('.agents/hooks.json')\nif True:",
+                "from os import (\n    unlink\n)\nunlink('.agents/hooks.json')\nif True:",
+                "from posix import unlink\nunlink('.agents/hooks.json')\nif True:",
+                "unlink('.agents/hooks.json')\nif True:",
+                "chmod('.agents/hooks.json', 0o777)\nif True:",
+                "print(open('.env').read())\nif True:",
+                "import os\nprint(os.environ)\nif True:",
+            ):
+                raw_res = _raw_code_hard_deny_check(raw_bad, ws_root, "python -c")
+                self.assertIsNotNone(raw_res, f"Attendu deny brut sur {raw_bad!r}")
+                assert raw_res is not None
+                self.assertEqual(raw_res[0], "deny")
+                self.assertEqual(safety_policy.inspect_inline_python_code(raw_bad, ws_root)[0], "deny")
 
 
 if __name__ == "__main__":

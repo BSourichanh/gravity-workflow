@@ -42,6 +42,15 @@ class _PyImports:
     os_spawn_list_names: Set[str] = field(default_factory=set)
     os_spawn_var_names: Set[str] = field(default_factory=set)
     subprocess_func_names: Set[str] = field(default_factory=set)
+    pathlib_mod_names: Set[str] = field(default_factory=lambda: {"pathlib"})
+    path_ctor_names: Set[str] = field(default_factory=lambda: {"Path", "PurePath", "PosixPath", "WindowsPath"})
+    json_mod_names: Set[str] = field(default_factory=lambda: {"json"})
+    json_load_fns: Set[str] = field(default_factory=set)
+    os_path_mod_names: Set[str] = field(default_factory=lambda: {"posixpath", "ntpath"})
+    os_readonly_term_fns: Set[str] = field(default_factory=set)
+    os_readonly_prop_fns: Set[str] = field(default_factory=set)
+    shadowed_names: Set[str] = field(default_factory=set)
+    has_wildcard_import: bool = False
     func_returns: Dict[str, List[ast.AST]] = field(default_factory=dict)
 
 
@@ -85,6 +94,7 @@ class _PyAstState:
     var_contributors: Dict[str, List[ast.AST]] = field(default_factory=dict)
     benign_cmd_name_nodes: Set[ast.Name] = field(default_factory=set)
     mutator_receiver_names: Set[ast.Name] = field(default_factory=set)
+    dynamic_tainted_vars: Set[str] = field(default_factory=set)
 
     def record_alt_str(self, name: str, val: str) -> None:
         bucket = self.alt_str.setdefault(name, [])
@@ -568,6 +578,130 @@ def _resolve_dynamic_import_module(
     return _eval_static_str(node.args[0], const_vars, const_seq_vars)
 
 
+_RAW_OS_MUTATION_NAMES = (
+    r"remove|unlink|rmdir|rename|replace|chmod|lchmod|chown|open|system|popen|"
+    r"exec\w*|spawn\w*|truncate|mkdir|makedirs|link|symlink"
+)
+_RAW_HARNESS_MUTATION_RE = re.compile(
+    rf"\.(?:write_text|write_bytes|write|writelines|unlink|rmdir|rename|replace|"
+    rf"chmod|lchmod|chown|touch|mkdir|symlink_to|hardlink_to|truncate)\s*\("
+    rf"|\b(?:unlink|remove|rmdir|rename|replace|chmod|lchmod|chown|rmtree|symlink|link|"
+    rf"truncate|makedirs|mkdir|system|popen|exec\w*|spawn\w*)\s*\("
+    rf"|\b(?:shutil\.\w+|(?:os|posix|nt)\.(?:{_RAW_OS_MUTATION_NAMES})"
+    rf"|subprocess\.\w+|eval|exec|getattr|setattr|delattr|__import__)\s*\("
+    rf"|\bfrom\s+(?:shutil|subprocess)\s+import\b"
+    rf"|\bfrom\s+(?:os|posix|nt)\s+import\b[^\n;]*\b(?:{_RAW_OS_MUTATION_NAMES})\b"
+    rf"|\bfrom\s+(?:os|posix|nt)\s+import\s*\([^)]*\b(?:{_RAW_OS_MUTATION_NAMES})\b"
+)
+_RAW_OPEN_CALL_RE = re.compile(r"\bopen\s*\(")
+_RAW_READONLY_MODE_RE = re.compile(r"""^['"](?:r|rb|rt|br|tr)['"]$""")
+
+
+def _split_top_level_call_args(arg_str: str) -> Optional[List[str]]:
+    """Découpe une liste d'arguments brute au niveau 0 sans dépendre de `ast.parse`."""
+    parts: List[str] = []
+    cur: List[str] = []
+    depth = 0
+    quote: Optional[str] = None
+    i = 0
+    n = len(arg_str)
+    while i < n:
+        ch = arg_str[i]
+        if quote is not None:
+            cur.append(ch)
+            if ch == "\\" and i + 1 < n:
+                cur.append(arg_str[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            cur.append(ch)
+        elif ch in ("(", "[", "{"):
+            depth += 1
+            cur.append(ch)
+        elif ch in (")", "]", "}"):
+            if depth == 0:
+                return None
+            depth -= 1
+            cur.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(cur).strip())
+            cur.clear()
+        else:
+            cur.append(ch)
+        i += 1
+    if quote is not None or depth != 0:
+        return None
+    tail = "".join(cur).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _raw_code_has_harness_mutation_risk(code: str) -> bool:
+    """Retourne True si `code` (non analysable par AST) contient un indice de mutation/écriture/exécution."""
+    if _RAW_HARNESS_MUTATION_RE.search(code):
+        return True
+    for match in _RAW_OPEN_CALL_RE.finditer(code):
+        prefix = code[: match.start()].rstrip()
+        is_method = prefix.endswith(".")
+        idx = match.end()
+        depth = 1
+        quote: Optional[str] = None
+        while idx < len(code) and depth > 0:
+            ch = code[idx]
+            if quote is not None:
+                if ch == "\\" and idx + 1 < len(code):
+                    idx += 2
+                    continue
+                if ch == quote:
+                    quote = None
+            else:
+                if ch in ("'", '"'):
+                    quote = ch
+                elif ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            idx += 1
+        if depth != 0:
+            return True
+        args_list = _split_top_level_call_args(code[match.end() : idx])
+        if args_list is None:
+            return True
+        pos_args: List[str] = []
+        mode_expr: Optional[str] = None
+        allowed_kws = {"mode", "buffering", "encoding", "errors", "newline"}
+        if not is_method:
+            allowed_kws.add("file")
+        for item in args_list:
+            if not item or item.startswith("*"):
+                return True
+            if "=" in item and not item.startswith(("'", '"', "(")):
+                kw_name, kw_val = item.split("=", 1)
+                kw_clean = kw_name.strip()
+                if kw_clean not in allowed_kws:
+                    return True
+                if kw_clean == "mode":
+                    mode_expr = kw_val.strip()
+            else:
+                pos_args.append(item)
+        if len(pos_args) > (5 if is_method else 6):
+            return True
+        mode_pos = 0 if is_method else 1
+        if mode_expr is None and len(pos_args) > mode_pos:
+            mode_expr = pos_args[mode_pos].strip()
+        if mode_expr is not None and not _RAW_READONLY_MODE_RE.match(mode_expr):
+            return True
+    return False
+
+
 def _raw_code_hard_deny_check(
     code: str, ws_root: Optional[Path], context_label: str
 ) -> Optional[Tuple[str, str]]:
@@ -580,7 +714,7 @@ def _raw_code_hard_deny_check(
         )
         if not lit:
             continue
-        if is_harness_protected(lit, ws_root):
+        if is_harness_protected(lit, ws_root) and _raw_code_has_harness_mutation_risk(code):
             return "deny", f"Script `{context_label}` ciblant les garde-fous Gravity bloqué."
         if matches_any(lit, SENSITIVE_PATH_PATTERNS):
             return "deny", f"Script `{context_label}` ciblant un chemin sensible bloqué."
@@ -590,51 +724,161 @@ def _raw_code_hard_deny_check(
 def _collect_python_imports(
     tree: ast.Module, context_label: str
 ) -> Tuple[Optional[Tuple[str, str]], _PyImports]:
-    """Collecte les alias importés (`os`, `subprocess`, `shutil`, `re`, `shlex`, `importlib`) et fonctions 0-arg."""
+    """Collecte les alias importés (`os`, `subprocess`, `shutil`, `re`, `shlex`, `importlib`) et noms shadowés."""
     imp = _PyImports()
+    symbol_sources: Dict[str, str] = {
+        "os": "mod:os",
+        "posix": "mod:posix",
+        "nt": "mod:nt",
+        "re": "mod:re",
+        "pathlib": "mod:pathlib",
+        "json": "mod:json",
+        "posixpath": "mod:os.path",
+        "ntpath": "mod:os.path",
+        "Path": "pathlib:Path",
+        "PurePath": "pathlib:PurePath",
+        "PosixPath": "pathlib:PosixPath",
+        "WindowsPath": "pathlib:WindowsPath",
+    }
+    reserved_builtins = frozenset(
+        {"open", "print", "len", "compile", "str", "repr", "sorted", "list", "tuple", "set", "reversed", "enumerate", "zip"}
+    )
+
+    def _record_import_source(bound: str, source_tag: str) -> None:
+        if bound in reserved_builtins:
+            imp.shadowed_names.add(bound)
+            return
+        prev = symbol_sources.get(bound)
+        if prev is not None and prev != source_tag:
+            imp.shadowed_names.add(bound)
+        else:
+            symbol_sources[bound] = source_tag
+
+    def _mark_target_shadowed(target: ast.AST) -> None:
+        for sub in ast.walk(target):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, (ast.Store, ast.Del)):
+                imp.shadowed_names.add(sub.id)
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 bound = alias.asname or alias.name.split(".")[0]
                 if alias.name in ("os", "posix", "nt"):
                     imp.os_mod_names.add(bound)
+                    _record_import_source(bound, f"mod:{alias.name}")
                 elif alias.name == "subprocess":
                     imp.subprocess_mod_names.add(bound)
+                    imp.shadowed_names.add(bound)
                 elif alias.name == "re":
                     imp.re_mod_names.add(bound)
+                    _record_import_source(bound, "mod:re")
                 elif alias.name == "shlex":
                     imp.shlex_mod_names.add(bound)
+                    imp.shadowed_names.add(bound)
                 elif alias.name == "shutil":
                     imp.shutil_mod_names.add(bound)
+                    imp.shadowed_names.add(bound)
                 elif alias.name == "importlib":
                     imp.importlib_mod_names.add(bound)
+                    imp.shadowed_names.add(bound)
+                elif alias.name == "pathlib":
+                    imp.pathlib_mod_names.add(bound)
+                    _record_import_source(bound, "mod:pathlib")
+                elif alias.name == "json":
+                    imp.json_mod_names.add(bound)
+                    _record_import_source(bound, "mod:json")
+                elif alias.name in ("posixpath", "ntpath", "os.path"):
+                    mod_bound = alias.asname or alias.name
+                    imp.os_path_mod_names.add(mod_bound)
+                    _record_import_source(mod_bound, "mod:os.path")
+                else:
+                    imp.shadowed_names.add(bound)
         elif isinstance(node, ast.ImportFrom) and node.module:
             for alias in node.names:
+                if alias.name == "*":
+                    imp.has_wildcard_import = True
+                    continue
                 bound = alias.asname or alias.name
                 if node.module in ("os", "posix", "nt"):
                     if alias.name in ("environ", "environb"):
                         return ("deny", f"Import de `os.environ` dans `{context_label}` bloqué."), imp
                     if alias.name in OS_SHELL_FUNCS:
                         imp.os_shell_func_names.add(bound)
+                        imp.shadowed_names.add(bound)
                     elif alias.name in OS_EXEC_LIST_FUNCS:
                         imp.os_exec_list_names.add(bound)
+                        imp.shadowed_names.add(bound)
                     elif alias.name in OS_EXEC_VAR_FUNCS:
                         imp.os_exec_var_names.add(bound)
+                        imp.shadowed_names.add(bound)
                     elif alias.name in OS_SPAWN_LIST_FUNCS:
                         imp.os_spawn_list_names.add(bound)
+                        imp.shadowed_names.add(bound)
                     elif alias.name in OS_SPAWN_VAR_FUNCS:
                         imp.os_spawn_var_names.add(bound)
+                        imp.shadowed_names.add(bound)
+                    elif alias.name == "path":
+                        imp.os_path_mod_names.add(bound)
+                        _record_import_source(bound, "mod:os.path")
+                    elif alias.name in ("stat", "lstat", "access", "readlink"):
+                        imp.os_readonly_term_fns.add(bound)
+                        _record_import_source(bound, f"os:{alias.name}")
+                    elif alias.name in ("fspath", "listdir", "scandir", "walk"):
+                        imp.os_readonly_prop_fns.add(bound)
+                        _record_import_source(bound, f"os:{alias.name}")
+                    else:
+                        imp.shadowed_names.add(bound)
+                elif node.module in ("os.path", "posixpath", "ntpath"):
+                    if alias.name in _OS_PATH_TERMINAL_FUNCS:
+                        imp.os_readonly_term_fns.add(bound)
+                        _record_import_source(bound, f"os.path:{alias.name}")
+                    elif alias.name in _OS_PATH_PROPAGATING_FUNCS:
+                        imp.os_readonly_prop_fns.add(bound)
+                        _record_import_source(bound, f"os.path:{alias.name}")
+                    else:
+                        imp.shadowed_names.add(bound)
+                elif node.module == "pathlib" and alias.name in ("Path", "PurePath", "PosixPath", "WindowsPath"):
+                    imp.path_ctor_names.add(bound)
+                    _record_import_source(bound, f"pathlib:{alias.name}")
+                elif node.module == "json" and alias.name in ("load", "loads"):
+                    imp.json_load_fns.add(bound)
+                    _record_import_source(bound, f"json:{alias.name}")
                 elif node.module == "shutil" and alias.name == "rmtree":
                     imp.rmtree_func_names.add(bound)
+                    imp.shadowed_names.add(bound)
                 elif node.module == "subprocess" and alias.name in SUBPROCESS_CALL_FUNCS:
                     imp.subprocess_func_names.add(bound)
+                    imp.shadowed_names.add(bound)
                 elif node.module == "shlex" and alias.name == "split":
                     imp.shlex_split_names.add(bound)
+                    imp.shadowed_names.add(bound)
                 elif node.module == "importlib" and alias.name == "import_module":
                     imp.import_module_fns.add(bound)
+                    imp.shadowed_names.add(bound)
                 elif node.module == "re" and alias.name in RE_PATTERN_FUNCS:
                     imp.re_func_names.add(bound)
+                    _record_import_source(bound, f"re:{alias.name}")
+                else:
+                    imp.shadowed_names.add(bound)
+        elif isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                _mark_target_shadowed(tgt)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            _mark_target_shadowed(node.target)
+        elif isinstance(node, ast.NamedExpr):
+            imp.shadowed_names.add(node.target.id)
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            _mark_target_shadowed(node.target)
+        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+            _mark_target_shadowed(node.optional_vars)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            imp.shadowed_names.add(node.name)
+        elif isinstance(node, ast.arg):
+            imp.shadowed_names.add(node.arg)
+        elif isinstance(node, ast.ClassDef):
+            imp.shadowed_names.add(node.name)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            imp.shadowed_names.add(node.name)
             if not node.args.args and not node.args.posonlyargs and not node.args.kwonlyargs:
                 rets = [
                     sub.value
@@ -711,6 +955,9 @@ def _bind_var(state: _PyAstState, scope: _ScopeState, target_name: str, rhs_node
         return
     scope.cur_str.pop(target_name, None)
     scope.cur_seq.pop(target_name, None)
+    state.alt_str.pop(target_name, None)
+    state.alt_seq.pop(target_name, None)
+    state.dynamic_tainted_vars.add(target_name)
 
 
 def _mark_benign_cmd_node(state: _PyAstState, arg_node: ast.AST) -> None:
@@ -1060,6 +1307,8 @@ def _walk_python_stmts(
                     state.record_alt_str(var_name, scope.cur_str[var_name])
                 else:
                     scope.cur_str.pop(var_name, None)
+                    state.alt_str.pop(var_name, None)
+                    state.dynamic_tainted_vars.add(var_name)
             elif var_name in scope.cur_seq:
                 rhs_seq = _eval_static_seq(
                     stmt.value,
@@ -1160,23 +1409,439 @@ def _walk_python_stmts(
     return None
 
 
+_PATH_READONLY_TERMINAL_METHODS = frozenset(
+    {
+        "read_text",
+        "read_bytes",
+        "stat",
+        "lstat",
+        "exists",
+        "is_file",
+        "is_dir",
+        "is_symlink",
+        "is_mount",
+        "is_socket",
+        "is_fifo",
+        "is_block_device",
+        "is_char_device",
+        "is_absolute",
+        "is_relative_to",
+        "samefile",
+        "match",
+        "splitlines",
+        "startswith",
+        "endswith",
+    }
+)
+_PATH_PROPAGATING_METHODS = frozenset(
+    {
+        "resolve",
+        "absolute",
+        "expanduser",
+        "joinpath",
+        "with_name",
+        "with_stem",
+        "with_suffix",
+        "relative_to",
+        "as_posix",
+        "glob",
+        "rglob",
+        "iterdir",
+    }
+)
+_PASSIVE_PATH_ATTRS = frozenset(
+    {
+        "name",
+        "stem",
+        "suffix",
+        "suffixes",
+        "parent",
+        "parents",
+        "parts",
+        "anchor",
+        "drive",
+        "root",
+    }
+)
+_OS_PATH_TERMINAL_FUNCS = frozenset(
+    {
+        "exists",
+        "lexists",
+        "isfile",
+        "isdir",
+        "islink",
+        "ismount",
+        "getsize",
+        "getmtime",
+        "getctime",
+        "getatime",
+        "samefile",
+        "sameopenfile",
+    }
+)
+_OS_PATH_PROPAGATING_FUNCS = frozenset(
+    {
+        "join",
+        "abspath",
+        "realpath",
+        "normpath",
+        "normcase",
+        "dirname",
+        "basename",
+        "split",
+        "splitdrive",
+        "splitext",
+        "expanduser",
+        "expandvars",
+        "relpath",
+        "commonpath",
+        "commonprefix",
+    }
+)
+_READONLY_OPEN_MODES = frozenset({"r", "rb", "rt", "br", "tr"})
+
+
+def _build_parent_map(tree: ast.AST) -> Dict[ast.AST, ast.AST]:
+    """Construit la table enfant -> parent de l'arbre AST."""
+    parents: Dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    return parents
+
+
+def _collect_target_var_names(target: ast.AST) -> Optional[List[str]]:
+    """Extrait les noms de variables d'une cible d'affectation/boucle si simple (`Name`/tuple/list)."""
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, ast.Starred):
+        return _collect_target_var_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        out: List[str] = []
+        for elt in target.elts:
+            sub = _collect_target_var_names(elt)
+            if sub is None:
+                return None
+            out.extend(sub)
+        return out
+    return None
+
+
+def _resolve_unambiguous_open_modes(
+    mode_node: ast.AST, state: _PyAstState
+) -> Optional[List[str]]:
+    """Résout statiquement et sans ambiguïté les modes possibles pour `open()`."""
+    for sub in ast.walk(mode_node):
+        if (
+            isinstance(sub, ast.Name)
+            and isinstance(sub.ctx, ast.Load)
+            and sub.id in state.dynamic_tainted_vars
+        ):
+            return None
+    if isinstance(mode_node, ast.IfExp):
+        left = _resolve_unambiguous_open_modes(mode_node.body, state)
+        right = _resolve_unambiguous_open_modes(mode_node.orelse, state)
+        if not left or not right:
+            return None
+        return left + [m for m in right if m not in left]
+    cands = list(state.resolved_expr_strs.get(mode_node, ()))
+    fallback = _eval_static_str(
+        mode_node, state.const_vars, state.const_seq_vars, 0, state.imp.func_returns
+    )
+    if fallback and fallback not in cands:
+        cands.append(fallback)
+    return cands or None
+
+
+def _is_open_call_readonly(call: ast.Call, *, is_method: bool, state: _PyAstState) -> bool:
+    """Vérifie qu'un appel `open(...)` ou `Path.open(...)` est strictement en lecture seule."""
+    if any(isinstance(a, ast.Starred) for a in call.args):
+        return False
+    if len(call.args) > (5 if is_method else 6):
+        return False
+    kw_map: Dict[str, ast.AST] = {}
+    allowed_kws = {"mode", "buffering", "encoding", "errors", "newline"}
+    if not is_method:
+        allowed_kws.add("file")
+    for kw in call.keywords:
+        if kw.arg is None or kw.arg not in allowed_kws:
+            return False
+        kw_map[kw.arg] = kw.value
+    mode_pos = 0 if is_method else 1
+    if len(call.args) > mode_pos:
+        if "mode" in kw_map:
+            return False
+        mode_node: Optional[ast.AST] = call.args[mode_pos]
+    else:
+        mode_node = kw_map.get("mode")
+    if mode_node is None:
+        return True
+    cands = _resolve_unambiguous_open_modes(mode_node, state)
+    return bool(cands) and all(m in _READONLY_OPEN_MODES for m in cands)
+
+
+def _classify_readonly_call(
+    call: ast.Call, arg_node: ast.AST, is_kw_arg: bool, kw_name: Optional[str], state: _PyAstState
+) -> str:
+    """Retourne `'terminal'`, `'propagate'` ou `'deny'` pour un `ast.Call` recevant `arg_node`."""
+    if call in state.checked_cmd_nodes:
+        return "terminal"
+    fn = call.func
+    if isinstance(fn, ast.Name):
+        if state.imp.has_wildcard_import or fn.id in state.imp.shadowed_names:
+            return "deny"
+        if fn.id == "open":
+            is_file_arg = (not is_kw_arg and bool(call.args) and call.args[0] is arg_node) or (
+                is_kw_arg and kw_name == "file"
+            )
+            if is_file_arg and _is_open_call_readonly(call, is_method=False, state=state):
+                return "terminal"
+            return "deny"
+        if fn.id in {"print", "len", "compile"}:
+            return "terminal"
+        if fn.id in {"str", "repr", "sorted", "list", "tuple", "set", "reversed", "enumerate", "zip"}:
+            return "propagate"
+        if fn.id in state.imp.path_ctor_names:
+            return "propagate"
+        if fn.id in state.imp.json_load_fns:
+            return "terminal"
+        if fn.id in state.imp.re_func_names:
+            return "terminal"
+        if fn.id in state.imp.os_readonly_term_fns:
+            return "terminal"
+        if fn.id in state.imp.os_readonly_prop_fns:
+            return "propagate"
+        return "deny"
+
+    if isinstance(fn, ast.Attribute):
+        val = fn.value
+        if (
+            isinstance(val, ast.Attribute)
+            and val.attr == "path"
+            and isinstance(val.value, ast.Name)
+            and val.value.id in state.imp.os_mod_names
+            and val.value.id not in state.imp.shadowed_names
+        ) or (
+            isinstance(val, ast.Name)
+            and val.id in state.imp.os_path_mod_names
+            and val.id not in state.imp.shadowed_names
+        ):
+            if fn.attr in _OS_PATH_TERMINAL_FUNCS:
+                return "terminal"
+            if fn.attr in _OS_PATH_PROPAGATING_FUNCS:
+                return "propagate"
+            return "deny"
+        if (
+            isinstance(val, ast.Name)
+            and val.id in state.imp.os_mod_names
+            and val.id not in state.imp.shadowed_names
+        ):
+            if fn.attr in {"stat", "lstat", "access", "readlink"}:
+                return "terminal"
+            if fn.attr in {"fspath", "listdir", "scandir", "walk"}:
+                return "propagate"
+            return "deny"
+        if (
+            isinstance(val, ast.Name)
+            and val.id in state.imp.pathlib_mod_names
+            and val.id not in state.imp.shadowed_names
+        ):
+            if fn.attr in {"Path", "PurePath", "PosixPath", "WindowsPath"}:
+                return "propagate"
+            return "deny"
+        if (
+            isinstance(val, ast.Name)
+            and val.id in state.imp.json_mod_names
+            and val.id not in state.imp.shadowed_names
+            and fn.attr in {"load", "loads"}
+        ):
+            return "terminal"
+        if (
+            isinstance(val, ast.Name)
+            and val.id in state.imp.re_mod_names
+            and val.id not in state.imp.shadowed_names
+            and fn.attr in RE_PATTERN_FUNCS
+        ):
+            return "terminal"
+    return "deny"
+
+
+def _is_readonly_harness_usage(
+    start_node: ast.AST,
+    parent_map: Dict[ast.AST, ast.AST],
+    var_loads: Dict[str, List[ast.Name]],
+    state: _PyAstState,
+) -> bool:
+    """Vérifie fail-closed que `start_node` et les variables/boucles associées restent en lecture seule."""
+    pending_nodes: List[ast.AST] = [start_node]
+    seen_nodes: Set[ast.AST] = set()
+    seen_vars: Set[str] = set()
+
+    def _queue_target(target: ast.AST) -> bool:
+        names = _collect_target_var_names(target)
+        if names is None:
+            return False
+        for vname in names:
+            if vname not in seen_vars:
+                seen_vars.add(vname)
+                pending_nodes.extend(var_loads.get(vname, ()))
+        return True
+
+    while pending_nodes:
+        cur = pending_nodes.pop()
+        while True:
+            if cur in seen_nodes:
+                break
+            seen_nodes.add(cur)
+            parent = parent_map.get(cur)
+            if parent is None:
+                break
+
+            if isinstance(parent, ast.Attribute) and cur is parent.value:
+                if not isinstance(parent.ctx, ast.Load):
+                    return False
+                grand = parent_map.get(parent)
+                if isinstance(grand, ast.Call) and grand.func is parent:
+                    attr = parent.attr
+                    if attr in _PATH_READONLY_TERMINAL_METHODS:
+                        break
+                    if attr == "open":
+                        if not _is_open_call_readonly(grand, is_method=True, state=state):
+                            return False
+                        break
+                    if attr in _PATH_PROPAGATING_METHODS:
+                        cur = grand
+                        continue
+                    return False
+                if parent.attr in _PASSIVE_PATH_ATTRS:
+                    cur = parent
+                    continue
+                return False
+
+            if isinstance(parent, ast.keyword) and cur is parent.value:
+                call = parent_map.get(parent)
+                if not isinstance(call, ast.Call):
+                    return False
+                verdict = _classify_readonly_call(call, cur, True, parent.arg, state)
+                if verdict == "deny":
+                    return False
+                if verdict == "terminal":
+                    break
+                cur = call
+                continue
+
+            if isinstance(parent, ast.Call):
+                if cur is parent.func:
+                    return False
+                verdict = _classify_readonly_call(parent, cur, False, None, state)
+                if verdict == "deny":
+                    return False
+                if verdict == "terminal":
+                    break
+                cur = parent
+                continue
+
+            if isinstance(parent, ast.BinOp):
+                if isinstance(parent.op, (ast.Div, ast.Add)):
+                    cur = parent
+                    continue
+                return False
+
+            if isinstance(parent, (ast.FormattedValue, ast.JoinedStr, ast.Compare, ast.BoolOp, ast.UnaryOp)):
+                cur = parent
+                continue
+
+            if isinstance(parent, ast.IfExp):
+                if cur is parent.test:
+                    break
+                cur = parent
+                continue
+
+            if isinstance(parent, ast.Subscript):
+                if cur is parent.value and isinstance(parent.ctx, ast.Load):
+                    cur = parent
+                    continue
+                return False
+
+            if isinstance(parent, (ast.Tuple, ast.List, ast.Set, ast.Dict)):
+                if hasattr(parent, "ctx") and not isinstance(parent.ctx, ast.Load):
+                    return False
+                cur = parent
+                continue
+
+            if isinstance(parent, (ast.If, ast.While, ast.Assert, ast.Expr)):
+                break
+
+            if isinstance(parent, ast.NamedExpr):
+                if isinstance(parent.target, ast.Name) and not _queue_target(parent.target):
+                    return False
+                cur = parent
+                continue
+
+            if isinstance(parent, ast.Assign):
+                if cur is not parent.value:
+                    return False
+                for tgt in parent.targets:
+                    if not _queue_target(tgt):
+                        return False
+                break
+
+            if isinstance(parent, ast.AnnAssign):
+                if cur is not parent.value or not _queue_target(parent.target):
+                    return False
+                break
+
+            if isinstance(parent, ast.AugAssign):
+                if not isinstance(parent.op, ast.Add) or not _queue_target(parent.target):
+                    return False
+                break
+
+            if isinstance(parent, (ast.For, ast.AsyncFor)):
+                if cur is not parent.iter or not _queue_target(parent.target):
+                    return False
+                break
+
+            if isinstance(parent, ast.comprehension):
+                if cur is parent.iter:
+                    if not _queue_target(parent.target):
+                        return False
+                    break
+                if cur in parent.ifs:
+                    break
+                return False
+
+            if isinstance(parent, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+                cur = parent
+                continue
+
+            if isinstance(parent, ast.withitem):
+                if cur is not parent.context_expr:
+                    return False
+                if parent.optional_vars is not None and not _queue_target(parent.optional_vars):
+                    return False
+                break
+
+            return False
+
+    return True
+
+
 def _inspect_pass2_ast_nodes(state: _PyAstState, tree: ast.Module) -> Tuple[str, Optional[str]]:
     """Passe 2 AST : accès `environ`, chemins sensibles et auto-protection du harnais actif."""
     other_loaded_vars: Set[str] = set()
+    var_loads: Dict[str, List[ast.Name]] = {}
     for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Name)
-            and isinstance(node.ctx, ast.Load)
-            and node not in state.benign_cmd_name_nodes
-            and node not in state.mutator_receiver_names
-        ):
-            other_loaded_vars.add(node.id)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            var_loads.setdefault(node.id, []).append(node)
+            if node not in state.benign_cmd_name_nodes and node not in state.mutator_receiver_names:
+                other_loaded_vars.add(node.id)
     for cmd_name_node in state.benign_cmd_name_nodes:
         if cmd_name_node.id not in other_loaded_vars:
             state.checked_cmd_nodes.add(cmd_name_node)
             for contrib in state.var_contributors.get(cmd_name_node.id, ()):
                 _mark_subtree(contrib, state.checked_cmd_nodes)
 
+    parent_map: Optional[Dict[ast.AST, ast.AST]] = None
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and node.attr in ("environ", "environb"):
             return "deny", f"Accès à `environ` dans `{state.context_label}` bloqué."
@@ -1214,10 +1879,13 @@ def _inspect_pass2_ast_nodes(state: _PyAstState, tree: ast.Module) -> Tuple[str,
             if fallback_val and fallback_val not in vals:
                 vals.append(fallback_val)
             for val in vals:
-                if is_harness_protected(val, state.ws_root):
-                    return "deny", f"Script `{state.context_label}` ciblant les garde-fous Gravity bloqué."
                 if matches_any(val, SENSITIVE_PATH_PATTERNS):
                     return "deny", f"Script `{state.context_label}` ciblant un chemin sensible bloqué."
+                if is_harness_protected(val, state.ws_root):
+                    if parent_map is None:
+                        parent_map = _build_parent_map(tree)
+                    if not _is_readonly_harness_usage(node, parent_map, var_loads, state):
+                        return "deny", f"Script `{state.context_label}` ciblant les garde-fous Gravity bloqué."
 
     return "allow", None
 
@@ -1269,6 +1937,17 @@ def _inspect_python_ast(
         const_seq_vars=const_seq_vars,
         single_use_defs=single_use_defs,
     )
+    for sub in ast.walk(tree):
+        if isinstance(sub, ast.arg):
+            state.dynamic_tainted_vars.add(sub.arg)
+        elif isinstance(sub, ast.ExceptHandler) and sub.name:
+            state.dynamic_tainted_vars.add(sub.name)
+        elif isinstance(sub, (ast.For, ast.AsyncFor, ast.comprehension)):
+            for nm in _collect_target_var_names(sub.target) or ():
+                state.dynamic_tainted_vars.add(nm)
+        elif isinstance(sub, ast.withitem) and sub.optional_vars is not None:
+            for nm in _collect_target_var_names(sub.optional_vars) or ():
+                state.dynamic_tainted_vars.add(nm)
     scope = _ScopeState(
         cur_str=dict(const_vars),
         cur_seq={k: list(v) for k, v in const_seq_vars.items()},

@@ -31,10 +31,14 @@ Les agents sont validés strictement par [`validate.py`](../plugin/scripts/valid
 3. **Phase 2 — Builder multi-tour isolé (`validation_summary`) :** crée un agent `builder` persistant (`workspace="branch"`, fermé dans `finally: del builder`) qui applique le plan, exécute les vérifications pertinentes dans `validation_summary` et génère `.gravity_verified.patch` via `git add -N .` puis `git diff --output=.gravity_verified.patch -- . ":(exclude).gravity_verified.patch"`.
 4. **Court-circuit `--no-verify` / `unsafe` éphémère :** si `no_verify=True` ou `verification="unsafe"` est passé dans `Args` (strictement éphémère, jamais persisté), sauvegarde le patch centralisé (`last_verified.patch`) sans lancer `reviewer`.
 5. **Phase 3 & 4 — Revue & remédiation (`safe`) :**
-   - Lit `.gravity_verified.patch` (repli `git_diff` puis aperçu borné des `modified_files` si `Non-Workspace File Access` est restreint).
+   - Lit `.gravity_verified.patch` (repli `git_diff`, puis `git -C <worktree> diff`, puis aperçu borné des `modified_files` si `Non-Workspace File Access` est restreint).
    - Soumet au `reviewer` (`REVIEW_SCHEMA`) avec l'arborescence pré-collectée et `validation_summary`. Force `FAIL` dès qu'un `BLOCKER` ou `MAJOR` est présent.
    - Si `FAIL`, relance **le même** `builder` jusqu'à `max_remediation_rounds` (`0`/`1`/`2`), en contrôlant `build.get("refused")`.
-   - Si `PASS`, exporte `last_verified.patch` dans le stockage centralisé ; journalise `preset_profile`, `role_models`, `verdict` et `remediation_rounds` dans `runs.jsonl`.
+   - Si `PASS`, exporte `last_verified.patch` (uniquement sur vrai diff unifié UTF-8 sans BOM LF) dans le stockage centralisé, journalise la commande `--apply` (ou applique directement via `apply_verified_patch()` + `cleanup_worktree_best_effort()` si `args.get("apply_on_pass")` est actif) et enregistre `preset_profile`, `role_models`, `verdict` et `remediation_rounds` dans `runs.jsonl`.
+
+6. **CLI d'application & protocole autonome Bridge (`depth >= 1`) :**
+   - `python3 <plugin_root>/workflows/review_pipeline.py --apply --workspace . [--worktree <worktree>]` vérifie (`git apply --check`) et applique (`git apply --whitespace=nowarn`) `last_verified.patch`, puis nettoie best-effort le worktree isolé (sans jamais toucher le workspace appelant ni les chemins protégés).
+   - En session Bridge (`depth >= 1`), l'agent suit le protocole autonome documenté dans [`05-workflows-and-routing.md`](../plugin/skills/gravity-workflow/references/05-workflows-and-routing.md) (`caveman ultra`, mini-suivi 1 ligne, 0 `ask_question`, application sur `dev` + re-vérification + nettoyage worktree avant `reply_thread(..., close=True, dispatch=False)`, 0 `commit`/`push`/`tag`).
 
 ---
 

@@ -2,6 +2,7 @@
 """Tests unitaires des validateurs (eval_checks, plugin_validator, frontmatter, init_workspace)."""
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -13,9 +14,12 @@ from unittest import mock
 from _unit_helpers import ensure_plugin_paths
 
 PLUGIN_ROOT = ensure_plugin_paths()
+if str(PLUGIN_ROOT / "workflows") not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT / "workflows"))
 
 import eval_checks  # noqa: E402
 import init_workspace  # noqa: E402
+import review_pipeline  # noqa: E402
 from validators import Report, plugin_validator, validate_plugin, validate_workspace  # noqa: E402
 from validators.base import parse_frontmatter, validate_agent_file  # noqa: E402
 
@@ -152,7 +156,7 @@ class TestPluginValidator(unittest.TestCase):
                 manifest_path = plugin_dir / "plugin.json"
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 manifest["disabled"] = False
-                manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+                manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
                 rep_ok = Report()
                 validate_plugin(plugin_dir, rep_ok)
                 self.assertTrue(rep_ok.ok(strict=True), f"Erreurs inattendues: {rep_ok.errors} {rep_ok.warnings}")
@@ -161,7 +165,7 @@ class TestPluginValidator(unittest.TestCase):
                 for bad_key in ("$schema", "license", "keywords"):
                     bad_manifest = dict(manifest)
                     bad_manifest[bad_key] = "bad"
-                    manifest_path.write_text(json.dumps(bad_manifest) + "\n", encoding="utf-8")
+                    manifest_path.write_text(json.dumps(bad_manifest) + "\n", encoding="utf-8", newline="\n")
                     rep_bad_key = Report()
                     validate_plugin(plugin_dir, rep_bad_key)
                     self.assertFalse(rep_bad_key.ok(strict=True), f"Devrait rejeter la clé {bad_key}")
@@ -169,7 +173,7 @@ class TestPluginValidator(unittest.TestCase):
                 # 3. Reject missing official field
                 missing_repo = dict(manifest)
                 missing_repo.pop("repository", None)
-                manifest_path.write_text(json.dumps(missing_repo) + "\n", encoding="utf-8")
+                manifest_path.write_text(json.dumps(missing_repo) + "\n", encoding="utf-8", newline="\n")
                 rep_missing = Report()
                 validate_plugin(plugin_dir, rep_missing)
                 self.assertFalse(rep_missing.ok(strict=True))
@@ -179,21 +183,21 @@ class TestPluginValidator(unittest.TestCase):
                 rep_bom = Report()
                 validate_plugin(plugin_dir, rep_bom)
                 self.assertFalse(rep_bom.ok(strict=True))
-                manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+                manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8", newline="\n")
 
                 # 5. Validate config/module.json v1
                 module_path = plugin_dir / "config" / "module.json"
                 module_data = json.loads(module_path.read_text(encoding="utf-8"))
                 bad_mod = dict(module_data)
                 bad_mod["schema_version"] = 2
-                module_path.write_text(json.dumps(bad_mod) + "\n", encoding="utf-8")
+                module_path.write_text(json.dumps(bad_mod) + "\n", encoding="utf-8", newline="\n")
                 rep_sv = Report()
                 validate_plugin(plugin_dir, rep_sv)
                 self.assertFalse(rep_sv.ok(strict=True))
 
                 bad_name = dict(module_data)
                 bad_name["plugin_name"] = "wrong-plugin"
-                module_path.write_text(json.dumps(bad_name) + "\n", encoding="utf-8")
+                module_path.write_text(json.dumps(bad_name) + "\n", encoding="utf-8", newline="\n")
                 rep_name = Report()
                 validate_plugin(plugin_dir, rep_name)
                 self.assertFalse(rep_name.ok(strict=True))
@@ -353,6 +357,206 @@ class TestPluginValidator(unittest.TestCase):
                 validate_plugin(plugin_dir, rep_vestige)
                 self.assertEqual(rep_vestige.errors, [])
                 self.assertTrue(any("sidecars/live-widget" in w for w in rep_vestige.warnings), rep_vestige.warnings)
+
+    def test_ui_mode_and_integrity_checks_int01_03_04_06_09(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_dir = Path(tmp)
+            plugin_dir = repo_dir / "plugin"
+            self._build_minimal_plugin(plugin_dir)
+            wt_dir = repo_dir / "workspace-template"
+            wt_src = PLUGIN_ROOT.parent / "workspace-template"
+            if wt_src.is_dir():
+                shutil.copytree(wt_src, wt_dir)
+
+            with mock.patch.object(plugin_validator, "run_hook_dry_runs"):
+                # Baseline strict OK
+                rep_ok = Report()
+                validate_plugin(plugin_dir, rep_ok)
+                self.assertTrue(rep_ok.ok(strict=True), f"Erreurs/warnings : {rep_ok.errors} {rep_ok.warnings}")
+
+                # ui.mode : transition-mcp accepté, transition-mcp-app rejeté
+                mod_path = plugin_dir / "config" / "module.json"
+                mod_orig = mod_path.read_text(encoding="utf-8")
+                mod_data = json.loads(mod_orig)
+                mod_data["ui"]["mode"] = "transition-mcp"
+                mod_path.write_text(json.dumps(mod_data, indent=2) + "\n", encoding="utf-8", newline="\n")
+                rep_ui_ok = Report()
+                validate_plugin(plugin_dir, rep_ui_ok)
+                self.assertTrue(rep_ui_ok.ok(strict=True), rep_ui_ok.errors)
+
+                mod_data["ui"]["mode"] = "transition-mcp-app"
+                mod_path.write_text(json.dumps(mod_data, indent=2) + "\n", encoding="utf-8", newline="\n")
+                rep_ui_bad = Report()
+                validate_plugin(plugin_dir, rep_ui_bad)
+                self.assertTrue(any("ui.mode" in e for e in rep_ui_bad.errors), rep_ui_bad.errors)
+                mod_path.write_text(mod_orig, encoding="utf-8", newline="\n")
+
+                # INT-01 : suggestedPrompts format & <= 100 chars
+                manifest_path = plugin_dir / "plugin.json"
+                manifest_orig = manifest_path.read_text(encoding="utf-8")
+                manifest_bad_fmt = json.loads(manifest_orig)
+                manifest_bad_fmt["suggestedPrompts"][0] = "pas une commande"
+                manifest_path.write_text(json.dumps(manifest_bad_fmt, indent=2) + "\n", encoding="utf-8", newline="\n")
+                rep_pfmt = Report()
+                validate_plugin(plugin_dir, rep_pfmt)
+                self.assertTrue(any("suggestedPrompts[0]" in e for e in rep_pfmt.errors), rep_pfmt.errors)
+
+                manifest_bad_len = json.loads(manifest_orig)
+                manifest_bad_len["suggestedPrompts"][1] = "/gravity-workflow — " + ("a" * 85)
+                manifest_path.write_text(json.dumps(manifest_bad_len, indent=2) + "\n", encoding="utf-8", newline="\n")
+                rep_plen = Report()
+                validate_plugin(plugin_dir, rep_plen)
+                self.assertTrue(any("suggestedPrompts[1]" in e and "100" in e for e in rep_plen.errors), rep_plen.errors)
+                manifest_path.write_text(manifest_orig, encoding="utf-8", newline="\n")
+
+                # INT-03 : UTF-8 sans BOM + LF sans doublon sur templates/AGENTS.md
+                tpl_agents = plugin_dir / "templates/AGENTS.md"
+                orig_tpl_agents = tpl_agents.read_bytes()
+                tpl_agents.write_bytes(b"\xef\xbb\xbf" + orig_tpl_agents)
+                rep_no_dup = Report()
+                validate_plugin(plugin_dir, rep_no_dup)
+                bom_errs = [e for e in rep_no_dup.errors if "templates/AGENTS.md" in e and "BOM" in e]
+                self.assertEqual(len(bom_errs), 1, rep_no_dup.errors)
+                tpl_agents.write_bytes(orig_tpl_agents)
+
+                ref00 = plugin_dir / "skills/gravity-workflow/references/00-quick-start.md"
+                orig_ref00 = ref00.read_bytes()
+                ref00.write_bytes(orig_ref00.replace(b"\n", b"\r\n"))
+                rep_ref_crlf = Report()
+                validate_plugin(plugin_dir, rep_ref_crlf)
+                self.assertTrue(any("00-quick-start.md" in e and "CRLF" in e for e in rep_ref_crlf.errors), rep_ref_crlf.errors)
+                ref00.write_bytes(orig_ref00)
+
+                # INT-04 : chemins machine hardcodés rejetés (hors tests/ et fixtures/)
+                bad_doc = plugin_dir / "docs_tmp_leak.md"
+                bad_doc.write_text("Chemin : /Users/alice/work\n", encoding="utf-8", newline="\n")
+                rep_path_mac = Report()
+                validate_plugin(plugin_dir, rep_path_mac)
+                self.assertTrue(any("chemin machine hardcodé" in e for e in rep_path_mac.errors), rep_path_mac.errors)
+                bad_doc.unlink()
+
+                (plugin_dir / "fixtures").mkdir()
+                (plugin_dir / "fixtures/sample.md").write_text("C:\\Users\\bob\\ok\n", encoding="utf-8", newline="\n")
+                rep_fix_ok = Report()
+                validate_plugin(plugin_dir, rep_fix_ok)
+                self.assertTrue(rep_fix_ok.ok(strict=True), rep_fix_ok.errors)
+                shutil.rmtree(plugin_dir / "fixtures")
+
+                # INT-06 : dérive profile.json vs profile_engine.default_profile()
+                tpl_prof = plugin_dir / "templates/.agents/gravity-workflow/profile.json"
+                wt_prof = wt_dir / ".agents/gravity-workflow/profile.json"
+                orig_prof = tpl_prof.read_bytes()
+                bad_prof = json.loads(orig_prof.decode("utf-8"))
+                bad_prof["signals"].pop("metrics", None)
+                bad_prof_bytes = (json.dumps(bad_prof, indent=2) + "\n").encode("utf-8")
+                tpl_prof.write_bytes(bad_prof_bytes)
+                wt_prof.write_bytes(bad_prof_bytes)
+                rep_prof_drift = Report()
+                validate_plugin(plugin_dir, rep_prof_drift)
+                self.assertTrue(any("default_profile()" in e for e in rep_prof_drift.errors), rep_prof_drift.errors)
+                tpl_prof.write_bytes(orig_prof)
+                wt_prof.write_bytes(orig_prof)
+
+                # INT-09 : dérive workspace-template PROGRESS.md & live_state.json vs init_workspace._render_*("full")
+                wt_prog = wt_dir / ".agents/gravity-workflow/PROGRESS.md"
+                orig_prog = wt_prog.read_text(encoding="utf-8")
+                wt_prog.write_text(orig_prog + "\n# drift\n", encoding="utf-8", newline="\n")
+                rep_prog_drift = Report()
+                validate_plugin(plugin_dir, rep_prog_drift)
+                self.assertTrue(any("_render_progress_md" in e for e in rep_prog_drift.errors), rep_prog_drift.errors)
+                wt_prog.write_text(orig_prog, encoding="utf-8", newline="\n")
+
+                wt_live = wt_dir / ".agents/gravity-workflow/observability/live_state.json"
+                orig_live = wt_live.read_text(encoding="utf-8")
+                wt_live.write_text(orig_live.replace('"idle"', '"busy"'), encoding="utf-8", newline="\n")
+                rep_live_drift = Report()
+                validate_plugin(plugin_dir, rep_live_drift)
+                self.assertTrue(any("_render_live_state_json" in e for e in rep_live_drift.errors), rep_live_drift.errors)
+                wt_live.write_text(orig_live, encoding="utf-8", newline="\n")
+
+
+class TestReviewPipelineHelpers(unittest.TestCase):
+    def test_patch_detection_save_apply_and_safe_worktree_cleanup(self) -> None:
+        unified = (
+            "diff --git a/hello.txt b/hello.txt\n"
+            "index 8ab686e..c00c20b 100644\n"
+            "--- a/hello.txt\n"
+            "+++ b/hello.txt\n"
+            "@@ -1 +1 @@\n"
+            "-hello\n"
+            "+world\n"
+        )
+        snippet = "--- hello.txt ---\nworld\n"
+        self.assertTrue(review_pipeline._is_unified_diff(unified))
+        self.assertFalse(review_pipeline._is_unified_diff(snippet))
+        self.assertFalse(review_pipeline._is_unified_diff(""))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            wf_home = base / "wf_home"
+            repo = base / "repo"
+            repo.mkdir()
+            (repo / "hello.txt").write_text("hello\n", encoding="utf-8", newline="\n")
+            for args in (
+                ["git", "init", "-q"],
+                ["git", "config", "user.email", "test@example.com"],
+                ["git", "config", "user.name", "Test"],
+                ["git", "add", "hello.txt"],
+                ["git", "commit", "-q", "-m", "init"],
+            ):
+                subprocess.run(args, cwd=str(repo), check=True, capture_output=True)
+
+            wt_dir = base / "isolated_wt"
+            subprocess.run(
+                ["git", "-C", str(repo), "worktree", "add", "-q", "-b", "feat/test", str(wt_dir)],
+                check=True,
+                capture_output=True,
+            )
+            (wt_dir / "hello.txt").write_text("world\n", encoding="utf-8", newline="\n")
+
+            # _read_worktree_patch fallback -> git -C <wt_dir> diff
+            read_diff = review_pipeline._read_worktree_patch(str(wt_dir), "", ["hello.txt"])
+            self.assertIn("diff --git a/hello.txt b/hello.txt", read_diff)
+            self.assertIn("+world", read_diff)
+
+            with mock.patch.dict(os.environ, {"GRAVITY_WORKFLOW_HOME": str(wf_home)}):
+                with mock.patch.object(review_pipeline, "WS_ROOT", repo):
+                    # Non-unified snippet is rejected (returns None)
+                    self.assertIsNone(review_pipeline._safe_save_verified_patch(snippet, str(wt_dir)))
+                    # Unified diff is saved in UTF-8 without BOM + LF
+                    saved = review_pipeline._safe_save_verified_patch(read_diff.replace("\n", "\r\n"), str(wt_dir))
+                    self.assertIsNotNone(saved)
+                    assert saved is not None
+                    raw_saved = saved.read_bytes()
+                    self.assertFalse(raw_saved.startswith(b"\xef\xbb\xbf"))
+                    self.assertNotIn(b"\r\n", raw_saved)
+
+                # Safety guard: cleanup refuses caller_workspace, parent, plugin root, .git
+                self.assertFalse(review_pipeline.cleanup_worktree_best_effort(repo, repo))
+                self.assertFalse(review_pipeline.cleanup_worktree_best_effort(base, repo))
+                self.assertFalse(review_pipeline.cleanup_worktree_best_effort(PLUGIN_ROOT, repo))
+                self.assertFalse(review_pipeline.cleanup_worktree_best_effort(repo / ".git", repo))
+                self.assertTrue(repo.is_dir())
+
+                # CLI --apply applies patch onto repo and cleans isolated worktree
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(PLUGIN_ROOT / "workflows/review_pipeline.py"),
+                        "--apply",
+                        "--workspace",
+                        str(repo),
+                        "--worktree",
+                        str(wt_dir),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                    check=False,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual((repo / "hello.txt").read_text(encoding="utf-8"), "world\n")
+                self.assertFalse(wt_dir.exists())
 
 
 class TestFrontmatterParser(unittest.TestCase):
