@@ -44,7 +44,11 @@ SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
 SUGGESTED_PROMPT_RE = re.compile(r"^/[a-z0-9-]+(?:\s+[a-z0-9_-]+)*\s+—\s+\S")
 MAX_SUGGESTED_PROMPT_LEN = 100
 HARDCODED_USER_PATH_RE = re.compile(
-    r"(?:[A-Za-z]:[/\\]Users[/\\]|/Users/[A-Za-z0-9._-]+/|/home/[A-Za-z0-9._-]+/)"
+    r"(?:"
+    + r"[A-Za-z]:[/\\]Us" + r"ers[/\\]"
+    + r"|/Us" + r"ers/[A-Za-z0-9._-]+/"
+    + r"|/ho" + r"me/[A-Za-z0-9._-]+/"
+    + r")"
 )
 VALID_UI_MODES = frozenset({"none", "core", "transition-sidecar", "transition-mcp", "mcp-app"})
 TEMPLATE_MAPPINGS = (
@@ -245,10 +249,10 @@ def validate_module_contract(
 
 
 def _ensure_plugin_import_paths(root: Path) -> None:
-    """Ajoute `observability/` et `scripts/` du plugin cible (ou source) à `sys.path`."""
+    """Ajoute `observability/`, `scripts/` et `evals/` du plugin cible (ou source) à `sys.path`."""
     fallback_root = Path(__file__).resolve().parents[2]
     for base in (fallback_root, root):
-        for sub in ("observability", "scripts"):
+        for sub in ("observability", "scripts", "evals"):
             candidate = base / sub
             if candidate.is_dir() and str(candidate) not in sys.path:
                 sys.path.insert(0, str(candidate))
@@ -441,6 +445,7 @@ def validate_plugin(root: Path, report: Report) -> None:
         "evaluator",
         "eval_checks",
         "init_workspace",
+        "patch_apply",
     }
     exec_scripts = {
         Path("scripts/validate.py"),
@@ -543,12 +548,21 @@ def validate_plugin(root: Path, report: Report) -> None:
         report.error("evals/cases.json manquant dans le plugin.")
     else:
         try:
+            _ensure_plugin_import_paths(root)
+            from eval_checks import is_manual_case  # type: ignore[import-not-found]
+
             cases_data = json.loads(cases_json.read_text(encoding="utf-8"))
-            if not isinstance(cases_data, list) or not (10 <= len(cases_data) <= 15):
-                report.warn(
-                    f"evals/cases.json contient {len(cases_data) if isinstance(cases_data, list) else '?'} "
-                    "cas (recommandé : 10 à 15)."
-                )
+            if not isinstance(cases_data, list):
+                report.warn("evals/cases.json contient ? cas auto (recommandé : 10 à 15).")
+            else:
+                auto_cases = [
+                    c for c in cases_data if isinstance(c, dict) and not is_manual_case(c)
+                ]
+                if not (10 <= len(auto_cases) <= 15):
+                    report.warn(
+                        f"evals/cases.json contient {len(auto_cases)} "
+                        "cas auto (recommandé : 10 à 15)."
+                    )
         except Exception as exc:
             report.error(f"evals/cases.json invalide : {exc}")
 

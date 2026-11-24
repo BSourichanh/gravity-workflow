@@ -3,6 +3,7 @@
 
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Set
 
@@ -268,12 +269,25 @@ def _validate_gravity_project_state(ws: Path, report: Report) -> None:
         report.error(".agents/gravity-workflow/evals/cases.json manquant.")
     else:
         try:
+            evals_dir = str(PLUGIN_ROOT / "evals")
+            if evals_dir not in sys.path:
+                sys.path.insert(0, evals_dir)
+            from eval_checks import is_manual_case  # type: ignore[import-not-found]
+
             cases_data = json.loads(cases_json.read_text(encoding="utf-8"))
-            if not isinstance(cases_data, list) or not (10 <= len(cases_data) <= 15):
+            if not isinstance(cases_data, list):
                 report.warn(
-                    f".agents/gravity-workflow/evals/cases.json contient "
-                    f"{len(cases_data) if isinstance(cases_data, list) else '?'} cas (recommandé : 10 à 15)."
+                    ".agents/gravity-workflow/evals/cases.json contient ? cas auto (recommandé : 10 à 15)."
                 )
+            else:
+                auto_cases = [
+                    c for c in cases_data if isinstance(c, dict) and not is_manual_case(c)
+                ]
+                if not (10 <= len(auto_cases) <= 15):
+                    report.warn(
+                        f".agents/gravity-workflow/evals/cases.json contient "
+                        f"{len(auto_cases)} cas auto (recommandé : 10 à 15)."
+                    )
         except Exception as exc:
             report.error(f".agents/gravity-workflow/evals/cases.json invalide : {exc}")
 

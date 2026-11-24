@@ -17,7 +17,7 @@ Gravity Workflow sépare strictement le moteur du harnais des fichiers propres a
 plugin/
 ├── plugin.json                         # Manifeste Antigravity (9 champs officiels, UTF-8 sans BOM)
 ├── config/
-│   └── module.json                     # Contrat module v1 (id="workflow", storage="workflow", ui="none", target="gravity")
+│   └── module.json                     # Contrat module v1 (id="workflow", storage="workflow", hôte UI MCP App unifié /gravity dashboard)
 ├── hooks.json                          # Groupes PreToolUse, PostToolUse, SessionStart et Stop (portables python3)
 ├── README.md
 ├── assets/logo.svg                     # SVG carré 1:1
@@ -30,7 +30,9 @@ plugin/
 │   │   ├── SKILL.md                    # Chef d'orchestre principal /gravity-workflow
 │   │   └── references/                 # 10 fiches chargées à la demande (00 à 09)
 │   └── caveman/
-│       └── SKILL.md                    # Skill compagnon /caveman (intensités, commit, compress)
+│       ├── SKILL.md                    # Skill compagnon /caveman (intensités, commit, compress)
+│       └── references/
+│           └── style-examples.md       # Exemples comparatifs FR/EN (lite / full / ultra / commit)
 ├── hooks/
 │   ├── hook_runtime.py                 # Stdin threadé, emit_ok/emit_json, résolution workspace, verrous
 │   ├── safety_policy.py                # Façade rétrocompatible (<= 220 L) vers policy/
@@ -50,11 +52,12 @@ plugin/
 ├── workflows/
 │   └── review_pipeline.py              # Pipeline Planner -> Builder (branch) -> Reviewer indépendant
 ├── evals/
-│   ├── cases.json                      # Catalogue starter de 12 cas
+│   ├── cases.json                      # Catalogue starter de 12 cas auto + 5 [manual]
 │   ├── eval_checks.py                  # Prédicats AST-whitelist et rendu Markdown
 │   └── run_suite.py                    # Runner parallèle isolé pour run_workflow
 ├── observability/
 │   ├── caveman_protocol.py             # Règles Caveman, adaptation evo et directives sous-agents
+│   ├── metrics_signals.py              # Adaptateur RO gravity-metrics (delta [-5, +10])
 │   ├── profile_engine.py               # Moteur 3 axes + adaptation evo + Caveman (chmod 0755)
 │   ├── state_writer.py                 # Écrivain atomique + default_workflow_home() + registre global
 │   └── statusline.py                   # Barre /statusline CLI (chmod 0755)
@@ -93,10 +96,10 @@ workspace-template/
     │   └── 06-engineering-principles.md # trigger: model_decision (KISS, YAGNI, DRY, SOLID, CUPID)
     └── gravity-workflow/
         ├── .gitignore                  # Ignore *.lock, runs.jsonl, last_verified.patch, reports
-        ├── PROGRESS.md                 # Suivi des 8 étapes + Bonus
+        ├── PROGRESS.md                 # Suivi (8 étapes + 1 bonus, 9 cases)
         ├── BACKLOG.md                  # Arbitrages différés & nouveaux cas /learn
         ├── profile.json                # Profil v2 (evo consultatif, standard, caveman: lite)
-        ├── evals/cases.json            # Copie locale des 12 cas d'évaluation
+        ├── evals/cases.json            # Copie locale des 12 cas auto + 5 [manual] d'évaluation
         └── observability/live_state.json
 ```
 
@@ -115,7 +118,7 @@ workspace-template/
   3. **Démarrage à froid** (workspace vierge) : `quick` lance `--mode quickstart`, `deep` lance `--mode full`, `standard` laisse le choix.
 - **Modes de `init_workspace.py` :** *(source unique [`plugin/templates/`](../plugin/templates/), écriture UTF-8 sans BOM en LF ; `PROGRESS.md` et `live_state.json` générés dynamiquement)*
   - `full` *(défaut)* : déploie le socle complet hors stacks spécifiques (12 fichiers : `PROGRESS.md` à `0/8` + `01-safety-boundaries.md`, `04-release-checklist.md`, `05-git-versioning.md`, `06-engineering-principles.md`).
-  - `quickstart` : déploie le socle minimal viable (11 fichiers : `AGENTS.md`, `mcp_config.json`, `01-safety-boundaries.md`, `05-git-versioning.md`, `06-engineering-principles.md` + `.agents/gravity-workflow/`, `PROGRESS.md` à `Quick Start [~] 3/8`).
+  - `quickstart` : déploie le socle minimal viable (11 fichiers : `AGENTS.md`, `mcp_config.json`, `01-safety-boundaries.md`, `05-git-versioning.md`, `06-engineering-principles.md` + `.agents/gravity-workflow/`, `PROGRESS.md` à `Quick Start [~] 3/8 (8 étapes + 1 bonus)`).
   - `--with-stack {python,api}` *(répétable, opt-in YAGNI)* : ajoute à la demande `02-python-stdlib.md` (`python`) et/ou `03-api-architecture.md` (`api`).
   - `--ensure-git-rule` : déploie uniquement `.agents/rules/05-git-versioning.md` s'il est absent d'un projet existant (idempotent).
   - **Anti-écrasement :** aucun fichier existant n'est remplacé sans `--force` après accord explicite.
@@ -138,4 +141,4 @@ workspace-template/
   - **Nettoyage hérité (`--clean-legacy`, activé automatiquement par `--all`) :** détecte et supprime l'ancien registre `~/.gravity/live_workspaces.json`, les dossiers hérités `.agents/gravity/` et un ancien plugin workflow `plugins/gravity/` (sans jamais supprimer un plugin `gravity` Core portant `config/module.json` `"id": "core"`).
   - **Registre & diagnostic :** `--clean-registry` supprime `~/.gemini/gravity/workflow/live_workspaces.json` (ou `$GRAVITY_WORKFLOW_HOME` / `$GRAVITY_HOME/workflow`, et le dossier `workflow/` s'il est vide) ; `--all` combine plugin + registre + artefacts hérités (+ `--clean-workspace` si fourni) ; `--uninstall --check` / `--workspace-only --check` inspecte en lecture seule (y compris les anciens vestiges `gravity-workflow/live-widget` ou `gravity/live-widget` dans `config.json` et `statusLine` dans `settings.json`) et `--dry-run` simule sans écriture.
   - **Wrapper déprécié [`uninstall.py`](../uninstall.py) (`<= 50 L`) :** affiche `[DEPRECATED]` sur `stderr`, injecte `--uninstall` si ni `--uninstall` ni `--workspace-only` n'est présent, puis délègue à `install.main()`.
-- **Migration UI :** l'ancien sidecar transitoire `live-widget` (port `4789`, retiré) a convergé vers le cockpit MCP App unifié `/gravity dashboard` du plugin Core `gravity` (`"ui": {"mode": "none", "target": "gravity"}` dans `plugin/config/module.json`).
+- **Migration UI :** l'ancien sidecar transitoire `live-widget` (port `4789`, retiré) a convergé vers l'hôte UI MCP App unifié `/gravity dashboard` du plugin Core `gravity` (`"ui": {"mode": "none", "target": "gravity"}` dans `plugin/config/module.json`).

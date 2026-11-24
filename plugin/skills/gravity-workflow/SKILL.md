@@ -23,7 +23,7 @@ Mots-clés en tête (**mot entier**) ou sous-commandes (`status`, `evals`, `init
 - **Vérif (`unsafe|--no-verify`) :** coupe revue/tests pour **1 tâche ou `run_workflow`**, jamais persistée (`PreToolUse` ON).
 - **Concision (`/caveman`) :** défaut `lite` (`auto` -> `full` si contexte/coût élevé via `metrics` ; `evals/` exclu).
 - **Cadrage `/grill-me` :** explore d'abord ; 1 question/fois via `ask_question` (`(Recommended)` 1er) ou `/plan /grill-me`.
-- **Bridge (`depth >= 1`) :** `references/05-workflows-and-routing.md` (`caveman ultra`, suivi 1 ligne, 0 `ask_question`, `review_pipeline.py --apply` sur `dev` + vérif + cleanup worktree avant `reply_thread(..., close=True, dispatch=False)`).
+- **Bridge (`depth >= 1`) :** `references/05-workflows-and-routing.md` (`caveman ultra`, suivi 1 ligne, 0 `ask_question`, `patch_apply.py --apply` sur `dev` + vérif + cleanup worktree avant `reply_thread(..., close=True, dispatch=False)`).
 
 ```bash
 python3 <plugin_root>/observability/profile_engine.py get --workspace . --json

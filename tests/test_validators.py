@@ -19,7 +19,7 @@ if str(PLUGIN_ROOT / "workflows") not in sys.path:
 
 import eval_checks  # noqa: E402
 import init_workspace  # noqa: E402
-import review_pipeline  # noqa: E402
+import patch_apply  # noqa: E402
 from validators import Report, plugin_validator, validate_plugin, validate_workspace  # noqa: E402
 from validators.base import parse_frontmatter, validate_agent_file  # noqa: E402
 
@@ -136,6 +136,111 @@ class TestEvalChecks(unittest.TestCase):
                 "agent_frontmatter_readonly('bad_auditor.md')", base, {}
             )
             self.assertFalse(ok_bad)
+
+    def test_manual_cases_selection_studio_checks_and_report(self) -> None:
+        cases_path = PLUGIN_ROOT / "evals/cases.json"
+        all_cases = json.loads(cases_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(all_cases), 17)
+
+        # is_manual_case variants
+        self.assertFalse(eval_checks.is_manual_case(all_cases[0]))
+        self.assertTrue(eval_checks.is_manual_case({"id": "M1", "manual": True, "description": "Test"}))
+        self.assertTrue(eval_checks.is_manual_case({"id": "M2", "description": "[MANUAL] Check"}))
+        self.assertFalse(eval_checks.is_manual_case("invalid"))
+
+        # select_eval_cases default excludes [manual]
+        auto_selected, skipped_ids = eval_checks.select_eval_cases(all_cases)
+        self.assertEqual(len(auto_selected), 12)
+        self.assertEqual(
+            skipped_ids,
+            [
+                "CASE-13-STUDIO-TRACKED-RO",
+                "CASE-14-STUDIO-GIT-RELEASE-GUARD",
+                "CASE-15-STUDIO-PLAN-CHECKPOINT",
+                "CASE-16-STUDIO-FAIL-CLOSED-BRIDGE",
+                "CASE-17-STUDIO-TASKS-NO-DRIFT",
+            ],
+        )
+
+        # include_manual=True keeps all
+        all_selected, skipped_none = eval_checks.select_eval_cases(all_cases, include_manual=True)
+        self.assertEqual(len(all_selected), 17)
+        self.assertEqual(skipped_none, [])
+
+        # explicit case_ids includes requested [manual] cases
+        explicit, skipped_exp = eval_checks.select_eval_cases(
+            all_cases,
+            selected_ids=["CASE-01-SCHEMA-INTEGRITY", "CASE-13-STUDIO-TRACKED-RO"],
+        )
+        self.assertEqual([c["id"] for c in explicit], ["CASE-01-SCHEMA-INTEGRITY", "CASE-13-STUDIO-TRACKED-RO"])
+        self.assertEqual(skipped_exp, [])
+
+        # manual case without auto_checks returns []
+        self.assertEqual(
+            eval_checks.run_deterministic_checks(
+                {"id": "M-EMPTY", "manual": True, "description": "[manual] Empty"},
+                PLUGIN_ROOT,
+                {},
+            ),
+            [],
+        )
+
+        # run_deterministic_checks on CASE-13..17
+        by_id = {c["id"]: c for c in all_cases}
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+
+            # CASE-13 & CASE-14: expect_refusal()
+            self.assertEqual(eval_checks.run_deterministic_checks(by_id["CASE-13-STUDIO-TRACKED-RO"], base, {"refused": True}), [])
+            self.assertTrue(eval_checks.run_deterministic_checks(by_id["CASE-13-STUDIO-TRACKED-RO"], base, {"refused": False}))
+            self.assertEqual(eval_checks.run_deterministic_checks(by_id["CASE-14-STUDIO-GIT-RELEASE-GUARD"], base, {"refused": True}), [])
+            self.assertTrue(eval_checks.run_deterministic_checks(by_id["CASE-14-STUDIO-GIT-RELEASE-GUARD"], base, {"refused": False}))
+
+            # CASE-15: docs/dispatch_plan.md with dispatch=true
+            (base / "docs").mkdir()
+            (base / "docs/dispatch_plan.md").write_text(
+                "# Plan\n1. Checkpoint humain unique avant send_message(..., dispatch=true).\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(eval_checks.run_deterministic_checks(by_id["CASE-15-STUDIO-PLAN-CHECKPOINT"], base, {}), [])
+            (base / "docs/dispatch_plan.md").write_text("# Plan sans dispatch\n", encoding="utf-8")
+            self.assertTrue(eval_checks.run_deterministic_checks(by_id["CASE-15-STUDIO-PLAN-CHECKPOINT"], base, {}))
+
+            # CASE-16: out/bridge_reply.json fail-closed
+            (base / "out").mkdir()
+            (base / "out/bridge_reply.json").write_text(
+                json.dumps({"close": False, "dispatch": False, "status": "blocked", "reason": "test rouge"}),
+                encoding="utf-8",
+            )
+            self.assertEqual(eval_checks.run_deterministic_checks(by_id["CASE-16-STUDIO-FAIL-CLOSED-BRIDGE"], base, {}), [])
+            (base / "out/bridge_reply.json").write_text(
+                json.dumps({"close": True, "dispatch": False}),
+                encoding="utf-8",
+            )
+            self.assertTrue(eval_checks.run_deterministic_checks(by_id["CASE-16-STUDIO-FAIL-CLOSED-BRIDGE"], base, {}))
+
+            # CASE-17: out/handoff_body.md referencing tasks/2026-11-24-w2.md
+            (base / "out/handoff_body.md").write_text(
+                "Source : tasks/2026-11-24-w2.md (`run_deterministic_checks`)\n`python3 plugin/scripts/validate.py --strict`\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(eval_checks.run_deterministic_checks(by_id["CASE-17-STUDIO-TASKS-NO-DRIFT"], base, {}), [])
+            (base / "out/handoff_body.md").write_text("Résumé vague\n", encoding="utf-8")
+            self.assertTrue(eval_checks.run_deterministic_checks(by_id["CASE-17-STUDIO-TASKS-NO-DRIFT"], base, {}))
+
+        # render_markdown_report includes skipped_manual_ids when present
+        md = eval_checks.render_markdown_report(
+            {
+                "timestamp": "2026-11-24T20:00:00Z",
+                "passed": 12,
+                "total": 12,
+                "prefilter_rejected": 0,
+                "skipped_manual_ids": ["CASE-13-STUDIO-TRACKED-RO"],
+                "results": [],
+            }
+        )
+        self.assertIn("CASE-13-STUDIO-TRACKED-RO", md)
+        self.assertIn("[manual]", md)
 
 
 class TestPluginValidator(unittest.TestCase):
@@ -474,6 +579,64 @@ class TestPluginValidator(unittest.TestCase):
                 self.assertTrue(any("_render_live_state_json" in e for e in rep_live_drift.errors), rep_live_drift.errors)
                 wt_live.write_text(orig_live, encoding="utf-8", newline="\n")
 
+    def test_validators_count_only_auto_cases_and_check_progress_and_release_checklist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_dir = Path(tmp)
+            plugin_dir = repo_dir / "plugin"
+            self._build_minimal_plugin(plugin_dir)
+            wt_dir = repo_dir / "workspace-template"
+            shutil.copytree(PLUGIN_ROOT.parent / "workspace-template", wt_dir)
+
+            with mock.patch.object(plugin_validator, "run_hook_dry_runs"), mock.patch(
+                "validators.workspace_validator.run_hook_dry_runs"
+            ):
+                # 12 auto + 5 [manual] passes strict without warnings in both validators
+                rep_p = Report()
+                validate_plugin(plugin_dir, rep_p)
+                self.assertTrue(rep_p.ok(strict=True), f"{rep_p.errors} {rep_p.warnings}")
+
+                rep_w = Report()
+                validate_workspace(wt_dir, rep_w)
+                self.assertTrue(rep_w.ok(strict=True), f"{rep_w.errors} {rep_w.warnings}")
+
+                # Dropping auto cases below 10 triggers warning even with many [manual] cases
+                cases_data = json.loads((plugin_dir / "evals/cases.json").read_text(encoding="utf-8"))
+                reduced = cases_data[:5] + [c for c in cases_data if eval_checks.is_manual_case(c)]
+                reduced_txt = json.dumps(reduced, indent=2, ensure_ascii=False) + "\n"
+                (plugin_dir / "evals/cases.json").write_text(reduced_txt, encoding="utf-8", newline="\n")
+                (wt_dir / ".agents/gravity-workflow/evals/cases.json").write_text(
+                    reduced_txt, encoding="utf-8", newline="\n"
+                )
+
+                rep_p_warn = Report()
+                validate_plugin(plugin_dir, rep_p_warn)
+                self.assertTrue(any("5 cas auto" in w for w in rep_p_warn.warnings), rep_p_warn.warnings)
+
+                rep_w_warn = Report()
+                validate_workspace(wt_dir, rep_w_warn)
+                self.assertTrue(any("5 cas auto" in w for w in rep_w_warn.warnings), rep_w_warn.warnings)
+
+        # PROGRESS.md clarifies (8 étapes + 1 bonus) in both modes and matches workspace-template
+        full_prog = init_workspace._render_progress_md("full")
+        qs_prog = init_workspace._render_progress_md("quickstart")
+        self.assertIn("## Avancement des étapes (8 étapes + 1 bonus)", full_prog)
+        self.assertIn("8 étapes + 1 bonus", full_prog.splitlines()[2])
+        self.assertIn("(8 étapes + 1 bonus)", qs_prog.splitlines()[2])
+        wt_prog_txt = (PLUGIN_ROOT.parent / "workspace-template/.agents/gravity-workflow/PROGRESS.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(wt_prog_txt, full_prog)
+
+        # 04-release-checklist.md byte parity + updated requirements
+        tpl_chk = (PLUGIN_ROOT / "templates/.agents/rules/04-release-checklist.md").read_bytes()
+        wt_chk = (PLUGIN_ROOT.parent / "workspace-template/.agents/rules/04-release-checklist.md").read_bytes()
+        self.assertEqual(tpl_chk, wt_chk)
+        chk_txt = tpl_chk.decode("utf-8")
+        self.assertIn("`100 % PASS` auto, plus cas `[manual]` rejoués si applicables", chk_txt)
+        self.assertIn("python3", chk_txt)
+        self.assertIn("python", chk_txt)
+        self.assertIn("CHANGELOG.md", chk_txt)
+
 
 class TestReviewPipelineHelpers(unittest.TestCase):
     def test_patch_detection_save_apply_and_safe_worktree_cleanup(self) -> None:
@@ -487,9 +650,9 @@ class TestReviewPipelineHelpers(unittest.TestCase):
             "+world\n"
         )
         snippet = "--- hello.txt ---\nworld\n"
-        self.assertTrue(review_pipeline._is_unified_diff(unified))
-        self.assertFalse(review_pipeline._is_unified_diff(snippet))
-        self.assertFalse(review_pipeline._is_unified_diff(""))
+        self.assertTrue(patch_apply._is_unified_diff(unified))
+        self.assertFalse(patch_apply._is_unified_diff(snippet))
+        self.assertFalse(patch_apply._is_unified_diff(""))
 
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -515,16 +678,16 @@ class TestReviewPipelineHelpers(unittest.TestCase):
             (wt_dir / "hello.txt").write_text("world\n", encoding="utf-8", newline="\n")
 
             # _read_worktree_patch fallback -> git -C <wt_dir> diff
-            read_diff = review_pipeline._read_worktree_patch(str(wt_dir), "", ["hello.txt"])
+            read_diff = patch_apply._read_worktree_patch(str(wt_dir), "", ["hello.txt"])
             self.assertIn("diff --git a/hello.txt b/hello.txt", read_diff)
             self.assertIn("+world", read_diff)
 
             with mock.patch.dict(os.environ, {"GRAVITY_WORKFLOW_HOME": str(wf_home)}):
-                with mock.patch.object(review_pipeline, "WS_ROOT", repo):
+                with mock.patch.object(patch_apply, "WS_ROOT", repo):
                     # Non-unified snippet is rejected (returns None)
-                    self.assertIsNone(review_pipeline._safe_save_verified_patch(snippet, str(wt_dir)))
+                    self.assertIsNone(patch_apply._safe_save_verified_patch(snippet, str(wt_dir)))
                     # Unified diff is saved in UTF-8 without BOM + LF
-                    saved = review_pipeline._safe_save_verified_patch(read_diff.replace("\n", "\r\n"), str(wt_dir))
+                    saved = patch_apply._safe_save_verified_patch(read_diff.replace("\n", "\r\n"), str(wt_dir))
                     self.assertIsNotNone(saved)
                     assert saved is not None
                     raw_saved = saved.read_bytes()
@@ -532,17 +695,17 @@ class TestReviewPipelineHelpers(unittest.TestCase):
                     self.assertNotIn(b"\r\n", raw_saved)
 
                 # Safety guard: cleanup refuses caller_workspace, parent, plugin root, .git
-                self.assertFalse(review_pipeline.cleanup_worktree_best_effort(repo, repo))
-                self.assertFalse(review_pipeline.cleanup_worktree_best_effort(base, repo))
-                self.assertFalse(review_pipeline.cleanup_worktree_best_effort(PLUGIN_ROOT, repo))
-                self.assertFalse(review_pipeline.cleanup_worktree_best_effort(repo / ".git", repo))
+                self.assertFalse(patch_apply.cleanup_worktree_best_effort(repo, repo))
+                self.assertFalse(patch_apply.cleanup_worktree_best_effort(base, repo))
+                self.assertFalse(patch_apply.cleanup_worktree_best_effort(PLUGIN_ROOT, repo))
+                self.assertFalse(patch_apply.cleanup_worktree_best_effort(repo / ".git", repo))
                 self.assertTrue(repo.is_dir())
 
                 # CLI --apply applies patch onto repo and cleans isolated worktree
                 proc = subprocess.run(
                     [
                         sys.executable,
-                        str(PLUGIN_ROOT / "workflows/review_pipeline.py"),
+                        str(PLUGIN_ROOT / "workflows/patch_apply.py"),
                         "--apply",
                         "--workspace",
                         str(repo),

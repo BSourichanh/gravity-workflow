@@ -5,7 +5,7 @@ Harnais Antigravity 100 % stdlib Python 3 (zéro dépendance dans `plugin/`, `wo
 - `plugin/` : moteur (`plugin.json` 9 champs, `config/module.json` v1 `id: "workflow"`, `templates/`, skills, agents, hooks fail-closed, workflows, evals).
 - `workspace-template/` : référence (14 fichiers alignés sur `plugin/templates/`).
 - `install.py` (`--uninstall`, wrapper `uninstall.py`, `$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow`) ; [`docs/`](docs/README.md).
-- **Périmètre séparé :** `../gravity-metrics`, hub [`../gravity`](../gravity/).
+- **Périmètre séparé :** `../gravity-metrics`, hub `../gravity` (`https://github.com/BSourichanh/gravity`).
 
 ## Invariants
 - **Git & versioning (chef d'orchestre uniquement) :** `dev`/branche dédiée (jamais `main`) ; `commit`/`push`/tag/release (accord requis) : *Conventional Commits*, SemVer (`plugin/plugin.json` + `CHANGELOG.md`), tags `vX.Y.Z`, checks ; sous-agents/`swarm` exclus.

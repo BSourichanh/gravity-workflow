@@ -37,7 +37,7 @@ Les agents sont validés strictement par [`validate.py`](../plugin/scripts/valid
    - Si `PASS`, exporte `last_verified.patch` (uniquement sur vrai diff unifié UTF-8 sans BOM LF) dans le stockage centralisé, journalise la commande `--apply` (ou applique directement via `apply_verified_patch()` + `cleanup_worktree_best_effort()` si `args.get("apply_on_pass")` est actif) et enregistre `preset_profile`, `role_models`, `verdict` et `remediation_rounds` dans `runs.jsonl`.
 
 6. **CLI d'application & protocole autonome Bridge (`depth >= 1`) :**
-   - `python3 <plugin_root>/workflows/review_pipeline.py --apply --workspace . [--worktree <worktree>]` vérifie (`git apply --check`) et applique (`git apply --whitespace=nowarn`) `last_verified.patch`, puis nettoie best-effort le worktree isolé (sans jamais toucher le workspace appelant ni les chemins protégés).
+   - `python3 <plugin_root>/workflows/patch_apply.py --apply --workspace . [--worktree <worktree>]` vérifie (`git apply --check`) et applique (`git apply --whitespace=nowarn`) `last_verified.patch`, puis nettoie best-effort le worktree isolé (sans jamais toucher le workspace appelant ni les chemins protégés), tandis que `workflows/review_pipeline.py` conserve un top-level `await` natif pour `run_workflow`.
    - En session Bridge (`depth >= 1`), l'agent suit le protocole autonome documenté dans [`05-workflows-and-routing.md`](../plugin/skills/gravity-workflow/references/05-workflows-and-routing.md) (`caveman ultra`, mini-suivi 1 ligne, 0 `ask_question`, application sur `dev` + re-vérification + nettoyage worktree avant `reply_thread(..., close=True, dispatch=False)`, 0 `commit`/`push`/`tag`).
 
 ---

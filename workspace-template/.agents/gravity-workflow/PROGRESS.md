@@ -1,6 +1,6 @@
 # Gravity Workflow Progress
 
-- **Parcours :** Guidé (0/8)
+- **Parcours :** Guidé (0/8 ; 8 étapes + 1 bonus)
 - **Domaine :** À définir
 - **Livrable principal :** À définir
 - **Sources de vérité :** À définir
@@ -9,7 +9,7 @@
   2. Aucune commande destructrice système/Git/DB (`rm -rf`, `git push --force`, `DROP DATABASE`)
   3. Auto-protection des hooks et règles de sécurité
 
-## Avancement des étapes
+## Avancement des étapes (8 étapes + 1 bonus)
 - [ ] Cadrage du projet
 - [ ] Socle & règles
 - [ ] Équipe & Reviewer indépendant

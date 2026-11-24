@@ -234,10 +234,52 @@ def evaluate_predicate(
     return False, f"Prédicat inconnu ou arité invalide : {expr}"
 
 
+def is_manual_case(case: Any) -> bool:
+    """Indique si un cas d'évaluation est marqué `[manual]` (`manual: true` ou préfixe `[manual]`)."""
+    if not isinstance(case, dict):
+        return False
+    return bool(case.get("manual")) or "[manual]" in str(case.get("description", "")).lower()
+
+
+def select_eval_cases(
+    all_cases: List[Dict[str, Any]],
+    selected_ids: Optional[Any] = None,
+    include_manual: bool = False,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Sélectionne les cas à exécuter et retourne `(selected, skipped_manual_ids)`."""
+    if isinstance(selected_ids, str):
+        id_tokens = [tok.strip() for tok in selected_ids.split(",") if tok.strip()]
+    elif isinstance(selected_ids, (list, tuple, set)):
+        id_tokens = [str(tok).strip() for tok in selected_ids if str(tok).strip()]
+    else:
+        id_tokens = []
+
+    if id_tokens:
+        wanted = set(id_tokens)
+        selected = [c for c in all_cases if isinstance(c, dict) and c.get("id") in wanted]
+        return selected, []
+
+    if include_manual:
+        return [c for c in all_cases if isinstance(c, dict)], []
+
+    selected: List[Dict[str, Any]] = []
+    skipped_manual_ids: List[str] = []
+    for case in all_cases:
+        if not isinstance(case, dict):
+            continue
+        if is_manual_case(case):
+            skipped_manual_ids.append(str(case.get("id", "")))
+        else:
+            selected.append(case)
+    return selected, skipped_manual_ids
+
+
 def run_deterministic_checks(
     case: Dict[str, Any], base_dir: Path, candidate: Dict[str, Any]
 ) -> List[str]:
     """Pré-filtre déterministe Python (0 token)."""
+    if is_manual_case(case) and not case.get("auto_checks"):
+        return []
     failures: List[str] = []
     for expr in case.get("auto_checks", []):
         ok, detail = evaluate_predicate(expr, base_dir, candidate)
@@ -254,12 +296,22 @@ def render_markdown_report(summary: Dict[str, Any]) -> str:
         f"- **Date (UTC)** : {summary['timestamp']}",
         f"- **Score global** : {summary['passed']}/{summary['total']} PASS",
         f"- **Rejets pré-filtre (0 token juge)** : {summary['prefilter_rejected']}",
-        "",
-        "## Résultats détaillés",
-        "",
-        "| Cas | Pré-filtre | Juge indépendant | Verdict | Détails |",
-        "| :--- | :--- | :--- | :--- | :--- |",
     ]
+    skipped_manual = summary.get("skipped_manual_ids") or []
+    if skipped_manual:
+        ids_fmt = ", ".join(f"`{cid}`" for cid in skipped_manual)
+        lines.append(
+            f"- **Cas `[manual]` exclus par défaut ({len(skipped_manual)})** : {ids_fmt}"
+        )
+    lines.extend(
+        [
+            "",
+            "## Résultats détaillés",
+            "",
+            "| Cas | Pré-filtre | Juge indépendant | Verdict | Détails |",
+            "| :--- | :--- | :--- | :--- | :--- |",
+        ]
+    )
     for res in summary["results"]:
         pre = "PASS" if not res["deterministic_failures"] else "FAIL"
         judge_verdict = res["judge"]["verdict"] if res.get("judge") else "SKIPPED"
