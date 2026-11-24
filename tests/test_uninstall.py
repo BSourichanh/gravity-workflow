@@ -23,8 +23,13 @@ import uninstall  # noqa: E402
 
 
 def _run_install_quiet(argv: List[str]) -> int:
+    final_argv = list(argv)
+    if "--skip-validate" not in final_argv and "--strict" not in final_argv:
+        final_argv.append("--skip-validate")
+    if "--no-fix-python" not in final_argv and "--strict" not in final_argv:
+        final_argv.append("--no-fix-python")
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        return install.main(argv)
+        return install.main(final_argv)
 
 
 def _run_uninstall_quiet(argv: List[str]) -> tuple:

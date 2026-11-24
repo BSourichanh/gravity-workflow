@@ -11,8 +11,8 @@ description: Chef d'orchestre unifié Gravity Workflow : 3 profils (quick, stand
 - **Stockage centralisé :** hooks, `Live`, `profile_engine.py` sous `$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/workspaces/<slug>-<sha256_8>/` (repli RO `.agents/gravity-workflow/profile.json`). `.agents/` optionnel (`init`).
 - **`PreToolUse` fail-closed ON :** secrets, destructeurs, auto-protection actifs même avec `unsafe`/`--no-verify`.
 - **Zéro jargon & anti-écrasement :** aucun numéro artificiel ; aucun écrasement sans diff validé.
-- **Git & versioning (chef d'orchestre seul) :** `commit`/`push`/tag/release (accord requis) via `.agents/rules/05-git-versioning.md` (`dev`, vérifs, *Conventional Commits*, SemVer + `CHANGELOG.md`, tags `vX.Y.Z`) ; interdit sous-agents/`swarm`/Bridge.
-- **Clôture `gravity-metrics` (racine mono-dépôt seule) :** post-commit/push via `references/08-session-learning.md` (`--update-sealed` si `push` ultérieur) ; interdit sous-agents/`swarm`/Bridge (`depth >= 1`).
+- **Git & versioning (chef d'orchestre seul) :** `commit`/`push`/tag/release (accord requis) via `.agents/rules/05-git-versioning.md` (`dev`, vérifs, *Conventional Commits*, SemVer + `CHANGELOG.md`, tags `vX.Y.Z`) ; interdit sous-agents/`swarm`/`run_workflow`.
+- **Clôture `gravity-metrics` (racine mono-dépôt seule) :** post-commit/push via `references/08-session-learning.md` (`--update-sealed` si `push` ultérieur) ; interdit sous-agents/`swarm`/`run_workflow`.
 - **Budget & outils :** `AGENTS.md`/`GEMINI.md` + `always_on` `< 20 000` tokens (`<= 24 000` o/fichier). Appelle `run_workflow`, `swarm`, `ask_question`, `invoke_subagent` ; recommande `/boost`, `/teamwork`, `/grill-me`, `/learn`.
 - **Python & profil :** `python3`/`python`/`py -3` (`PATH`) ; passer par `observability/profile_engine.py`.
 
@@ -23,7 +23,7 @@ Mots-clés en tête (**mot entier**) ou sous-commandes (`status`, `evals`, `init
 - **Vérif (`unsafe|--no-verify`) :** coupe revue/tests pour **1 tâche ou `run_workflow`**, jamais persistée (`PreToolUse` ON).
 - **Concision (`/caveman`) :** défaut `lite` (`auto` -> `full` si contexte/coût élevé via `metrics` ; `evals/` exclu).
 - **Cadrage `/grill-me` :** explore d'abord ; 1 question/fois via `ask_question` (`(Recommended)` 1er) ou `/plan /grill-me`.
-- **Bridge (`depth >= 1`) :** `references/05-workflows-and-routing.md` (`caveman ultra`, suivi 1 ligne, 0 `ask_question`, `patch_apply.py --apply` sur `dev` + vérif + cleanup worktree avant `reply_thread(..., close=True, dispatch=False)`).
+- **Vagues & pipeline :** `workflows/wave_runner.py` (`run_workflow` multi-dépôts *fail-isolated*, `plan_file` sans Planner, worktrees détachés, watchdogs `900s`/`360s`, `apply_on_pass=True`) ; `/swarm` si couplé (`references/05-workflows-and-routing.md`).
 
 ```bash
 python3 <plugin_root>/observability/profile_engine.py get --workspace . --json
@@ -55,7 +55,7 @@ Charge **uniquement** la fiche requise :
 - `references/02-charter-and-rules.md` *(Charte & règles)*
 - `references/03-subagents-architecture.md` *(Sous-agents)*
 - `references/04-tools-and-mcp.md` *(Outils & MCP)*
-- `references/05-workflows-and-routing.md` *(Profils, A/B, routeur & Bridge)*
+- `references/05-workflows-and-routing.md` *(Profils, A/B, routeur & wave_runner)*
 - `references/06-safety-hooks.md` *(Garde-fous & hooks)*
 - `references/07-eval-suite.md` *(Évals)*
 - `references/08-session-learning.md` *(Adaptation `evo`, Metrics & `/learn`)*

@@ -149,7 +149,7 @@ class TestMetricsSignals(unittest.TestCase):
         self.assertEqual(res["recent_duplicate_spawns"], 1)
         self.assertEqual(res["recent_rewind_calls"], 1)
         self.assertEqual(res["recent_interrupted_agents"], 1)
-        self.assertEqual(res["recent_bridge_sessions"], 1)
+        self.assertEqual(res["recent_bridge_sessions"], 0)
         self.assertEqual(res["high_output_cost_ratio"], 0.3)
 
     def test_project_matching_active_exclusion_threshold_and_window_sort(self) -> None:

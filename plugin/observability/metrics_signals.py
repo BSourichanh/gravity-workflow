@@ -166,9 +166,8 @@ def collect_metrics_signals(
         recent_interrupted_agents = sum(
             max(0, _safe_int(r.get("interrupted_agents"), 0)) for r in selected
         )
-        recent_bridge_sessions = sum(
-            1 for r in selected if _safe_int(r.get("bridge_children_count"), 0) > 0
-        )
+        # Compatibilité API conservée à 0 après retrait du couplage actif Bridge.
+        recent_bridge_sessions = 0
 
         total_cost_usd = sum(max(0.0, _safe_float(r.get("cost_usd"), 0.0)) for r in selected)
         total_output_usd = sum(max(0.0, _safe_float(r.get("cost_output_usd"), 0.0)) for r in selected)

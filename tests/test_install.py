@@ -124,15 +124,17 @@ class TestGravityInstaller(unittest.TestCase):
     def test_reinstall_requires_force_and_force_upgrades(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "gravity-workflow"
-            self.assertEqual(_run_quiet(["--target", str(target)]), 0)
+            self.assertEqual(_run_quiet(["--target", str(target), "--skip-validate", "--no-fix-python"]), 0)
 
             marker = target / "stale_marker.txt"
             marker.write_text("old-install", encoding="utf-8")
 
-            self.assertNotEqual(_run_quiet(["--target", str(target)]), 0)
+            self.assertNotEqual(_run_quiet(["--target", str(target), "--skip-validate", "--no-fix-python"]), 0)
             self.assertTrue(marker.is_file())
 
-            self.assertEqual(_run_quiet(["--target", str(target), "--force"]), 0)
+            self.assertEqual(
+                _run_quiet(["--target", str(target), "--force", "--skip-validate", "--no-fix-python"]), 0
+            )
             self.assertFalse(marker.exists())
             self.assertTrue((target / "plugin.json").is_file())
 
@@ -140,7 +142,7 @@ class TestGravityInstaller(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             parent = Path(tmp)
             target = parent / "gravity-workflow"
-            self.assertEqual(_run_quiet(["--target", str(target)]), 0)
+            self.assertEqual(_run_quiet(["--target", str(target), "--skip-validate", "--no-fix-python"]), 0)
 
             marker = target / "existing_marker.txt"
             marker.write_text("preserve-me", encoding="utf-8")
@@ -169,7 +171,9 @@ class TestGravityInstaller(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             parent = Path(tmp)
             target = parent / "gravity-workflow"
-            self.assertEqual(_run_quiet(["--target", str(target), "--skip-validate"]), 0)
+            self.assertEqual(
+                _run_quiet(["--target", str(target), "--skip-validate", "--no-fix-python"]), 0
+            )
 
             stale_file = target / "stale_marker.txt"
             stale_file.write_text("stale-root", encoding="utf-8")
@@ -189,7 +193,7 @@ class TestGravityInstaller(unittest.TestCase):
                 real_rename(src, dst)
 
             with mock.patch("install.os.rename", side_effect=locked_rename):
-                rc = _run_quiet(["--target", str(target), "--force"])
+                rc = _run_quiet(["--target", str(target), "--force", "--skip-validate", "--no-fix-python"])
                 self.assertEqual(rc, 0)
 
             self.assertTrue((target / "plugin.json").is_file())
@@ -221,7 +225,9 @@ class TestGravityInstaller(unittest.TestCase):
                     stderr=subprocess.DEVNULL,
                 )
                 try:
-                    rc_win = _run_quiet(["--target", str(target), "--force", "--skip-validate"])
+                    rc_win = _run_quiet(
+                        ["--target", str(target), "--force", "--skip-validate", "--no-fix-python"]
+                    )
                     self.assertEqual(rc_win, 0)
                     self.assertTrue((target / "plugin.json").is_file())
                     self.assertTrue((hooks_dir / "pre_tool_guard.py").is_file())
@@ -242,7 +248,9 @@ class TestGravityInstaller(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             parent = Path(tmp)
             target = parent / "gravity-workflow"
-            self.assertEqual(_run_quiet(["--target", str(target), "--skip-validate"]), 0)
+            self.assertEqual(
+                _run_quiet(["--target", str(target), "--skip-validate", "--no-fix-python"]), 0
+            )
 
             marker = target / "keep_on_rollback.txt"
             marker.write_text("v-old", encoding="utf-8")
@@ -258,7 +266,7 @@ class TestGravityInstaller(unittest.TestCase):
                 real_rename(src, dst)
 
             with mock.patch("install.os.rename", side_effect=fail_second_rename):
-                rc_rb = _run_quiet(["--target", str(target), "--force", "--skip-validate"])
+                rc_rb = _run_quiet(["--target", str(target), "--force", "--skip-validate", "--no-fix-python"])
                 self.assertEqual(rc_rb, 1)
 
             self.assertTrue(marker.is_file())
@@ -281,7 +289,7 @@ class TestGravityInstaller(unittest.TestCase):
             with mock.patch("install.os.rename", side_effect=deny_first_rename), mock.patch(
                 "install.shutil.copy2", side_effect=locked_readme_copy2
             ):
-                rc_same = _run_quiet(["--target", str(target), "--force", "--skip-validate"])
+                rc_same = _run_quiet(["--target", str(target), "--force", "--skip-validate", "--no-fix-python"])
                 self.assertEqual(rc_same, 0)
 
             # Différent -> échec propre (rc=1) avec rollback in-place complet (pas d'état mixte)
@@ -294,7 +302,7 @@ class TestGravityInstaller(unittest.TestCase):
             with mock.patch("install.os.rename", side_effect=deny_first_rename), mock.patch(
                 "install.shutil.copy2", side_effect=locked_readme_copy2
             ):
-                rc_diff = _run_quiet(["--target", str(target), "--force", "--skip-validate"])
+                rc_diff = _run_quiet(["--target", str(target), "--force", "--skip-validate", "--no-fix-python"])
                 self.assertEqual(rc_diff, 1)
             self.assertEqual((target / "plugin.json").read_text(encoding="utf-8"), old_manifest)
             self.assertEqual((target / "README.md").read_text(encoding="utf-8"), "DIFFERENT")
@@ -341,7 +349,7 @@ class TestGravityInstaller(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ws = Path(tmp) / "my-project"
             ws.mkdir()
-            rc = _run_quiet(["--scope", "workspace", "--workspace", str(ws)])
+            rc = _run_quiet(["--scope", "workspace", "--workspace", str(ws), "--skip-validate", "--no-fix-python"])
             self.assertEqual(rc, 0)
             expected = ws / ".agents" / "plugins" / "gravity-workflow"
             self.assertTrue((expected / "plugin.json").is_file())
@@ -367,13 +375,15 @@ class TestGravityInstaller(unittest.TestCase):
 
             # --keep-legacy préserve l'ancien plugin sibling
             self.assertEqual(
-                _run_quiet(["--target", str(target), "--keep-legacy", "--skip-validate"]), 0
+                _run_quiet(["--target", str(target), "--keep-legacy", "--skip-validate", "--no-fix-python"]), 0
             )
             self.assertTrue((target / "plugin.json").is_file())
             self.assertTrue(legacy_dir.is_dir())
 
             # Installation par défaut (ou --force) supprime proprement l'ancien plugin 'gravity' workflow
-            self.assertEqual(_run_quiet(["--target", str(target), "--force", "--skip-validate"]), 0)
+            self.assertEqual(
+                _run_quiet(["--target", str(target), "--force", "--skip-validate", "--no-fix-python"]), 0
+            )
             self.assertTrue((target / "plugin.json").is_file())
             self.assertFalse(legacy_dir.exists())
 
@@ -385,7 +395,9 @@ class TestGravityInstaller(unittest.TestCase):
                 encoding="utf-8",
             )
             (foreign_dir / "hooks" / "pre_tool_guard.py").write_text("# foreign\n", encoding="utf-8")
-            self.assertEqual(_run_quiet(["--target", str(target), "--force", "--skip-validate"]), 0)
+            self.assertEqual(
+                _run_quiet(["--target", str(target), "--force", "--skip-validate", "--no-fix-python"]), 0
+            )
             self.assertTrue(foreign_dir.is_dir())
 
             # En portée workspace, nettoie également .agents/plugins/gravity si marqueurs workflow hérités
@@ -400,7 +412,7 @@ class TestGravityInstaller(unittest.TestCase):
                 "---\nname: gravity\n---\n", encoding="utf-8"
             )
             self.assertEqual(
-                _run_quiet(["--scope", "workspace", "--workspace", str(ws), "--skip-validate"]), 0
+                _run_quiet(["--scope", "workspace", "--workspace", str(ws), "--skip-validate", "--no-fix-python"]), 0
             )
             self.assertTrue((ws / ".agents" / "plugins" / "gravity-workflow" / "plugin.json").is_file())
             self.assertFalse(ws_legacy.exists())
@@ -425,8 +437,12 @@ class TestGravityInstaller(unittest.TestCase):
 
             self.assertFalse(install.is_legacy_gravity_plugin_dir(core_dir))
             self.assertTrue(install.is_core_gravity_plugin_dir(core_dir))
-            self.assertEqual(_run_quiet(["--target", str(target), "--skip-validate"]), 0)
-            self.assertEqual(_run_quiet(["--target", str(target), "--force", "--skip-validate"]), 0)
+            self.assertEqual(
+                _run_quiet(["--target", str(target), "--skip-validate", "--no-fix-python"]), 0
+            )
+            self.assertEqual(
+                _run_quiet(["--target", str(target), "--force", "--skip-validate", "--no-fix-python"]), 0
+            )
             self.assertTrue((target / "plugin.json").is_file())
             self.assertTrue((core_dir / "config" / "module.json").is_file())
             self.assertEqual((core_dir / "config" / "module.json").read_text(encoding="utf-8"), core_module)
@@ -441,7 +457,7 @@ class TestGravityInstaller(unittest.TestCase):
             (ws_core / "config" / "module.json").write_text(core_module, encoding="utf-8")
             (ws_core / "skills" / "gravity" / "SKILL.md").write_text(core_skill, encoding="utf-8")
             self.assertEqual(
-                _run_quiet(["--scope", "workspace", "--workspace", str(ws), "--skip-validate"]), 0
+                _run_quiet(["--scope", "workspace", "--workspace", str(ws), "--skip-validate", "--no-fix-python"]), 0
             )
             self.assertTrue((ws_core / "config" / "module.json").is_file())
 
@@ -450,7 +466,9 @@ class TestGravityInstaller(unittest.TestCase):
             unmarked_dir.mkdir(parents=True)
             (unmarked_dir / "plugin.json").write_text(core_manifest, encoding="utf-8")
             unmarked_target = base / "unmarked_plugins" / "gravity-workflow"
-            self.assertEqual(_run_quiet(["--target", str(unmarked_target), "--skip-validate"]), 0)
+            self.assertEqual(
+                _run_quiet(["--target", str(unmarked_target), "--skip-validate", "--no-fix-python"]), 0
+            )
             self.assertTrue((unmarked_dir / "plugin.json").is_file())
 
     def test_init_workspace_preserves_existing_agents_md_even_with_plugin_force(self) -> None:
@@ -462,12 +480,16 @@ class TestGravityInstaller(unittest.TestCase):
             custom_agents = "# Custom Project AGENTS\nDo not overwrite me.\n"
             (ws / "AGENTS.md").write_text(custom_agents, encoding="utf-8", newline="\n")
 
-            self.assertEqual(_run_quiet(["--target", str(target)]), 0)
+            self.assertEqual(
+                _run_quiet(["--target", str(target), "--skip-validate", "--no-fix-python"]), 0
+            )
             rc = _run_quiet(
                 [
                     "--target",
                     str(target),
                     "--force",
+                    "--skip-validate",
+                    "--no-fix-python",
                     "--init-workspace",
                     str(ws),
                     "--mode",
@@ -483,6 +505,8 @@ class TestGravityInstaller(unittest.TestCase):
                     "--target",
                     str(target),
                     "--force",
+                    "--skip-validate",
+                    "--no-fix-python",
                     "--init-workspace",
                     str(ws),
                     "--mode",
@@ -509,9 +533,16 @@ class TestGravityInstaller(unittest.TestCase):
             self.assertEqual(_run_quiet(["--target", str(target), "--check"]), 0)
             self.assertFalse(target.parent.exists())
 
-            rc_chk_strict, out_chk_strict, _ = _run_capture(
-                ["--target", str(target), "--check", "--strict"]
+            ok_proc = subprocess.CompletedProcess(
+                args=["validate.py"], returncode=0, stdout="[ok]\n", stderr=""
             )
+            with mock.patch.object(
+                install, "run_plugin_validation", return_value=ok_proc
+            ) as mock_val:
+                rc_chk_strict, out_chk_strict, _ = _run_capture(
+                    ["--target", str(target), "--check", "--strict"]
+                )
+            mock_val.assert_called_once_with(install.PLUGIN_SOURCE)
             self.assertEqual(rc_chk_strict, 0)
             self.assertIn("Strict validation: PASSED", out_chk_strict)
             self.assertFalse(target.parent.exists())
@@ -519,7 +550,9 @@ class TestGravityInstaller(unittest.TestCase):
     def test_uninstall_removes_installed_gravity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "gravity-workflow"
-            self.assertEqual(_run_quiet(["--target", str(target)]), 0)
+            self.assertEqual(
+                _run_quiet(["--target", str(target), "--skip-validate", "--no-fix-python"]), 0
+            )
             self.assertTrue(target.is_dir())
 
             self.assertEqual(_run_quiet(["--uninstall", "--target", str(target)]), 0)
@@ -547,7 +580,18 @@ class TestGravityInstaller(unittest.TestCase):
             )
 
             self.assertEqual(
-                _run_quiet(["--target", str(target), "--init-workspace", str(ws), "--mode", "full"]),
+                _run_quiet(
+                    [
+                        "--target",
+                        str(target),
+                        "--skip-validate",
+                        "--no-fix-python",
+                        "--init-workspace",
+                        str(ws),
+                        "--mode",
+                        "full",
+                    ]
+                ),
                 0,
             )
             self._default_reg.parent.mkdir(parents=True, exist_ok=True)
@@ -648,7 +692,9 @@ class TestGravityInstaller(unittest.TestCase):
             base = Path(tmp)
             plugins_dir = base / "plugins"
             target = plugins_dir / "gravity-workflow"
-            self.assertEqual(_run_quiet(["--target", str(target), "--skip-validate"]), 0)
+            self.assertEqual(
+                _run_quiet(["--target", str(target), "--skip-validate", "--no-fix-python"]), 0
+            )
 
             core_plugin = plugins_dir / "gravity"
             (core_plugin / "config").mkdir(parents=True)

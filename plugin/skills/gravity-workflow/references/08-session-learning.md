@@ -39,7 +39,7 @@ Dans une session `/gravity-workflow` autonome (hors atelier `gravity-architect`)
   ```
 - **Interdiction absolue de périmètre :**
   - Strictement réservé à l'agent **racine** d'une session mono-dépôt.
-  - **Interdit** aux sous-agents (`planner`, `builder`, `reviewer`), aux workers `swarm` et aux conversations enfants Gravity Bridge (`[GRAVITY-BRIDGE | ...]` ou `depth >= 1`), afin de ne jamais sceller prématurément une conversation enfant avant son callback vers l'atelier appelant (ces sessions étant déjà agrégées par la session racine).
+  - **Interdit** aux sous-agents (`planner`, `builder`, `reviewer`) et aux workers `swarm` / `run_workflow` (`review_pipeline.py`, `wave_runner.py`), afin de ne jamais sceller prématurément une session avant la validation racine.
 
 ## Checkpoint déterministe
 - Dry-run sur `stop_session_logger.py` (avec un payload `Stop` Antigravity) alimente `runs.jsonl` et met à jour `profile.json` dans le stockage centralisé `$GRAVITY_HOME/workflow/workspaces/<hash>/` (zéro fichier écrit dans le workspace cible), émet `{}` et sort en `exit=0`.

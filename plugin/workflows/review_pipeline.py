@@ -1,8 +1,8 @@
 """Workflow de revue Gravity (Builder multi-tour isolé + Reviewer indépendant + suivi Live)."""
 
+import asyncio
 import datetime
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -84,104 +84,45 @@ for _sub in ("observability", "workflows"):
         sys.path.insert(0, str(_sub_dir))
 
 from patch_apply import (  # type: ignore[import-not-found]  # noqa: E402
+    BUILDER_HYGIENE_DIRECTIVE,
+    BUILD_SCHEMA,
+    DEFAULT_BUILDER_TIMEOUT_S,
+    DEFAULT_REVIEWER_TIMEOUT_S,
+    MAX_CHANGED_FILES,
+    REVIEW_SCHEMA,
     _read_worktree_patch,
     _safe_save_verified_patch,
     apply_verified_patch,
+    caveman_directive,
+    collect_changed_files,
+    collect_repo_tree,
+    load_level_preset_for_ws,
+    read_plan_file,
+    resolve_timeout_seconds,
+    safe_append_run,
+    safe_update_live,
 )
-
-BUILD_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "workspace_path": {"type": "string"},
-        "modified_files": {"type": "array", "items": {"type": "string"}},
-        "git_diff": {"type": "string"},
-        "validation_summary": {"type": "string"},
-        "refused": {"type": "boolean"},
-        "summary": {"type": "string"},
-    },
-    "required": [
-        "workspace_path",
-        "modified_files",
-        "git_diff",
-        "validation_summary",
-        "refused",
-        "summary",
-    ],
-}
-
-REVIEW_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "verdict": {"type": "string", "enum": ["PASS", "FAIL"]},
-        "comprehension_check": {"type": "string"},
-        "blockers": {"type": "array", "items": {"type": "string"}},
-        "majors": {"type": "array", "items": {"type": "string"}},
-        "uncertain": {"type": "array", "items": {"type": "string"}},
-        "nits": {"type": "array", "items": {"type": "string"}},
-        "manual_checks": {"type": "array", "items": {"type": "string"}},
-        "summary": {"type": "string"},
-    },
-    "required": [
-        "verdict",
-        "comprehension_check",
-        "blockers",
-        "majors",
-        "uncertain",
-        "nits",
-        "summary",
-    ],
-}
 
 
 def _collect_repo_tree(root: Path, max_files: int = MAX_TREE_FILES) -> str:
     """Collecte en pur Python une arborescence bornée du dépôt sans appel shell."""
-    if not root.is_dir():
-        return "(répertoire introuvable)"
-    collected: List[str] = []
-    truncated = False
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDED_TREE_DIRS)
-        rel_dir = Path(dirpath).relative_to(root)
-        for fname in sorted(filenames):
-            rel_path = (rel_dir / fname).as_posix() if str(rel_dir) != "." else fname
-            collected.append(rel_path)
-            if len(collected) >= max_files:
-                truncated = True
-                break
-        if truncated:
-            break
-    if not collected:
-        return "(aucun fichier trouvé)"
-    suffix = f"\n... [arborescence bornée à {max_files} fichiers]" if truncated else ""
-    return "\n".join(collected) + suffix
+    return collect_repo_tree(root, max_files=max_files)
+
+
+def _resolve_timeout_seconds(raw: Any, default: float) -> float:
+    return resolve_timeout_seconds(raw, default)
 
 
 def _safe_update_live(**kwargs: Any) -> None:
-    try:
-        from state_writer import update_live_state  # type: ignore[import-not-found]
-
-        update_live_state(workspace_root=WS_ROOT, **kwargs)
-    except Exception as exc:
-        _log_warn(f"[WARN] update_live_state échoué ({type(exc).__name__}: {exc})")
+    safe_update_live(WS_ROOT, log_fn=_log_warn, **kwargs)
 
 
 def _safe_append_pipeline_run(entry: Dict[str, Any]) -> None:
-    try:
-        from state_writer import append_run_log  # type: ignore[import-not-found]
-
-        append_run_log(WS_ROOT, entry)
-    except Exception as exc:
-        _log_warn(f"[WARN] Journalisation runs.jsonl échouée ({type(exc).__name__}: {exc})")
+    safe_append_run(WS_ROOT, entry, log_fn=_log_warn)
 
 
 def _caveman_directive(role: str, level: str) -> str:
-    try:
-        from caveman_protocol import build_subagent_directive  # type: ignore[import-not-found]
-
-        return build_subagent_directive(role, level)
-    except Exception as exc:
-        _log_warn(f"[WARN] caveman_protocol indisponible ({type(exc).__name__}: {exc})")
-        return ""
+    return caveman_directive(role, level, log_fn=_log_warn)
 
 
 def _with_directive(prompt: str, directive: str) -> str:
@@ -197,38 +138,17 @@ def _load_level_preset(
     build_model_override: Any = None,
     review_model_override: Any = None,
 ) -> dict:
-    fallback = {
-        "plan_model": "flash",
-        "build_model": "flash",
-        "review_model": "pro",
-        "max_remediation_rounds": MAX_REMEDIATION_ROUNDS,
-        "level": "standard",
-        "mode": "evo",
-        "suggested_profile": "standard",
-        "caveman": "lite",
-        "caveman_planner": "lite",
-        "skip_separate_planner": False,
-        "skip_verification": no_verify,
-    }
-    try:
-        from profile_engine import get_active_preset  # type: ignore[import-not-found]
-
-        override_str = str(level_override).strip() if level_override else None
-        caveman_str = str(caveman_override).strip() if caveman_override else None
-        return get_active_preset(
-            WS_ROOT,
-            level_override=override_str,
-            no_verify=no_verify,
-            caveman_override=caveman_str,
-            plan_model_override=str(plan_model_override).strip() if plan_model_override else None,
-            build_model_override=str(build_model_override).strip() if build_model_override else None,
-            review_model_override=str(review_model_override).strip() if review_model_override else None,
-        )
-    except Exception as exc:
-        _log_warn(
-            f"[WARN] Chargement preset profile_engine échoué ({type(exc).__name__}: {exc}) — repli sur preset standard."
-        )
-        return fallback
+    return load_level_preset_for_ws(
+        WS_ROOT,
+        level_override,
+        no_verify=no_verify,
+        caveman_override=caveman_override,
+        plan_model_override=plan_model_override,
+        build_model_override=build_model_override,
+        review_model_override=review_model_override,
+        default_remediations=MAX_REMEDIATION_ROUNDS,
+        log_fn=_log_warn,
+    )
 
 
 if _is_workflow_runtime():
@@ -264,7 +184,22 @@ if _is_workflow_runtime():
     builder_cav = _caveman_directive("builder", caveman_level)
     reviewer_cav = _caveman_directive("reviewer", caveman_level)
 
+    builder_timeout_s = _resolve_timeout_seconds(
+        _ARGS.get("builder_timeout_s"), DEFAULT_BUILDER_TIMEOUT_S
+    )
+    reviewer_timeout_s = _resolve_timeout_seconds(
+        _ARGS.get("reviewer_timeout_s"), DEFAULT_REVIEWER_TIMEOUT_S
+    )
+
     provided_plan = str(_ARGS.get("plan") or "").strip()
+    plan_file_raw = str(_ARGS.get("plan_file") or "").strip()
+    if not provided_plan and plan_file_raw:
+        try:
+            provided_plan = read_plan_file(plan_file_raw, base_dir=WS_ROOT)
+        except Exception as exc:
+            _log_warn(f"[ERROR] Lecture plan_file échouée ({type(exc).__name__}: {exc})")
+            raise
+
     if _ARGS.get("skip_separate_planner") is not None:
         skip_separate_planner = bool(_ARGS["skip_separate_planner"])
     elif provided_plan:
@@ -282,11 +217,12 @@ if _is_workflow_runtime():
 
     phase("1. Contexte & Plan")
     if skip_separate_planner:
-        skip_msg = (
-            "Plan fourni dans args : planification séparée sautée."
-            if provided_plan
-            else f"Profil {preset_profile} : planification séparée sautée."
-        )
+        if plan_file_raw and provided_plan and not str(_ARGS.get("plan") or "").strip():
+            skip_msg = f"Plan lu depuis plan_file ({plan_file_raw}) : planification séparée sautée."
+        elif provided_plan:
+            skip_msg = "Plan fourni dans args : planification séparée sautée."
+        else:
+            skip_msg = f"Profil {preset_profile} : planification séparée sautée."
         _safe_update_live(
             stage="workflow:building",
             mode=str(preset.get("mode", "evo")),
@@ -350,26 +286,31 @@ if _is_workflow_runtime():
     final_verdict = "UNKNOWN"
     remediation_count = 0
     refused_flag = False
+    changed_files: List[str] = []
     try:
         verify_instruction = (
             "Vérifications/tests ignorés (--no-verify éphémère) : indique-le dans `validation_summary`."
             if skip_verification
             else "Exécute les commandes de validation/tests pertinentes et consigne les commandes exactes et sorties dans `validation_summary`."
         )
-        build = await builder(
-            _with_directive(
-                (
-                    f"Applique le plan suivant dans ta branche isolée :\n{plan}\n\n"
-                    "N'exécute jamais `git commit`, `git push`, `git tag` ni de montée de version release (strictement réservés au chef d'orchestre). "
-                    f"{verify_instruction} "
-                    "Exécute `git add -N .` puis `git diff --output=.gravity_verified.patch -- . \":(exclude).gravity_verified.patch\"` dans ton worktree isolé, "
-                    "puis retourne le chemin absolu réel de ton répertoire de travail dans `workspace_path`, "
-                    "la liste des fichiers modifiés dans `modified_files`, un extrait ou résumé du diff dans `git_diff`, "
-                    "`validation_summary`, `refused` et un résumé factuel."
+        build = await asyncio.wait_for(
+            builder(
+                _with_directive(
+                    (
+                        f"Applique le plan suivant dans ta branche isolée :\n{plan}\n\n"
+                        f"{BUILDER_HYGIENE_DIRECTIVE}\n"
+                        "N'exécute jamais `git commit`, `git push`, `git tag` ni de montée de version release (strictement réservés au chef d'orchestre). "
+                        f"{verify_instruction} "
+                        "Exécute `git add -N .` puis `git diff --output=.gravity_verified.patch -- . \":(exclude).gravity_verified.patch\"` dans ton worktree isolé, "
+                        "puis retourne le chemin absolu réel de ton répertoire de travail dans `workspace_path`, "
+                        "la liste des fichiers modifiés dans `modified_files`, un extrait ou résumé du diff dans `git_diff`, "
+                        "`validation_summary`, `refused` et un résumé factuel."
+                    ),
+                    builder_cav,
                 ),
-                builder_cav,
+                BUILD_SCHEMA,
             ),
-            BUILD_SCHEMA,
+            timeout=builder_timeout_s,
         )
 
         if build.get("refused"):
@@ -393,6 +334,9 @@ if _is_workflow_runtime():
                 build.get("modified_files"),
                 max_prompt_diff_chars=MAX_PROMPT_DIFF_CHARS,
                 log_fn=_log_warn,
+            )
+            changed_files = collect_changed_files(
+                diff_full, build.get("modified_files"), max_items=MAX_CHANGED_FILES
             )
             _safe_save_verified_patch(
                 diff_full,
@@ -435,6 +379,9 @@ if _is_workflow_runtime():
                     max_prompt_diff_chars=MAX_PROMPT_DIFF_CHARS,
                     log_fn=_log_warn,
                 )
+                changed_files = collect_changed_files(
+                    diff_full, build.get("modified_files"), max_items=MAX_CHANGED_FILES
+                )
                 diff_for_prompt = (
                     diff_full[:MAX_PROMPT_DIFF_CHARS]
                     + "\n... [diff tronqué pour le prompt, inspecter directement le worktree] ..."
@@ -442,28 +389,31 @@ if _is_workflow_runtime():
                     else diff_full
                 )
                 val_summary = str(build.get("validation_summary") or "(non fourni)")
-                review = await agent(
-                    _with_directive(
-                        (
-                            f"Audite à froid les fichiers produits pour la tâche : {task}\n"
-                            f"Répertoire du livrable produit : {worktree_ws}\n"
-                            f"Fichiers déclarés modifiés : {json.dumps(build['modified_files'], ensure_ascii=False)}\n"
-                            f"Vérifications Builder (`validation_summary`) :\n{val_summary}\n\n"
-                            f"Arborescence pré-collectée :\n{review_tree}\n\n"
-                            f"Diff / extrait produit :\n```diff\n{diff_for_prompt}\n```\n"
-                            "Inspecte les fichiers pertinents dans le répertoire indiqué. "
-                            "Si `Non-Workspace File Access` restreint la lecture directe du worktree, "
-                            "appuie-toi strictement sur le diff, l'arborescence et `validation_summary` ci-dessus "
-                            "(classe les éléments non vérifiables en `UNCERTAIN` sans boucler sur des `read_file` en échec). "
-                            "Applique strictement le protocole Preuve ou Silence (max 3 uncertain, max 3 nits)."
+                review = await asyncio.wait_for(
+                    agent(
+                        _with_directive(
+                            (
+                                f"Audite à froid les fichiers produits pour la tâche : {task}\n"
+                                f"Répertoire du livrable produit : {worktree_ws}\n"
+                                f"Fichiers déclarés modifiés : {json.dumps(build['modified_files'], ensure_ascii=False)}\n"
+                                f"Vérifications Builder (`validation_summary`) :\n{val_summary}\n\n"
+                                f"Arborescence pré-collectée :\n{review_tree}\n\n"
+                                f"Diff / extrait produit :\n```diff\n{diff_for_prompt}\n```\n"
+                                "Inspecte les fichiers pertinents dans le répertoire indiqué. "
+                                "Si `Non-Workspace File Access` restreint la lecture directe du worktree, "
+                                "appuie-toi strictement sur le diff, l'arborescence et `validation_summary` ci-dessus "
+                                "(classe les éléments non vérifiables en `UNCERTAIN` sans boucler sur des `read_file` en échec). "
+                                "Applique strictement le protocole Preuve ou Silence (max 3 uncertain, max 3 nits)."
+                            ),
+                            reviewer_cav,
                         ),
-                        reviewer_cav,
+                        schema=REVIEW_SCHEMA,
+                        role="Reviewer",
+                        type_name="reviewer",
+                        model=review_model,
+                        workspace="inherit",
                     ),
-                    schema=REVIEW_SCHEMA,
-                    role="Reviewer",
-                    type_name="reviewer",
-                    model=review_model,
-                    workspace="inherit",
+                    timeout=reviewer_timeout_s,
                 )
                 review["uncertain"] = list(review.get("uncertain") or [])[:3]
                 review["nits"] = list(review.get("nits") or [])[:3]
@@ -547,20 +497,24 @@ if _is_workflow_runtime():
                     [f"- [BLOCKER] {item}" for item in review["blockers"]]
                     + [f"- [MAJOR] {item}" for item in review["majors"]]
                 )
-                build = await builder(
-                    _with_directive(
-                        (
-                            f"Corrige uniquement les constats bloquants suivants sur la tâche '{task}' "
-                            f"dans ton worktree courant ({worktree_ws}) :\n"
-                            f"{findings_block}\n"
-                            "Ne modifie pas ce qui est déjà conforme. "
-                            "Exécute les vérifications pertinentes (`validation_summary`), puis `git add -N .` et "
-                            "`git diff --output=.gravity_verified.patch -- . \":(exclude).gravity_verified.patch\"`, "
-                            "et retourne `workspace_path`, `modified_files`, `git_diff`, `validation_summary`, `refused` et le résumé."
+                build = await asyncio.wait_for(
+                    builder(
+                        _with_directive(
+                            (
+                                f"Corrige uniquement les constats bloquants suivants sur la tâche '{task}' "
+                                f"dans ton worktree courant ({worktree_ws}) :\n"
+                                f"{findings_block}\n"
+                                f"{BUILDER_HYGIENE_DIRECTIVE}\n"
+                                "Ne modifie pas ce qui est déjà conforme. "
+                                "Exécute les vérifications pertinentes (`validation_summary`), puis `git add -N .` et "
+                                "`git diff --output=.gravity_verified.patch -- . \":(exclude).gravity_verified.patch\"`, "
+                                "et retourne `workspace_path`, `modified_files`, `git_diff`, `validation_summary`, `refused` et le résumé."
+                            ),
+                            builder_cav,
                         ),
-                        builder_cav,
+                        BUILD_SCHEMA,
                     ),
-                    BUILD_SCHEMA,
+                    timeout=builder_timeout_s,
                 )
                 if build.get("refused"):
                     refused_flag = True
@@ -587,6 +541,23 @@ if _is_workflow_runtime():
                     "Checklist [manual] pour validation humaine :\n"
                     + "\n".join(f"- [ ] {c}" for c in review["manual_checks"])
                 )
+    except asyncio.TimeoutError as exc:
+        final_verdict = "TIMEOUT"
+        _safe_update_live(
+            stage="workflow:timeout",
+            preset_profile=preset_profile,
+            role_models=role_models,
+            caveman=caveman_level,
+            nodes={"planner": "done", "builder": "fail", "reviewer": "fail"},
+            event={
+                "type": "TIMEOUT",
+                "decision": "deny",
+                "message": f"Watchdog timeout dépassé ({builder_timeout_s:.0f}s Builder / {reviewer_timeout_s:.0f}s Reviewer).",
+            },
+        )
+        _log_warn(
+            f"[TIMEOUT] Exécution review_pipeline interrompue après dépassement watchdog ({type(exc).__name__})."
+        )
     finally:
         del builder
         _safe_append_pipeline_run(
@@ -600,6 +571,7 @@ if _is_workflow_runtime():
                 "verdict": final_verdict,
                 "remediation_rounds": remediation_count,
                 "refused": refused_flag,
+                "changed_files": changed_files,
                 "cwd": str(WS_ROOT),
             }
         )

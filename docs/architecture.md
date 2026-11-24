@@ -50,7 +50,9 @@ plugin/
 │   ├── session_start_caveman.py        # Hook SessionStart injection Caveman (chmod 0755)
 │   └── stop_session_logger.py          # Hook Stop runs.jsonl + evolve_on_stop (chmod 0755)
 ├── workflows/
-│   └── review_pipeline.py              # Pipeline Planner -> Builder (branch) -> Reviewer indépendant
+│   ├── patch_apply.py                  # Helpers git worktree, extraction diff & CLI --apply
+│   ├── review_pipeline.py              # Pipeline Planner -> Builder -> Reviewer + plan_file/watchdogs
+│   └── wave_runner.py                  # Runner parallèle fail-isolated multi-dépôts (< 600 L)
 ├── evals/
 │   ├── cases.json                      # Catalogue starter de 12 cas auto + 5 [manual]
 │   ├── eval_checks.py                  # Prédicats AST-whitelist et rendu Markdown

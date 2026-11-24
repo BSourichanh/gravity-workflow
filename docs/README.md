@@ -12,7 +12,7 @@ Cette documentation remplace la spécification statique monolithique par des fic
 |---|---|---|
 | [`architecture.md`](architecture.md) | Séparation plugin / projet cible, contrat `config/module.json`, `plugin/templates/`, empreinte projet, initialisation, `install.py` et `uninstall.py` | `plugin/`, `plugin/templates/`, `workspace-template/`, `init_workspace.py`, `install.py`, `uninstall.py` |
 | [`modes-and-routing.md`](modes-and-routing.md) | Skill unifié `/gravity-workflow`, 3 axes orthogonaux, attribution des modèles, moteur `evo` et skill compagnon `/caveman` | `skills/gravity-workflow/SKILL.md`, `skills/caveman/SKILL.md`, `profile_engine.py`, `caveman_protocol.py`, `profile.json` |
-| [`agents-and-workflows.md`](agents-and-workflows.md) | Sous-agents (`planner`, `builder`, `reviewer` indépendant), pipeline de revue et moteurs natifs | `agents/*.md`, `workflows/review_pipeline.py` |
+| [`agents-and-workflows.md`](agents-and-workflows.md) | Sous-agents (`planner`, `builder`, `reviewer` indépendant), pipeline de revue, `wave_runner.py` et moteurs natifs | `agents/*.md`, `workflows/{patch_apply,review_pipeline,wave_runner}.py` |
 | [`safety-and-hooks.md`](safety-and-hooks.md) | Garde-fous `PreToolUse` fail-closed, `SessionStart`, `PostToolUse`, `Stop`, règles YAML et budget contexte | `hooks.json`, `hooks/*.py`, `.agents/rules/*.md` |
 | [`evals-and-learning.md`](evals-and-learning.md) | Suite d'évaluations parallèle à double filtre (`12` cas auto + `5` `[manual]`) et boucle d'apprentissage `/learn` | `evals/cases.json`, `eval_checks.py`, `run_suite.py` |
 | [`observability.md`](observability.md) | Micro-carte, `/gravity-workflow status`, `/statusline` CLI, cockpit MCP App unifié `/gravity dashboard` (`gravity` Core) et écriture atomique | `state_writer.py`, `statusline.py`, `profile_engine.py`, `metrics_signals.py` |
@@ -37,7 +37,7 @@ Toute modification apportée au code doit mettre à jour la ou les fiches corres
 |---|---|
 | Manifeste `plugin.json`, `config/module.json`, arborescence, `init_workspace.py`, `workspace-template/`, `install.py`, `uninstall.py` | [`architecture.md`](architecture.md) |
 | `skills/gravity-workflow/SKILL.md`, `skills/caveman/SKILL.md`, `observability/profile_engine.py`, `observability/caveman_protocol.py`, `profile.json` | [`modes-and-routing.md`](modes-and-routing.md) |
-| `agents/*.md`, `workflows/review_pipeline.py`, références routage | [`agents-and-workflows.md`](agents-and-workflows.md) |
+| `agents/*.md`, `workflows/*.py`, références routage | [`agents-and-workflows.md`](agents-and-workflows.md) |
 | `hooks.json`, `hooks/*.py`, `.agents/rules/*.md` | [`safety-and-hooks.md`](safety-and-hooks.md) |
 | `evals/cases.json`, `evals/eval_checks.py`, `evals/run_suite.py` | [`evals-and-learning.md`](evals-and-learning.md) |
 | `observability/state_writer.py`, `statusline.py`, `profile_engine.py` | [`observability.md`](observability.md) |

@@ -267,50 +267,51 @@ class TestPluginValidator(unittest.TestCase):
                 self.assertTrue(rep_ok.ok(strict=True), f"Erreurs inattendues: {rep_ok.errors} {rep_ok.warnings}")
 
                 # 2. Reject forbidden legacy keys ($schema, license, keywords)
-                for bad_key in ("$schema", "license", "keywords"):
-                    bad_manifest = dict(manifest)
-                    bad_manifest[bad_key] = "bad"
-                    manifest_path.write_text(json.dumps(bad_manifest) + "\n", encoding="utf-8", newline="\n")
-                    rep_bad_key = Report()
-                    validate_plugin(plugin_dir, rep_bad_key)
-                    self.assertFalse(rep_bad_key.ok(strict=True), f"Devrait rejeter la clé {bad_key}")
+                with mock.patch.object(plugin_validator, "check_stdlib_only"):
+                    for bad_key in ("$schema", "license", "keywords"):
+                        bad_manifest = dict(manifest)
+                        bad_manifest[bad_key] = "bad"
+                        manifest_path.write_text(json.dumps(bad_manifest) + "\n", encoding="utf-8", newline="\n")
+                        rep_bad_key = Report()
+                        validate_plugin(plugin_dir, rep_bad_key)
+                        self.assertFalse(rep_bad_key.ok(strict=True), f"Devrait rejeter la clé {bad_key}")
 
-                # 3. Reject missing official field
-                missing_repo = dict(manifest)
-                missing_repo.pop("repository", None)
-                manifest_path.write_text(json.dumps(missing_repo) + "\n", encoding="utf-8", newline="\n")
-                rep_missing = Report()
-                validate_plugin(plugin_dir, rep_missing)
-                self.assertFalse(rep_missing.ok(strict=True))
+                    # 3. Reject missing official field
+                    missing_repo = dict(manifest)
+                    missing_repo.pop("repository", None)
+                    manifest_path.write_text(json.dumps(missing_repo) + "\n", encoding="utf-8", newline="\n")
+                    rep_missing = Report()
+                    validate_plugin(plugin_dir, rep_missing)
+                    self.assertFalse(rep_missing.ok(strict=True))
 
-                # 4. Reject UTF-8 BOM in plugin.json
-                manifest_path.write_bytes(b"\xef\xbb\xbf" + json.dumps(manifest).encode("utf-8"))
-                rep_bom = Report()
-                validate_plugin(plugin_dir, rep_bom)
-                self.assertFalse(rep_bom.ok(strict=True))
-                manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8", newline="\n")
+                    # 4. Reject UTF-8 BOM in plugin.json
+                    manifest_path.write_bytes(b"\xef\xbb\xbf" + json.dumps(manifest).encode("utf-8"))
+                    rep_bom = Report()
+                    validate_plugin(plugin_dir, rep_bom)
+                    self.assertFalse(rep_bom.ok(strict=True))
+                    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8", newline="\n")
 
-                # 5. Validate config/module.json v1
-                module_path = plugin_dir / "config" / "module.json"
-                module_data = json.loads(module_path.read_text(encoding="utf-8"))
-                bad_mod = dict(module_data)
-                bad_mod["schema_version"] = 2
-                module_path.write_text(json.dumps(bad_mod) + "\n", encoding="utf-8", newline="\n")
-                rep_sv = Report()
-                validate_plugin(plugin_dir, rep_sv)
-                self.assertFalse(rep_sv.ok(strict=True))
+                    # 5. Validate config/module.json v1
+                    module_path = plugin_dir / "config" / "module.json"
+                    module_data = json.loads(module_path.read_text(encoding="utf-8"))
+                    bad_mod = dict(module_data)
+                    bad_mod["schema_version"] = 2
+                    module_path.write_text(json.dumps(bad_mod) + "\n", encoding="utf-8", newline="\n")
+                    rep_sv = Report()
+                    validate_plugin(plugin_dir, rep_sv)
+                    self.assertFalse(rep_sv.ok(strict=True))
 
-                bad_name = dict(module_data)
-                bad_name["plugin_name"] = "wrong-plugin"
-                module_path.write_text(json.dumps(bad_name) + "\n", encoding="utf-8", newline="\n")
-                rep_name = Report()
-                validate_plugin(plugin_dir, rep_name)
-                self.assertFalse(rep_name.ok(strict=True))
+                    bad_name = dict(module_data)
+                    bad_name["plugin_name"] = "wrong-plugin"
+                    module_path.write_text(json.dumps(bad_name) + "\n", encoding="utf-8", newline="\n")
+                    rep_name = Report()
+                    validate_plugin(plugin_dir, rep_name)
+                    self.assertFalse(rep_name.ok(strict=True))
 
-                module_path.unlink()
-                rep_no_mod = Report()
-                validate_plugin(plugin_dir, rep_no_mod)
-                self.assertFalse(rep_no_mod.ok(strict=True))
+                    module_path.unlink()
+                    rep_no_mod = Report()
+                    validate_plugin(plugin_dir, rep_no_mod)
+                    self.assertFalse(rep_no_mod.ok(strict=True))
 
     def test_templates_repo_agents_and_workspace_template_drift_checks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -324,7 +325,9 @@ class TestPluginValidator(unittest.TestCase):
             repo_agents = repo_dir / "AGENTS.md"
             repo_agents.write_text("# Agents\n\n## Invariants\n- OK.\n", encoding="utf-8", newline="\n")
 
-            with mock.patch.object(plugin_validator, "run_hook_dry_runs"):
+            with mock.patch.object(plugin_validator, "run_hook_dry_runs"), mock.patch.object(
+                plugin_validator, "check_stdlib_only"
+            ):
                 rep_ok = Report()
                 validate_plugin(plugin_dir, rep_ok)
                 self.assertTrue(rep_ok.ok(strict=True), f"Erreurs inattendues: {rep_ok.errors} {rep_ok.warnings}")
@@ -418,7 +421,9 @@ class TestPluginValidator(unittest.TestCase):
             plugin_dir = Path(tmp) / "plugin"
             self._build_minimal_plugin(plugin_dir)
 
-            with mock.patch.object(plugin_validator, "run_hook_dry_runs"):
+            with mock.patch.object(plugin_validator, "run_hook_dry_runs"), mock.patch.object(
+                plugin_validator, "check_stdlib_only"
+            ):
                 rep_ok = Report()
                 validate_plugin(plugin_dir, rep_ok)
                 self.assertTrue(rep_ok.ok(strict=True), f"Erreurs inattendues: {rep_ok.errors} {rep_ok.warnings}")
@@ -452,7 +457,9 @@ class TestPluginValidator(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             plugin_dir = Path(tmp) / "plugin"
             self._build_minimal_plugin(plugin_dir)
-            with mock.patch.object(plugin_validator, "run_hook_dry_runs"):
+            with mock.patch.object(plugin_validator, "run_hook_dry_runs"), mock.patch.object(
+                plugin_validator, "check_stdlib_only"
+            ):
                 rep_clean = Report()
                 validate_plugin(plugin_dir, rep_clean)
                 self.assertTrue(rep_clean.ok(strict=True), f"Warnings/erreurs inattendus: {rep_clean.errors} {rep_clean.warnings}")
@@ -473,7 +480,9 @@ class TestPluginValidator(unittest.TestCase):
             if wt_src.is_dir():
                 shutil.copytree(wt_src, wt_dir)
 
-            with mock.patch.object(plugin_validator, "run_hook_dry_runs"):
+            with mock.patch.object(plugin_validator, "run_hook_dry_runs"), mock.patch.object(
+                plugin_validator, "check_stdlib_only"
+            ):
                 # Baseline strict OK
                 rep_ok = Report()
                 validate_plugin(plugin_dir, rep_ok)
@@ -587,7 +596,9 @@ class TestPluginValidator(unittest.TestCase):
             wt_dir = repo_dir / "workspace-template"
             shutil.copytree(PLUGIN_ROOT.parent / "workspace-template", wt_dir)
 
-            with mock.patch.object(plugin_validator, "run_hook_dry_runs"), mock.patch(
+            with mock.patch.object(plugin_validator, "run_hook_dry_runs"), mock.patch.object(
+                plugin_validator, "check_stdlib_only"
+            ), mock.patch(
                 "validators.workspace_validator.run_hook_dry_runs"
             ):
                 # 12 auto + 5 [manual] passes strict without warnings in both validators
