@@ -52,7 +52,8 @@ plugin/
 ├── workflows/
 │   ├── patch_apply.py                  # Helpers git worktree, extraction diff & CLI --apply
 │   ├── review_pipeline.py              # Pipeline Planner -> Builder -> Reviewer + plan_file/watchdogs
-│   └── wave_runner.py                  # Runner parallèle fail-isolated multi-dépôts (< 600 L)
+│   ├── swarm_wave.py                   # Helper CLI déterministe Swarm multi-dépôts (< 450 L)
+│   └── wave_runner.py                  # Runner parallèle fail-isolated multi-dépôts (< 650 L, opt-in)
 ├── evals/
 │   ├── cases.json                      # Catalogue starter de 12 cas auto + 5 [manual]
 │   ├── eval_checks.py                  # Prédicats AST-whitelist et rendu Markdown

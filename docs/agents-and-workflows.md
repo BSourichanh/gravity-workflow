@@ -22,7 +22,9 @@ Les agents sont validés strictement par [`validate.py`](../plugin/scripts/valid
 
 ---
 
-## Pipeline de revue (`workflows/review_pipeline.py`) & Runner de vagues (`workflows/wave_runner.py`)
+## Orchestration Swarm (`workflows/swarm_wave.py`, défaut) & Workflows (`review_pipeline.py` / `wave_runner.py`, opt-in)
+
+Par défaut (`execution_engine: "swarm"`), l'orchestration s'appuie sur l'outil natif **`swarm`** (`workspace="share"` en mono-dépôt) et sur [`swarm_wave.py`](../plugin/workflows/swarm_wave.py) (`< 450` L, 100 % stdlib, `0` token LLM) en multi-dépôts via 4 sous-commandes CLI (`prepare`, `diff`, `apply`, `cleanup`) sur `wave_plan_v1`. `review_pipeline.py` et `wave_runner.py` restent disponibles en opt-in (`--engine run_workflow`) et pour `/gravity-workflow evals`.
 
 [`review_pipeline.py`](../plugin/workflows/review_pipeline.py) orchestre la boucle via `run_workflow` (top-level `await` natif sans deadlock) et synchronise `live_state.json` + `runs.jsonl` centralisés (`$GRAVITY_HOME/workflow/workspaces/<hash>/`) :
 
@@ -48,7 +50,7 @@ Référence détaillée dans [`05-workflows-and-routing.md`](../plugin/skills/gr
 
 - **Besoin ambigu / décisions de design ouvertes :** explorer le dépôt puis clarifier une question à la fois via `ask_question`, ou proposer `/grill-me` / `/plan /grill-me` à l'utilisateur *(slash command utilisateur uniquement, tous plans)* avant d'engager `builder`, `review_pipeline.py` ou `swarm`.
 - **Tâche quotidienne / ciblée :** `Orchestrator` *(Pro†/Ultra/Enterprise)* ou `/plan` / `/goal` en conversation mono-fil (`quick` / `standard`).
-- **Flux structuré répétable ou évaluations :** outil `run_workflow` appelable directement par l'agent (`phase()`, `parallel()`, `pipeline()`, tous plans).
-- **Chantier parallélisable multi-modules :** outil `swarm` *(Preview, tous plans)* proposé à l'initiative utilisateur en profil `deep` (`git commit`, `git push`, `git tag` et versioning restent strictement réservés au chef d'orchestre, jamais aux workers `swarm`).
+- **Chantier parallélisable multi-modules ou multi-dépôts (défaut) :** outil **`swarm`** *(Preview, tous plans)* avec `workspace="share"` en mono-dépôt ou `swarm_wave.py` sur `wave_plan_v1` en multi-dépôts (`monitor: false`, `1` `@verifier` `flash` mutualisé en `quick`, `1` `@verifier` `pro` indépendant/tâche en `standard`/`deep` ; `git commit`, `git push`, `git tag` et versioning restent strictement réservés au chef d'orchestre).
+- **Flux structuré répétable (opt-in `--engine run_workflow`) ou évaluations :** outil `run_workflow` appelable directement par l'agent (`phase()`, `parallel()`, `pipeline()`, tous plans).
 - **Point dur algorithmique / concurrence :** proposer `/boost <tâche>` à l'utilisateur *(slash command utilisateur uniquement, plans payants)*.
 - **Grand chantier multi-jalons (> 1 jour) :** proposer `/teamwork <objectif>` à l'utilisateur *(slash command utilisateur uniquement, plans payants, dans `~/teamwork_projects/`)*.

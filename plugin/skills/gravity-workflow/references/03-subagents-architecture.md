@@ -20,7 +20,7 @@ Exploiter l'équipe de sous-agents spécialisés embarquée dans `plugin/agents/
 - **Tiers de sous-agents & workflows :** `inherit` (modèle de la session), `flash_lite` (triage/extraction économique), `flash` (exécution rapide), `pro` (planification & audit).
 - **Piège de compatibilité :** demander `model: pro` dans un sous-agent ou `run_workflow` échoue si le compte utilisateur n'a pas accès au tier `pro` (ex. plan **Free/Plus** avec `Gemini 3.8 Flash` seul). Prévois un repli documenté sur `inherit` ou `flash`.
 - **Coût du raisonnement (`/effort`, `--effort`) & cache :** les tokens de *thinking* sont facturés au tarif **`output`** (~5× l'input). Utilise `low`/`medium` pour les exécutions bornées et evals de routine, et réserve `high`/`xhigh` à la planification complexe ou aux revues bloquantes.
-- **Vérification cross-model :** dans `/swarm`, demande explicitement d'épingler `@verifier` sur un autre modèle que les workers (ex. workers sur `Hydrogen`/`3.8 Flash`, vérifieur sur `Neon` ou `Claude Opus 5.5`).
+- **Vérification cross-model & topologie Swarm par défaut :** dans `swarm` (moteur par défaut), exécuter les workers sur `flash` (`Gemini 3.8 Flash` / `Hydrogen`) avec `monitor: false`. En profil **`quick`**, utiliser `1` `@verifier` mutualisé sur `flash` ; en **`standard` / `deep`**, épingler `1` `@verifier` indépendant à froid par tâche sur `pro` (`Neon` ou `Claude Opus 5.5`, repli `flash` si `allow_pro: false`).
 
 ## Conception des sous-agents du plugin (`plugin/agents/<role>.md`)
 Les 3 sous-agents (`planner`, `builder`, `reviewer`) sont fournis par le plugin (sans dupliquer `.agents/agents/` dans le projet cible, sauf si le projet souhaite surcharger un agent localement). Chaque sous-agent utilise un frontmatter YAML précisant :

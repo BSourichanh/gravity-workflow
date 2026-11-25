@@ -18,7 +18,8 @@ Le plugin expose le skill principal `/gravity-workflow` ([`SKILL.md`](../plugin/
 ### Règles de parsing anti-ambiguïté
 - Correspondance **mot entier uniquement** en tête de commande (`quick-fix` ou `deep-link` ne sont pas interprétés comme `quick` ou `deep`).
 - `status`, `evals` et `init` ne déclenchent une sous-commande que s'ils sont seuls ou suivis uniquement de leurs arguments dédiés (`CASE-ID...` pour `evals`, `quickstart|full` pour `init`) ; sinon l'entrée est exécutée comme `<tâche>`.
-- En CLI hors chat, [`profile_engine.py`](../plugin/observability/profile_engine.py) expose `get`, `set` (`--mode`, `--caveman`, `--plan-model`, `--build-model`, `--review-model`, `--allow-pro`, `--reason`, `--json`, plus alias tolérés `--pace` et `--verify safe`) et `evolve`.
+- En CLI hors chat, [`profile_engine.py`](../plugin/observability/profile_engine.py) expose `get`, `set` (`--mode`, `--engine <swarm|run_workflow>`, `--caveman`, `--plan-model`, `--build-model`, `--review-model`, `--allow-pro`, `--reason`, `--json`, plus alias tolérés `--pace` et `--verify safe`) et `evolve`.
+- **`execution_engine` par défaut (`"swarm"`) :** tout projet démarre avec `"execution_engine": "swarm"` (`swarm` natif + `swarm_wave.py` en multi-dépôts, `workspace="share"` en mono-dépôt) ; passer `--engine run_workflow` pour basculer en opt-in sur `wave_runner.py` / `review_pipeline.py` (les évaluations `/gravity-workflow evals` utilisent toujours `run_workflow`).
 
 ---
 
@@ -64,7 +65,7 @@ Pour comparer objectivement l'impact coût/qualité entre deux configurations de
 
 ## Profil centralisé & adaptation consultative `evo`
 
-Le schéma par défaut (`schema_version: 2`) démarre avec `mode: "evo"`, `current_level: "standard"`, `locked: false`, `suggested_profile: "standard"`, `caveman: "lite"`, `caveman_locked: false`, `last_score: 50`.
+Le schéma par défaut (`schema_version: 2`) démarre avec `mode: "evo"`, `current_level: "standard"`, `locked: false`, `execution_engine: "swarm"`, `suggested_profile: "standard"`, `caveman: "lite"`, `caveman_locked: false`, `last_score: 50`.
 
 En fin de session (`Stop`), [`stop_session_logger.py`](../plugin/hooks/stop_session_logger.py) s'exécute sur **tous les dépôts** (sans nécessiter `/gravity-workflow init`) et appelle `evolve_on_stop()` *(idempotent par `(conversation_id, execution_num)`, ignoré si `fully_idle: false`)* :
 

@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Deterministic Multi-Repo Swarm Wave CLI (`plugin/workflows/swarm_wave.py`, `tests/test_swarm_wave.py`):**
+  - Added `< 450` L 100% stdlib CLI (`prepare`, `diff`, `apply`, `cleanup`) consuming `wave_plan_v1` with fail-closed `schema_version`/`repo_root`/`expected_branch`/status checks, persistent JSON state under `<worktree_base>/swarm-wave-<id>.json`, compact `<= 700` char `builder_briefs` (zero inline plan content, Caveman + `BUILDER_HYGIENE_DIRECTIVE`, zero `git commit/push/tag`), `reviewer_topology` (`quick` shared `flash` vs `standard`/`deep` independent `pro` or `flash` when `allow_pro=false`, `monitor: false`), cold `reviewer_briefs` with `.patch` extraction, selective `PASS` application via `apply_verified_patch(..., cleanup_worktree=True)`, and idempotent `cleanup`.
+  - Added unit tests in `tests/test_swarm_wave.py` covering `prepare`, `diff`, `apply`, `cleanup`, `reviewer_topology`, and fail-closed validation.
+
 ### Changed
+- **Default Swarm Orchestration in Skills, References & Docs (`plugin/skills/gravity-workflow/{SKILL.md,references/00-quick-start.md,references/03-subagents-architecture.md,references/05-workflows-and-routing.md}`, `docs/{modes-and-routing.md,agents-and-workflows.md,architecture.md}`, `README.md`, `plugin/README.md`):**
+  - Switched default orchestration guidance to `swarm` (`swarm_wave.py` multi-repo, `workspace="share"` mono-repo) and exposed `--engine <swarm|run_workflow>` in `SKILL.md` (`<= 6 000` B UTF-8), keeping `run_workflow` (`wave_runner.py` / `review_pipeline.py`) as opt-in and for `/gravity-workflow evals`.
 - **Default `execution_engine="swarm"` in `profile_engine` (`plugin/observability/profile_engine.py`, `plugin/workflows/patch_apply.py`, `plugin/scripts/validators/workspace_validator.py`, `plugin/templates/.agents/gravity-workflow/profile.json`, `workspace-template/.agents/gravity-workflow/profile.json`, `tests/test_profile_engine.py`):**
   - Added `DEFAULT_EXECUTION_ENGINE = "swarm"` (`VALID_EXECUTION_ENGINES = ("swarm", "run_workflow")`), `normalize_execution_engine()`, `_sanitize_profile()` backward-compatible fallback, `execution_engine_override` in `get_active_preset()`, `execution_engine` in `update_profile_settings()` / `format_status()`, and `--engine` CLI flag on `profile_engine.py set`.
   - Added `"execution_engine": "swarm"` fallback in `patch_apply.load_level_preset_for_ws()`, `profile.json` validation in `workspace_validator.py`, byte-for-byte synced `profile.json` templates, and unit tests in `tests/test_profile_engine.py`.
