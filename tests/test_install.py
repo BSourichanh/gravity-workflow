@@ -3,6 +3,7 @@
 
 import ast
 import contextlib
+import datetime
 import io
 import json
 import os
@@ -38,6 +39,7 @@ def _run_capture(argv: List[str]) -> tuple:
 
 class TestGravityInstaller(unittest.TestCase):
     def setUp(self) -> None:
+        self._prev_gravity_home = os.environ.get("GRAVITY_HOME")
         self._prev_wf_home = os.environ.get("GRAVITY_WORKFLOW_HOME")
         self._prev_reg = os.environ.get("GRAVITY_WORKFLOW_REGISTRY_PATH")
         self._prev_leg_reg = os.environ.get("GRAVITY_WORKFLOW_LEGACY_REGISTRY_PATH")
@@ -48,6 +50,7 @@ class TestGravityInstaller(unittest.TestCase):
             self._fake_home / ".gemini" / "gravity" / "workflow" / "live_workspaces.json"
         )
         self._default_leg_reg = self._fake_home / ".gravity" / "live_workspaces.json"
+        os.environ.pop("GRAVITY_HOME", None)
         os.environ["GRAVITY_WORKFLOW_HOME"] = str(self._fake_home / ".gemini" / "gravity" / "workflow")
         os.environ["GRAVITY_WORKFLOW_REGISTRY_PATH"] = str(self._default_reg)
         os.environ["GRAVITY_WORKFLOW_LEGACY_REGISTRY_PATH"] = str(self._default_leg_reg)
@@ -57,6 +60,7 @@ class TestGravityInstaller(unittest.TestCase):
     def tearDown(self) -> None:
         self._home_patcher.stop()
         for key, prev in (
+            ("GRAVITY_HOME", self._prev_gravity_home),
             ("GRAVITY_WORKFLOW_HOME", self._prev_wf_home),
             ("GRAVITY_WORKFLOW_REGISTRY_PATH", self._prev_reg),
             ("GRAVITY_WORKFLOW_LEGACY_REGISTRY_PATH", self._prev_leg_reg),
@@ -769,9 +773,10 @@ class TestGravityInstaller(unittest.TestCase):
             calls.append(cmd)
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="[ok]\n", stderr="")
 
-        with mock.patch("shutil.which", return_value="/usr/local/bin/agy"), mock.patch(
-            "subprocess.run", side_effect=fake_run
-        ):
+        with mock.patch(
+            "shutil.which",
+            side_effect=lambda name: "/usr/local/bin/agy" if name == "agy" else None,
+        ), mock.patch("subprocess.run", side_effect=fake_run):
             rc = _run_quiet(["--method", "agy"])
             self.assertEqual(rc, 0)
 
@@ -780,6 +785,169 @@ class TestGravityInstaller(unittest.TestCase):
         self.assertEqual(calls[1][:3], ["/usr/local/bin/agy", "plugin", "install"])
         self.assertEqual(Path(calls[0][3]), install.PLUGIN_SOURCE)
         self.assertEqual(Path(calls[1][3]), install.PLUGIN_SOURCE)
+
+    def test_global_install_records_sources_json_and_preserves_other_entries(self) -> None:
+        sources_path = self._fake_home / ".gemini" / "gravity" / "core" / "sources.json"
+        sources_path.parent.mkdir(parents=True, exist_ok=True)
+        sources_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "custom_meta": "keep-me",
+                    "sources": {
+                        "gravity-metrics": {
+                            "plugin_name": "gravity-metrics",
+                            "repo_dir": "/tmp/gravity-metrics",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        rc = _run_quiet(["--scope", "global", "--skip-validate", "--no-fix-python"])
+        self.assertEqual(rc, 0)
+        self.assertTrue(sources_path.is_file())
+
+        raw_bytes = sources_path.read_bytes()
+        self.assertFalse(raw_bytes.startswith(b"\xef\xbb\xbf"))
+        self.assertNotIn(b"\r\n", raw_bytes)
+        self.assertTrue(raw_bytes.endswith(b"\n"))
+
+        data = json.loads(raw_bytes.decode("utf-8"))
+        self.assertEqual(data.get("custom_meta"), "keep-me")
+        self.assertEqual(
+            data["sources"]["gravity-metrics"],
+            {"plugin_name": "gravity-metrics", "repo_dir": "/tmp/gravity-metrics"},
+        )
+
+        manifest = json.loads((install.PLUGIN_SOURCE / "plugin.json").read_text(encoding="utf-8"))
+        entry = data["sources"]["gravity-workflow"]
+        self.assertEqual(entry["plugin_name"], "gravity-workflow")
+        self.assertEqual(Path(entry["repo_dir"]), install.REPO_ROOT.resolve())
+        self.assertEqual(entry["repository"], manifest["repository"])
+        self.assertEqual(entry["install_method"], "copy")
+        expected_target = Path(
+            os.path.abspath(str(self._fake_home / ".gemini" / "config" / "plugins" / "gravity-workflow"))
+        )
+        self.assertEqual(entry["target_dir"], str(expected_target))
+        self.assertIn("git_branch", entry)
+        self.assertIn("git_sha", entry)
+        self.assertEqual(entry["installed_version"], manifest["version"])
+        parsed_dt = datetime.datetime.fromisoformat(entry["installed_at"])
+        self.assertIsNotNone(parsed_dt.tzinfo)
+
+    def test_global_install_sources_json_respects_gravity_home_and_agy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            custom_gravity_home = Path(tmp) / "custom-gravity-home"
+            os.environ["GRAVITY_HOME"] = str(custom_gravity_home)
+
+            def fake_run(cmd: List[str], **_kwargs: object) -> subprocess.CompletedProcess:
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="[ok]\n", stderr="")
+
+            with mock.patch(
+                "shutil.which",
+                side_effect=lambda name: "/usr/local/bin/agy" if name == "agy" else None,
+            ), mock.patch("subprocess.run", side_effect=fake_run):
+                rc = _run_quiet(["--method", "agy"])
+                self.assertEqual(rc, 0)
+
+            custom_sources = custom_gravity_home / "core" / "sources.json"
+            default_sources = self._fake_home / ".gemini" / "gravity" / "core" / "sources.json"
+            self.assertTrue(custom_sources.is_file())
+            self.assertFalse(default_sources.exists())
+
+            data = json.loads(custom_sources.read_text(encoding="utf-8"))
+            entry = data["sources"]["gravity-workflow"]
+            self.assertEqual(entry["install_method"], "agy")
+            self.assertIsNone(entry["target_dir"])
+
+    def test_sources_json_not_written_for_non_global_dry_run_check_or_uninstall(self) -> None:
+        sources_path = self._fake_home / ".gemini" / "gravity" / "core" / "sources.json"
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "ws"
+            ws.mkdir()
+            custom_target = Path(tmp) / "custom-target" / "gravity-workflow"
+
+            self.assertEqual(_run_quiet(["--scope", "global", "--dry-run"]), 0)
+            self.assertFalse(sources_path.exists())
+
+            self.assertEqual(
+                _run_quiet(
+                    [
+                        "--scope",
+                        "workspace",
+                        "--workspace",
+                        str(ws),
+                        "--skip-validate",
+                        "--no-fix-python",
+                    ]
+                ),
+                0,
+            )
+            self.assertFalse(sources_path.exists())
+
+            self.assertEqual(
+                _run_quiet(["--target", str(custom_target), "--skip-validate", "--no-fix-python"]),
+                0,
+            )
+            self.assertFalse(sources_path.exists())
+
+            _run_quiet(["--check", "--scope", "global"])
+            self.assertFalse(sources_path.exists())
+
+            self.assertEqual(_run_quiet(["--uninstall", "--target", str(custom_target)]), 0)
+            self.assertFalse(sources_path.exists())
+
+            self.assertEqual(
+                _run_quiet(["--workspace-only", "--clean-workspace", str(ws)]),
+                0,
+            )
+            self.assertFalse(sources_path.exists())
+
+    def test_record_install_source_tolerates_missing_git_and_corrupt_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            fake_repo = base / "no_git_repo"
+            fake_plugin = fake_repo / "plugin"
+            fake_plugin.mkdir(parents=True)
+            (fake_plugin / "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": "gravity-workflow",
+                        "version": "9.9.9",
+                        "repository": "https://example.invalid/gravity-workflow",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            sources_path = self._fake_home / ".gemini" / "gravity" / "core" / "sources.json"
+            sources_path.parent.mkdir(parents=True, exist_ok=True)
+            sources_path.write_text("{corrupt-json", encoding="utf-8")
+
+            recorded = install._record_install_source(
+                fake_plugin,
+                install_method="copy",
+                target_dir=base / "installed",
+            )
+            self.assertEqual(recorded, sources_path.resolve())
+            data = json.loads(sources_path.read_text(encoding="utf-8"))
+            entry = data["sources"]["gravity-workflow"]
+            self.assertIsNone(entry["git_branch"])
+            self.assertIsNone(entry["git_sha"])
+            self.assertEqual(entry["installed_version"], "9.9.9")
+
+            with mock.patch("install.shutil.which", return_value=None):
+                recorded2 = install._record_install_source(
+                    install.PLUGIN_SOURCE,
+                    install_method="copy",
+                    target_dir=None,
+                )
+            self.assertEqual(recorded2, sources_path.resolve())
+            data2 = json.loads(sources_path.read_text(encoding="utf-8"))
+            self.assertIsNone(data2["sources"]["gravity-workflow"]["git_branch"])
+            self.assertIsNone(data2["sources"]["gravity-workflow"]["git_sha"])
 
     def test_stdlib_only_ast(self) -> None:
         stdlib_names = getattr(sys, "stdlib_module_names", None)

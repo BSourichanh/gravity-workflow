@@ -2,6 +2,7 @@
 """Cross-platform installer and uninstaller for the Gravity Workflow Antigravity plugin (100% Python 3 stdlib)."""
 
 import argparse
+import datetime
 import errno
 import importlib.util
 import json
@@ -913,24 +914,126 @@ def _load_canonical_templates() -> Dict[str, str]:
 
 
 def _atomic_write_json(target: Path, payload: Dict[str, Any]) -> None:
-    """Atomically write JSON with UTF-8 encoding and fsync."""
+    """Atomically write JSON with UTF-8 encoding (no BOM, LF) and fsync."""
     target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{target.stem}_", suffix=".tmp", dir=str(target.parent)
-    )
+    tmp_name: Optional[str] = None
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as tmp_fh:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix=f".{target.stem}_",
+            suffix=".tmp",
+            dir=str(target.parent),
+            delete=False,
+        ) as tmp_fh:
+            tmp_name = tmp_fh.name
             json.dump(payload, tmp_fh, indent=2, ensure_ascii=False)
             tmp_fh.write("\n")
             tmp_fh.flush()
             os.fsync(tmp_fh.fileno())
         os.replace(tmp_name, target)
     except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
         raise
+
+
+def resolve_gravity_home() -> Path:
+    """Resolve centralized Gravity Core storage ($GRAVITY_HOME > ~/.gemini/gravity)."""
+    env_gravity = os.environ.get("GRAVITY_HOME", "").strip()
+    if env_gravity:
+        return Path(env_gravity).expanduser().resolve()
+    return (Path.home() / ".gemini" / "gravity").resolve()
+
+
+def _read_git_value(repo_dir: Path, args: Sequence[str]) -> Optional[str]:
+    """Safely run a read-only git query in repo_dir, returning None if git or .git is missing."""
+    if not (repo_dir / ".git").exists():
+        return None
+    git_bin = shutil.which("git")
+    if not git_bin:
+        return None
+    try:
+        proc = subprocess.run(
+            [git_bin, "-C", str(repo_dir), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    val = proc.stdout.strip()
+    return val or None
+
+
+def _record_install_source(
+    plugin_src: Path,
+    *,
+    install_method: str,
+    target_dir: Optional[Path],
+) -> Optional[Path]:
+    """Atomically record local repository provenance in $GRAVITY_HOME/core/sources.json."""
+    sources_path = resolve_gravity_home() / "core" / "sources.json"
+    repo_dir = plugin_src.resolve().parent
+    manifest = read_plugin_manifest(plugin_src) or {}
+
+    repository = manifest.get("repository")
+    if not isinstance(repository, str):
+        repository = None
+    installed_version = manifest.get("version")
+    if not isinstance(installed_version, str):
+        installed_version = None
+
+    git_branch = _read_git_value(repo_dir, ("rev-parse", "--abbrev-ref", "HEAD"))
+    if git_branch == "HEAD":
+        git_branch = None
+    git_sha = _read_git_value(repo_dir, ("rev-parse", "HEAD"))
+
+    entry: Dict[str, Any] = {
+        "plugin_name": PLUGIN_NAME,
+        "repo_dir": str(repo_dir),
+        "repository": repository,
+        "install_method": install_method,
+        "target_dir": str(target_dir) if target_dir is not None else None,
+        "git_branch": git_branch,
+        "git_sha": git_sha,
+        "installed_version": installed_version,
+        "installed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+
+    payload: Dict[str, Any] = {"schema_version": 1, "sources": {}}
+    if sources_path.is_file():
+        try:
+            existing = json.loads(sources_path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                payload = existing
+        except (OSError, ValueError):
+            pass
+
+    existing_sources = payload.get("sources")
+    if not isinstance(existing_sources, dict):
+        existing_sources = {}
+        payload["sources"] = existing_sources
+    existing_sources[PLUGIN_NAME] = entry
+
+    try:
+        _atomic_write_json(sources_path, payload)
+    except OSError as exc:
+        print(
+            f"[WARN]  Unable to record install source in {sources_path}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    return sources_path
 
 
 def _remove_dir_if_empty(directory: Path) -> bool:
@@ -1726,6 +1829,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if rc != 0:
         return rc
+
+    if (
+        not args.dry_run
+        and args.scope == "global"
+        and args.target is None
+        and not getattr(args, "workspace_only", False)
+    ):
+        _record_install_source(
+            PLUGIN_SOURCE,
+            install_method=args.method,
+            target_dir=target_dir,
+        )
 
     legacy_kept = False
     if args.method == "copy" and legacy_dir is not None:
