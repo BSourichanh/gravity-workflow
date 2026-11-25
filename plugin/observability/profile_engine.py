@@ -53,6 +53,8 @@ VALID_VERIFICATIONS: Tuple[str, ...] = ("safe", "unsafe")
 
 DEFAULT_MODE = "evo"
 DEFAULT_LEVEL = "standard"
+VALID_EXECUTION_ENGINES: Tuple[str, ...] = ("swarm", "run_workflow")
+DEFAULT_EXECUTION_ENGINE = "swarm"
 MAX_HISTORY = 20
 
 VALID_MODEL_TIERS = {"inherit", "flash_lite", "flash", "pro"}
@@ -115,6 +117,7 @@ def default_profile() -> Dict[str, Any]:
         "locked": False,
         "caveman": DEFAULT_CAVEMAN,
         "caveman_locked": False,
+        "execution_engine": DEFAULT_EXECUTION_ENGINE,
         "suggested_profile": DEFAULT_LEVEL,
         "allow_pro": True,
         "model_overrides": {},
@@ -180,6 +183,16 @@ def normalize_verification(raw: str) -> str:
     return cleaned
 
 
+def normalize_execution_engine(raw: str) -> str:
+    """Valide et normalise un moteur d'exécution (`swarm` ou `run_workflow`)."""
+    cleaned = str(raw or "").strip().lower()
+    if cleaned not in VALID_EXECUTION_ENGINES:
+        raise ValueError(
+            f"Moteur d'exécution Gravity invalide {raw!r} (attendu : {', '.join(VALID_EXECUTION_ENGINES)})."
+        )
+    return cleaned
+
+
 def resolve_profile_path(workspace_root: Optional[Path] = None) -> Path:
     """Retourne le chemin centralisé vers `profile.json` pour le workspace cible."""
     return resolve_profile_storage_path(workspace_root)
@@ -234,12 +247,21 @@ def _sanitize_profile(raw: Any) -> Dict[str, Any]:
     caveman = raw_caveman if raw_caveman in VALID_CAVEMAN_LEVELS else DEFAULT_CAVEMAN
     caveman_locked = bool(raw.get("caveman_locked", False))
 
+    raw_engine = raw.get("execution_engine", DEFAULT_EXECUTION_ENGINE)
+    try:
+        execution_engine = normalize_execution_engine(
+            "" if raw_engine is None else str(raw_engine)
+        )
+    except ValueError:
+        execution_engine = DEFAULT_EXECUTION_ENGINE
+
     merged["schema_version"] = 2
     merged["mode"] = mode
     merged["current_level"] = current_level
     merged["locked"] = locked
     merged["caveman"] = caveman
     merged["caveman_locked"] = caveman_locked
+    merged["execution_engine"] = execution_engine
     merged["suggested_profile"] = suggested_profile
     merged["allow_pro"] = bool(merged.get("allow_pro", True))
 
@@ -320,6 +342,7 @@ def get_active_preset(
     verification_override: Optional[str] = None,
     no_verify: bool = False,
     caveman_override: Optional[str] = None,
+    execution_engine_override: Optional[str] = None,
     plan_model_override: Optional[str] = None,
     build_model_override: Optional[str] = None,
     review_model_override: Optional[str] = None,
@@ -373,6 +396,16 @@ def get_active_preset(
     preset["caveman"] = caveman
     preset["caveman_planner"] = effective_planner_caveman(caveman)
     preset["caveman_evals"] = "off"
+
+    execution_engine = profile.get("execution_engine", DEFAULT_EXECUTION_ENGINE)
+    if execution_engine not in VALID_EXECUTION_ENGINES:
+        execution_engine = DEFAULT_EXECUTION_ENGINE
+    if execution_engine_override is not None and str(execution_engine_override).strip():
+        try:
+            execution_engine = normalize_execution_engine(str(execution_engine_override))
+        except ValueError:
+            pass
+    preset["execution_engine"] = execution_engine
 
     preset["mode"] = profile["mode"]
     preset["level"] = level
@@ -469,6 +502,7 @@ def update_profile_settings(
     raw_pace: Optional[str] = None,
     raw_verification: Optional[str] = None,
     raw_caveman: Optional[str] = None,
+    execution_engine: Optional[str] = None,
     plan_model: Optional[str] = None,
     build_model: Optional[str] = None,
     review_model: Optional[str] = None,
@@ -492,6 +526,9 @@ def update_profile_settings(
             )
 
     target_caveman = normalize_caveman(raw_caveman) if raw_caveman is not None else None
+    target_engine = (
+        normalize_execution_engine(execution_engine) if execution_engine is not None else None
+    )
     has_model_update = (
         plan_model is not None
         or build_model is not None
@@ -503,11 +540,12 @@ def update_profile_settings(
         and deprecated_pace is None
         and raw_verification is None
         and target_caveman is None
+        and target_engine is None
         and allow_pro is None
         and not has_model_update
     ):
         raise ValueError(
-            "Au moins un paramètre (`mode`, `caveman`, `allow_pro` ou surcharge modèle) est requis."
+            "Au moins un paramètre (`mode`, `caveman`, `execution_engine`, `allow_pro` ou surcharge modèle) est requis."
         )
 
     profile_path = resolve_profile_path(ws_root)
@@ -520,10 +558,14 @@ def update_profile_settings(
         prev_level = profile["current_level"]
         prev_caveman = profile["caveman"]
         prev_caveman_locked = profile["caveman_locked"]
+        prev_engine = profile.get("execution_engine", DEFAULT_EXECUTION_ENGINE)
         prev_overrides = dict(profile.get("model_overrides") or {})
 
         if allow_pro is not None:
             profile["allow_pro"] = bool(allow_pro)
+
+        if target_engine is not None:
+            profile["execution_engine"] = target_engine
 
         if target_mode is not None:
             if target_mode == "evo":
@@ -584,6 +626,8 @@ def update_profile_settings(
                     fragments.append(f"caveman auto ({profile['caveman']})")
                 else:
                     fragments.append(f"caveman verrouillé en {target_caveman}")
+            if target_engine is not None:
+                fragments.append(f"moteur {target_engine}")
             if override_notes:
                 fragments.append("modèles A/B : " + ", ".join(override_notes))
             if deprecated_pace is not None:
@@ -604,6 +648,7 @@ def update_profile_settings(
             or prev_level != profile["current_level"]
             or prev_caveman != profile["caveman"]
             or prev_caveman_locked != profile["caveman_locked"]
+            or prev_engine != profile.get("execution_engine", DEFAULT_EXECUTION_ENGINE)
             or prev_overrides != profile["model_overrides"]
             or not profile_path.is_file()
         )
@@ -928,9 +973,11 @@ def format_metrics_line(profile: Dict[str, Any]) -> str:
 
 def format_status(profile: Dict[str, Any]) -> str:
     """Formate le bilan statut lisible (incluant la ligne Metrics si disponible)."""
+    engine = profile.get("execution_engine", DEFAULT_EXECUTION_ENGINE)
     base = (
         f"Mode: {format_mode_badge(profile)} | {format_caveman_badge(profile)} | "
-        f"Suggestion: {profile.get('suggested_profile', DEFAULT_LEVEL)} | {profile.get('last_reason', '')}"
+        f"Engine: {engine} | Suggestion: {profile.get('suggested_profile', DEFAULT_LEVEL)} | "
+        f"{profile.get('last_reason', '')}"
     )
     metrics_line = format_metrics_line(profile)
     if metrics_line:
@@ -1114,6 +1161,11 @@ def main() -> int:
         default=None,
         help="Niveau Caveman : auto|evo|off|lite|full|ultra.",
     )
+    p_set.add_argument(
+        "--engine",
+        default=None,
+        help="Moteur d'exécution par défaut : swarm|run_workflow.",
+    )
     p_set.add_argument("--plan-model", default=None, help="Surcharge A/B : inherit|flash_lite|flash|pro|reset.")
     p_set.add_argument("--build-model", default=None, help="Surcharge A/B : inherit|flash_lite|flash|pro|reset.")
     p_set.add_argument("--review-model", default=None, help="Surcharge A/B : inherit|flash_lite|flash|pro|reset.")
@@ -1153,13 +1205,14 @@ def main() -> int:
             and args.pace is None
             and args.verification is None
             and args.caveman is None
+            and args.engine is None
             and args.plan_model is None
             and args.build_model is None
             and args.review_model is None
             and args.allow_pro is None
         ):
             print(
-                "[ERROR] Précisez au moins --mode, --caveman, --plan-model, --build-model, --review-model ou --allow-pro.",
+                "[ERROR] Précisez au moins --mode, --caveman, --engine, --plan-model, --build-model, --review-model ou --allow-pro.",
                 file=sys.stderr,
             )
             return 1
@@ -1170,6 +1223,7 @@ def main() -> int:
                 raw_pace=args.pace,
                 raw_verification=args.verification,
                 raw_caveman=args.caveman,
+                execution_engine=args.engine,
                 plan_model=args.plan_model,
                 build_model=args.build_model,
                 review_model=args.review_model,

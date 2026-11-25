@@ -83,6 +83,7 @@ class TestProfileEngine(WorkflowEnvTestCase):
                 "caveman",
                 "caveman_planner",
                 "caveman_evals",
+                "execution_engine",
             }
 
             p_quick = profile_engine.get_active_preset(ws, level_override="quick")
@@ -298,6 +299,74 @@ class TestProfileEngine(WorkflowEnvTestCase):
                 self.assertIn("metrics", reason)
                 prof = profile_engine.evolve_on_stop(ws, {"conversation_id": "m1", "fully_idle": True})
                 self.assertIn("Signaux Metrics (3 sess.)", profile_engine.format_status(prof))
+
+    def test_execution_engine_default_cli_override_and_backward_compat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "engine_ws"
+            ws.mkdir()
+
+            default_prof = profile_engine.default_profile()
+            self.assertEqual(default_prof["execution_engine"], "swarm")
+
+            preset_default = profile_engine.get_active_preset(ws)
+            self.assertEqual(preset_default["execution_engine"], "swarm")
+            self.assertEqual(
+                profile_engine.get_active_preset(ws, execution_engine_override="run_workflow")["execution_engine"],
+                "run_workflow",
+            )
+            self.assertEqual(
+                profile_engine.get_active_preset(ws, execution_engine_override="invalid")["execution_engine"],
+                "swarm",
+            )
+            self.assertIn("Engine: swarm", profile_engine.format_status(default_prof))
+
+            # Rétrocompatibilité : un profile.json sans execution_engine ou avec valeur invalide -> "swarm"
+            ro_prof = ws / ".agents/gravity-workflow/profile.json"
+            ro_prof.parent.mkdir(parents=True)
+            ro_prof.write_text(json.dumps({"mode": "evo", "current_level": "standard"}), encoding="utf-8")
+            self.assertEqual(profile_engine.load_profile(ws)["execution_engine"], "swarm")
+            ro_prof.write_text(
+                json.dumps({"mode": "evo", "current_level": "standard", "execution_engine": "legacy"}),
+                encoding="utf-8",
+            )
+            self.assertEqual(profile_engine.load_profile(ws)["execution_engine"], "swarm")
+
+            with self.assertRaises(ValueError):
+                profile_engine.update_profile_settings(ws, execution_engine="invalid")
+
+            cli_script = PLUGIN_ROOT / "observability/profile_engine.py"
+            proc_rw = subprocess.run(
+                [sys.executable, str(cli_script), "set", "--workspace", str(ws), "--engine", "run_workflow", "--json"],
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(proc_rw.returncode, 0, proc_rw.stderr)
+            rw_data = json.loads(proc_rw.stdout)
+            self.assertEqual(rw_data["profile"]["execution_engine"], "run_workflow")
+            self.assertEqual(rw_data["preset"]["execution_engine"], "run_workflow")
+            self.assertIn("Engine: run_workflow", profile_engine.format_status(rw_data["profile"]))
+
+            proc_sw = subprocess.run(
+                [sys.executable, str(cli_script), "set", "--workspace", str(ws), "--engine", "swarm", "--json"],
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(proc_sw.returncode, 0, proc_sw.stderr)
+            self.assertEqual(json.loads(proc_sw.stdout)["profile"]["execution_engine"], "swarm")
+
+            proc_bad = subprocess.run(
+                [sys.executable, str(cli_script), "set", "--workspace", str(ws), "--engine", "bogus"],
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            self.assertNotEqual(proc_bad.returncode, 0)
+            self.assertIn("Moteur d'exécution Gravity invalide", proc_bad.stderr)
 
 
 if __name__ == "__main__":

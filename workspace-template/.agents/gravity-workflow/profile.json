@@ -5,6 +5,7 @@
   "locked": false,
   "caveman": "lite",
   "caveman_locked": false,
+  "execution_engine": "swarm",
   "suggested_profile": "standard",
   "allow_pro": true,
   "model_overrides": {},

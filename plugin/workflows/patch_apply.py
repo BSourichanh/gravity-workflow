@@ -778,6 +778,7 @@ def load_level_preset_for_ws(
         "suggested_profile": "standard",
         "caveman": "lite",
         "caveman_planner": "lite",
+        "execution_engine": "swarm",
         "skip_separate_planner": lvl_str == "quick",
         "skip_verification": no_verify,
     }

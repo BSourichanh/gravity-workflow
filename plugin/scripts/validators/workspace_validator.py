@@ -250,6 +250,14 @@ def _validate_gravity_project_state(ws: Path, report: Report) -> None:
                     report.error(
                         ".agents/gravity-workflow/profile.json : 'caveman_locked' doit être un booléen."
                     )
+                if "execution_engine" in pdata:
+                    engine_val = pdata.get("execution_engine")
+                    valid_engines = {"swarm", "run_workflow"}
+                    if engine_val not in valid_engines:
+                        report.error(
+                            f".agents/gravity-workflow/profile.json : 'execution_engine' ({engine_val!r}) invalide "
+                            f"(attendu : {sorted(valid_engines)})."
+                        )
         except Exception as exc:
             report.error(f".agents/gravity-workflow/profile.json invalide : {exc}")
 
