@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Configurable `GRAVITY_WORKTREE_BASE`, Linux Snap Non-Hidden Fallback & `/swarm` Execution Hygiene (`plugin/workflows/patch_apply.py`, `plugin/skills/gravity-workflow/references/05-workflows-and-routing.md`, `tests/test_wave_runner.py`):**
+  - Updated `resolve_worktree_base()` with explicit precedence (`worktree_base` arg > `GRAVITY_WORKTREE_BASE` > workflow home) and automatic fallback to `~/gravity-worktrees` only on Linux when `agy`/`antigravity` runs from Snap (`/snap/`) and the resolved base sits inside a hidden dotdir under `$HOME`.
+  - Protected `gravity-worktrees` in `_is_protected_cleanup_target()`, added the POSIX/Linux `grep -rn` reminder to `BUILDER_HYGIENE_DIRECTIVE`, documented `GRAVITY_WORKTREE_BASE`, Snap fallback, 1-line Caveman `/swarm` brief, `grep -rn`, and `ast.PyCF_ALLOW_TOP_LEVEL_AWAIT` AST verification in `05-workflows-and-routing.md`, and expanded `tests/test_wave_runner.py`.
 - **Generic `wave_plan_v1` Runner & `quick` Profile Docs Alignment (`plugin/workflows/wave_runner.py`, `plugin/skills/gravity-workflow/{SKILL,references/05-*,references/08-*}.md`, `tests/test_wave_runner.py`):**
   - Replaced FR Architect Markdown regexes and `WS_ROOT.parent` fallbacks with fail-closed `wave_plan_v1` (`args["wave_plan"]` dict or JSON file path) and structured `args["tasks"]` (`repo_root` required, `draft`/`done`/`archived`/`cancelled` status rejection).
   - Aligned `SKILL.md` and `references/05-workflows-and-routing.md` on the actual `quick` preset (`Builder` + `Reviewer flash`, `0` remediation, `Planner` skipped; `--no-verify`/`unsafe` alone skips `Reviewer`).

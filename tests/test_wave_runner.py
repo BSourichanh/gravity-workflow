@@ -79,6 +79,7 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
 
             with mock.patch.dict(os.environ, {"GRAVITY_HOME": str(g_home)}, clear=False):
                 os.environ.pop("GRAVITY_WORKFLOW_HOME", None)
+                os.environ.pop("GRAVITY_WORKTREE_BASE", None)
                 wt_base = patch_apply.resolve_worktree_base()
                 self.assertEqual(wt_base, (g_home / "workflow" / "worktrees").resolve())
 
@@ -126,6 +127,103 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
                 # Valid detached worktree is cleanly removed & pruned
                 self.assertTrue(patch_apply.cleanup_worktree_best_effort(wt_path, repo))
                 self.assertFalse(wt_path.exists())
+
+    def test_resolve_worktree_base_env_snap_fallback_and_protection(self) -> None:
+        self.assertIn("grep -rn", patch_apply.BUILDER_HYGIENE_DIRECTIVE)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            fake_home = base / "home_user"
+            fake_home.mkdir()
+            explicit_arg = base / "explicit_wt"
+            env_wt = base / "env_wt"
+            non_hidden_gravity = base / "gravity_home"
+
+            with mock.patch("pathlib.Path.home", return_value=fake_home), mock.patch.object(
+                patch_apply.sys, "platform", "linux"
+            ):
+                # 1. Explicit arg > GRAVITY_WORKTREE_BASE > GRAVITY_WORKFLOW_HOME > GRAVITY_HOME
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "GRAVITY_WORKTREE_BASE": str(env_wt),
+                        "GRAVITY_WORKFLOW_HOME": str(base / "wf_home"),
+                        "GRAVITY_HOME": str(non_hidden_gravity),
+                    },
+                    clear=False,
+                ), mock.patch.object(patch_apply, "_is_snap_agy", return_value=True):
+                    self.assertEqual(patch_apply.resolve_worktree_base(explicit_arg), explicit_arg.resolve())
+                    self.assertEqual(patch_apply.resolve_worktree_base(), env_wt.resolve())
+
+                # 2. Snap Linux fallback applies to hidden dotdir under $HOME (~/.gemini/... or ~/.custom)
+                with mock.patch.dict(os.environ, {}, clear=False), mock.patch.object(
+                    patch_apply, "_is_snap_agy", return_value=True
+                ):
+                    for key in ("GRAVITY_WORKTREE_BASE", "GRAVITY_WORKFLOW_HOME", "GRAVITY_HOME"):
+                        os.environ.pop(key, None)
+                    self.assertEqual(
+                        patch_apply.resolve_worktree_base(),
+                        (fake_home / "gravity-worktrees").resolve(),
+                    )
+
+                    os.environ["GRAVITY_HOME"] = str(fake_home / ".hidden_gravity")
+                    self.assertEqual(
+                        patch_apply.resolve_worktree_base(),
+                        (fake_home / "gravity-worktrees").resolve(),
+                    )
+
+                    # Non-hidden GRAVITY_HOME stays unchanged even under Snap
+                    os.environ["GRAVITY_HOME"] = str(non_hidden_gravity)
+                    self.assertEqual(
+                        patch_apply.resolve_worktree_base(),
+                        (non_hidden_gravity / "workflow" / "worktrees").resolve(),
+                    )
+
+                # 3. Without Snap, ~/.gemini/gravity/workflow/worktrees is preserved
+                with mock.patch.dict(os.environ, {}, clear=False), mock.patch.object(
+                    patch_apply, "_is_snap_agy", return_value=False
+                ):
+                    for key in ("GRAVITY_WORKTREE_BASE", "GRAVITY_WORKFLOW_HOME", "GRAVITY_HOME"):
+                        os.environ.pop(key, None)
+                    self.assertEqual(
+                        patch_apply.resolve_worktree_base(),
+                        (fake_home / ".gemini" / "gravity" / "workflow" / "worktrees").resolve(),
+                    )
+
+                # 4. gravity-worktrees root is protected even if GRAVITY_WORKTREE_BASE points elsewhere
+                repo = base / "repo"
+                _init_git_repo(repo, {"a.txt": "1\n"}, branch="dev")
+                snap_root = (fake_home / "gravity-worktrees").resolve()
+                snap_root.mkdir(parents=True, exist_ok=True)
+                with mock.patch.dict(os.environ, {"GRAVITY_WORKTREE_BASE": str(env_wt)}, clear=False):
+                    self.assertTrue(patch_apply._is_protected_cleanup_target(snap_root, repo))
+                    self.assertFalse(patch_apply.cleanup_worktree_best_effort(snap_root, repo))
+                    self.assertTrue(snap_root.is_dir())
+
+                    # Nested linked worktree inside gravity-worktrees can still be created and cleaned
+                    nested_wt = patch_apply.create_repo_worktree(repo, snap_root, "snap-01")
+                    self.assertTrue(nested_wt.is_dir())
+                    self.assertTrue(patch_apply.cleanup_worktree_best_effort(nested_wt, repo))
+                    self.assertFalse(nested_wt.exists())
+                    self.assertTrue(snap_root.is_dir())
+
+            # 5. _is_snap_agy detects /snap/ paths and /usr/bin/snap realpaths on Linux only
+            with mock.patch.object(patch_apply.sys, "platform", "linux"):
+                with mock.patch("shutil.which", side_effect=lambda c: "/snap/bin/agy" if c == "agy" else None), mock.patch(
+                    "os.path.realpath", return_value="/usr/bin/snap"
+                ):
+                    self.assertTrue(patch_apply._is_snap_agy())
+                with mock.patch("shutil.which", side_effect=lambda c: "/usr/local/bin/agy" if c == "agy" else None), mock.patch(
+                    "os.path.realpath", return_value="/usr/bin/snap"
+                ):
+                    self.assertTrue(patch_apply._is_snap_agy())
+                with mock.patch("shutil.which", side_effect=lambda c: "/usr/bin/agy" if c == "agy" else None), mock.patch(
+                    "os.path.realpath", return_value="/usr/share/antigravity/agy"
+                ):
+                    self.assertFalse(patch_apply._is_snap_agy())
+            with mock.patch.object(patch_apply.sys, "platform", "win32"), mock.patch(
+                "shutil.which", return_value="/snap/bin/agy"
+            ):
+                self.assertFalse(patch_apply._is_snap_agy())
 
     def test_extract_changed_files_from_diff_bounds_and_formats(self) -> None:
         dotfile_and_patch_diff = (

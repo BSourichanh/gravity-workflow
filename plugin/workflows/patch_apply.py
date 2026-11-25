@@ -32,6 +32,7 @@ BUILDER_HYGIENE_DIRECTIVE = (
     "NotificationTimeoutSeconds=180 (plage 120..300) puis attends la notification sans "
     "jamais appeler manage_task(status) en boucle avant notification ; "
     "sous PowerShell Windows, enchaîne avec ';' (zéro '&&') ; "
+    "sous POSIX/Linux, utilise 'grep -rn' pour les recherches (jamais 'rg') ; "
     "pour read_file, passe toujours un EndLine absolu >= StartLine (jamais une taille de fenêtre) ; "
     "chemin exact du guide routage : plugin/skills/gravity-workflow/references/05-workflows-and-routing.md."
 )
@@ -136,22 +137,60 @@ def _safe_save_verified_patch(
         return None
 
 
+def _is_snap_agy() -> bool:
+    """Retourne True sur Linux si `agy`/`antigravity` provient d'un paquet Snap (`/snap/`)."""
+    if not sys.platform.startswith("linux"):
+        return False
+    for cmd in ("agy", "antigravity"):
+        resolved = shutil.which(cmd)
+        if not resolved:
+            continue
+        norm = resolved.replace("\\", "/")
+        if norm.startswith("/snap/") or "/snap/" in norm:
+            return True
+        try:
+            real = os.path.realpath(resolved).replace("\\", "/")
+        except OSError:
+            real = ""
+        if real.endswith("/snap") or real.startswith("/snap/"):
+            return True
+    return False
+
+
+def _is_hidden_under_home(path: Path) -> bool:
+    """Retourne True si `path` se situe sous un dossier caché (`.*`) de `Path.home()`."""
+    try:
+        home = Path.home().resolve()
+        rel = Path(path).expanduser().resolve().relative_to(home)
+    except (OSError, ValueError):
+        return False
+    return any(part.startswith(".") and part not in {".", ".."} for part in rel.parts)
+
+
 def resolve_worktree_base(worktree_base: Optional[Path] = None) -> Path:
-    """Résout le dossier racine des worktrees isolés (`$GRAVITY_WORKFLOW_HOME/worktrees` > `$GRAVITY_HOME/workflow/worktrees`)."""
+    """Résout le dossier racine des worktrees isolés (`worktree_base` > `GRAVITY_WORKTREE_BASE` > workflow home, repli Snap Linux `~/gravity-worktrees`)."""
     if worktree_base is not None:
         return Path(worktree_base).expanduser().resolve()
+    env_wt_base = os.environ.get("GRAVITY_WORKTREE_BASE", "").strip()
+    if env_wt_base:
+        return Path(env_wt_base).expanduser().resolve()
     try:
         from state_writer import resolve_workflow_home  # type: ignore[import-not-found]
 
-        return (resolve_workflow_home() / "worktrees").resolve()
+        candidate = (resolve_workflow_home() / "worktrees").resolve()
     except Exception:
         env_wf = os.environ.get("GRAVITY_WORKFLOW_HOME", "").strip()
         if env_wf:
-            return (Path(env_wf).expanduser().resolve() / "worktrees").resolve()
-        env_gravity = os.environ.get("GRAVITY_HOME", "").strip()
-        if env_gravity:
-            return (Path(env_gravity).expanduser().resolve() / "workflow" / "worktrees").resolve()
-        return (Path.home() / ".gemini" / "gravity" / "workflow" / "worktrees").resolve()
+            candidate = (Path(env_wf).expanduser().resolve() / "worktrees").resolve()
+        else:
+            env_gravity = os.environ.get("GRAVITY_HOME", "").strip()
+            if env_gravity:
+                candidate = (Path(env_gravity).expanduser().resolve() / "workflow" / "worktrees").resolve()
+            else:
+                candidate = (Path.home() / ".gemini" / "gravity" / "workflow" / "worktrees").resolve()
+    if sys.platform.startswith("linux") and _is_snap_agy() and _is_hidden_under_home(candidate):
+        return (Path.home() / "gravity-worktrees").resolve()
+    return candidate
 
 
 def _is_protected_cleanup_target(
@@ -173,7 +212,7 @@ def _is_protected_cleanup_target(
     low_parts = {p.lower() for p in wt.parts}
     if ".git" in low_parts or ".agents" in low_parts or "workspaces" in low_parts:
         return True
-    if wt.name.lower() in {"hooks", "worktrees", "workflow", "gravity"}:
+    if wt.name.lower() in {"hooks", "worktrees", "workflow", "gravity", "gravity-worktrees"}:
         return True
     if ".gemini" in low_parts and "worktrees" not in low_parts:
         return True
