@@ -14,12 +14,10 @@ MAX_AGENTS_PROMPT_CHARS = 4000
 MAX_SUMMARY_CHARS = 200
 MAX_PROMPT_DIFF_CHARS = 60000
 
-_TARGET_REPO_RE = re.compile(r"^\s*-\s*\*\*Dépôt cible\s*:\*\*\s*(.+)$", re.MULTILINE)
-_BRANCH_RE = re.compile(r"^\s*-\s*\*\*Branche attendue\s*:\*\*\s*`([^`]+)`", re.MULTILINE)
-_PROFILE_RE = re.compile(r"^\s*-\s*\*\*Profil workflow\s*:\*\*\s*`([^`]+)`", re.MULTILINE)
+WAVE_PLAN_SCHEMA_VERSION = "wave_plan_v1"
+BLOCKED_TASK_STATUSES = frozenset({"draft", "done", "archived", "cancelled"})
+
 _TITLE_RE = re.compile(r"^\s*#\s+(.+)$", re.MULTILINE)
-_BACKTICK_RE = re.compile(r"`([^`]+)`")
-_PAREN_RE = re.compile(r"\(([^)]+)\)")
 
 try:
     _WORKSPACES = WORKSPACES  # type: ignore[name-defined]
@@ -65,7 +63,6 @@ def _resolve_plugin_root() -> Path:
     candidates.extend(
         [
             WS_ROOT / "plugin",
-            WS_ROOT.parent / "gravity-workflow" / "plugin",
             WS_ROOT / ".agents" / "plugins" / "gravity-workflow",
             Path.home() / ".gemini" / "config" / "plugins" / "gravity-workflow",
         ]
@@ -101,39 +98,14 @@ def _with_directive(prompt: str, directive: str) -> str:
     return f"{prompt}\n\n{directive}" if directive else prompt
 
 
-def _resolve_repo_root(
-    raw_override: Any,
-    target_line: str,
-    ws_root: Path,
-    task_path: Optional[Path],
-) -> Path:
-    if isinstance(raw_override, (str, Path)) and str(raw_override).strip():
-        cand = Path(str(raw_override).strip()).expanduser()
-        return cand.resolve() if cand.is_absolute() else (ws_root / cand).resolve()
-
-    paren_match = _PAREN_RE.search(target_line)
-    if paren_match:
-        raw_path = paren_match.group(1).strip().strip("`")
-        if raw_path:
-            cand = Path(raw_path).expanduser()
-            if cand.is_absolute():
-                return cand.resolve()
-            ws_cand = (ws_root / cand).resolve()
-            if ws_cand.exists() or task_path is None:
-                return ws_cand
-            return (task_path.parent.parent / cand).resolve()
-
-    bt_match = _BACKTICK_RE.search(target_line)
-    if bt_match:
-        token = bt_match.group(1).strip()
-        for cand in (ws_root / token, ws_root.parent / token):
-            if cand.is_dir():
-                return cand.resolve()
-        if ws_root.name == token:
-            return ws_root.resolve()
-        return (ws_root.parent / token).resolve()
-
-    return ws_root.resolve()
+def _resolve_repo_root(raw_repo_root: Any, ws_root: Path) -> Path:
+    if not isinstance(raw_repo_root, (str, Path)) or not str(raw_repo_root).strip():
+        raise ValueError("Tâche invalide : 'repo_root' explicite requis.")
+    cand = Path(str(raw_repo_root).strip()).expanduser()
+    repo_root = cand.resolve() if cand.is_absolute() else (ws_root / cand).resolve()
+    if not repo_root.is_dir() or not (repo_root / ".git").exists():
+        raise ValueError(f"Tâche invalide : 'repo_root' absent ou non-git ({repo_root}).")
+    return repo_root
 
 
 def parse_task_spec(
@@ -142,13 +114,24 @@ def parse_task_spec(
     *,
     default_level: Any = None,
 ) -> Dict[str, Any]:
-    """Lit `tasks/*.md` et `<repo>/AGENTS.md` en Python (0 token LLM)."""
-    overrides: Dict[str, Any] = dict(raw_item) if isinstance(raw_item, dict) else {}
+    """Valide une tâche structurée (`wave_plan_v1` / dict) et lit `plan_file` + `<repo>/AGENTS.md` (0 token LLM)."""
+    if not isinstance(raw_item, dict):
+        raise ValueError(
+            "Tâche invalide : dict structuré avec 'repo_root' requis (chaîne brute refusée)."
+        )
+    overrides: Dict[str, Any] = dict(raw_item)
+
+    status_raw = str(overrides.get("status") or "").strip().lower()
+    if status_raw in BLOCKED_TASK_STATUSES:
+        raise ValueError(f"Tâche bloquée par statut '{status_raw}'.")
+
+    repo_root = _resolve_repo_root(overrides.get("repo_root"), ws_root)
+
     plan_file_raw = str(
         overrides.get("plan_file")
         or overrides.get("task_file")
         or overrides.get("path")
-        or (raw_item if isinstance(raw_item, str) else "")
+        or ""
     ).strip()
 
     task_path: Optional[Path] = None
@@ -162,18 +145,16 @@ def parse_task_spec(
             raise ValueError("Tâche invalide : 'plan_file' ou 'plan'/'task' requis.")
 
     title_match = _TITLE_RE.search(plan_text)
-    title = title_match.group(1).strip() if title_match else (task_path.stem if task_path else "task")
-    target_match = _TARGET_REPO_RE.search(plan_text)
-    target_line = target_match.group(1).strip() if target_match else ""
-    repo_override = overrides.get("repo_root") or overrides.get("repo") or overrides.get("workspace")
-    repo_root = _resolve_repo_root(repo_override, target_line, ws_root, task_path)
+    title = str(overrides.get("title") or "").strip() or (
+        title_match.group(1).strip() if title_match else (task_path.stem if task_path else str(overrides.get("id") or "task"))
+    )
+    expected_branch = str(overrides.get("expected_branch") or "").strip()
+    raw_level = overrides.get("profile") or overrides.get("level") or default_level
+    repo_id = str(overrides.get("repo_id") or "").strip()
+    repo_name = repo_id or repo_root.name
 
-    branch_match = _BRANCH_RE.search(plan_text)
-    expected_branch = str(
-        overrides.get("expected_branch") or (branch_match.group(1).strip() if branch_match else "")
-    ).strip()
-    profile_match = _PROFILE_RE.search(plan_text)
-    raw_level = overrides.get("level") or (profile_match.group(1).strip() if profile_match else None) or default_level
+    target_files_raw = overrides.get("target_files")
+    target_files = [str(f).strip() for f in target_files_raw if str(f).strip()] if isinstance(target_files_raw, list) else []
 
     agents_text = ""
     agents_file = repo_root / "AGENTS.md"
@@ -181,16 +162,81 @@ def parse_task_spec(
         agents_text = agents_file.read_text(encoding="utf-8", errors="replace").strip()[:MAX_AGENTS_PROMPT_CHARS]
 
     return {
+        "id": str(overrides.get("id") or (task_path.stem if task_path else "")).strip(),
         "title": title,
         "plan_file": str(task_path) if task_path else "",
         "plan_text": plan_text,
-        "repo_name": repo_root.name,
+        "repo_id": repo_id,
+        "repo_name": repo_name,
         "repo_root": repo_root,
         "expected_branch": expected_branch,
         "level": raw_level,
+        "target_files": target_files,
+        "status": status_raw,
         "agents_text": agents_text,
         "overrides": overrides,
     }
+
+
+def load_wave_plan(raw_wave_plan: Any, ws_root: Path) -> Tuple[List[Any], Path, str]:
+    """Charge et valide un manifeste `wave_plan_v1` (dict ou chemin fichier JSON)."""
+    if isinstance(raw_wave_plan, (str, Path)):
+        raw_path = str(raw_wave_plan).strip()
+        if not raw_path:
+            raise ValueError("wave_plan invalide : chemin JSON vide.")
+        p = Path(raw_path).expanduser()
+        plan_path = p.resolve() if p.is_absolute() else (ws_root / p).resolve()
+        if not plan_path.is_file():
+            raise ValueError(f"wave_plan introuvable : {plan_path}")
+        try:
+            plan_data = json.loads(plan_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"wave_plan JSON illisible ({plan_path}): {exc}") from exc
+    elif isinstance(raw_wave_plan, dict):
+        plan_data = raw_wave_plan
+    else:
+        raise ValueError("wave_plan invalide : dict ou chemin JSON attendu.")
+
+    if not isinstance(plan_data, dict):
+        raise ValueError("wave_plan invalide : objet JSON attendu.")
+
+    schema_version = plan_data.get("schema_version")
+    if schema_version != WAVE_PLAN_SCHEMA_VERSION:
+        raise ValueError(
+            f"schema_version wave_plan invalide : {schema_version!r} (attendu {WAVE_PLAN_SCHEMA_VERSION!r})."
+        )
+
+    plan_ws_raw = str(plan_data.get("workspace") or "").strip()
+    effective_ws = Path(plan_ws_raw).expanduser().resolve() if plan_ws_raw else ws_root
+
+    tasks_raw = plan_data.get("tasks")
+    if not isinstance(tasks_raw, list):
+        raise ValueError("wave_plan_v1 invalide : 'tasks' doit être une liste.")
+
+    wave_label = str(plan_data.get("wave") or "").strip()
+    return list(tasks_raw), effective_ws, wave_label
+
+
+def resolve_wave_tasks(global_args: Dict[str, Any], ws_root: Path) -> Tuple[List[Dict[str, Any]], Path, str]:
+    """Résout et valide fail-closed les tâches depuis `args['wave_plan']` ou `args['tasks']`."""
+    default_level = global_args.get("level")
+    if "wave_plan" in global_args and global_args.get("wave_plan") is not None:
+        raw_items, effective_ws, wave_label = load_wave_plan(global_args["wave_plan"], ws_root)
+    else:
+        raw_tasks_arg = global_args.get("tasks")
+        if raw_tasks_arg is None:
+            raw_items = []
+        elif isinstance(raw_tasks_arg, list):
+            raw_items = list(raw_tasks_arg)
+        else:
+            raise ValueError("args['tasks'] invalide : liste de dicts structurés attendue.")
+        effective_ws = ws_root
+        wave_label = ""
+
+    validated_specs: List[Dict[str, Any]] = []
+    for item in raw_items:
+        validated_specs.append(parse_task_spec(item, effective_ws, default_level=default_level))
+    return validated_specs, effective_ws, wave_label
 
 
 def _check_expected_branch(repo_root: Path, expected_branch: str) -> Optional[str]:
@@ -238,6 +284,11 @@ def _build_repo_result(
 
 def _build_initial_prompt(spec: Dict[str, Any], wt_path: Path, ws_root: Path, skip_verification: bool) -> str:
     agents_block = f"\nInvariants `{spec['repo_name']}/AGENTS.md` :\n{spec['agents_text']}\n" if spec["agents_text"] else ""
+    target_block = (
+        f"Fichiers cibles déclarés : {', '.join(spec['target_files'])}\n"
+        if spec.get("target_files")
+        else ""
+    )
     verify_note = (
         "Vérifications ignorées (--no-verify éphémère)."
         if skip_verification
@@ -245,6 +296,7 @@ def _build_initial_prompt(spec: Dict[str, Any], wt_path: Path, ws_root: Path, sk
     )
     return (
         f"Travaille EXCLUSIVEMENT dans le worktree isolé `{wt_path}` (n'édite jamais `{spec['repo_root']}` ni `{ws_root}`).\n"
+        f"{target_block}"
         f"Plan issu de `{spec['plan_file'] or 'args'}` :\n{spec['plan_text']}\n"
         f"{agents_block}\n{BUILDER_HYGIENE_DIRECTIVE}\n"
         "Zéro `git commit`, `git push`, `git tag` ni release. "
@@ -403,13 +455,16 @@ async def _run_single_task(
     """Exécute un dépôt de façon fail-isolated dans un `git worktree` détaché."""
     idx, raw_item = indexed_item
     resolved_repo = (
-        str(raw_item.get("repo_root") or raw_item.get("repo") or f"task-{idx}")
-        if isinstance(raw_item, dict)
-        else Path(str(raw_item)).stem
+        str(raw_item.get("repo_id") or raw_item.get("repo_name") or Path(str(raw_item["repo_root"])).name)
+        if isinstance(raw_item, dict) and raw_item.get("repo_root")
+        else f"task-{idx}"
     )
     resolved_profile = "standard"
     try:
-        spec = parse_task_spec(raw_item, ws_root, default_level=global_args.get("level"))
+        if isinstance(raw_item, dict) and isinstance(raw_item.get("repo_root"), Path) and "plan_text" in raw_item:
+            spec = raw_item
+        else:
+            spec = parse_task_spec(raw_item, ws_root, default_level=global_args.get("level"))
         repo_root: Path = spec["repo_root"]
         repo_name: str = spec["repo_name"]
         resolved_repo = repo_name
@@ -531,8 +586,9 @@ def format_wave_summary(results: List[Dict[str, Any]], *, wave_id: str = "") -> 
 
 
 if _is_workflow_runtime():
-    raw_tasks = _ARGS.get("tasks") if isinstance(_ARGS.get("tasks"), list) else []
-    wave_id = str(_ARGS.get("run_id") or f"w-{uuid.uuid4().hex[:8]}").strip() or f"w-{uuid.uuid4().hex[:8]}"
+    validated_specs, effective_ws, wave_label = resolve_wave_tasks(_ARGS, WS_ROOT)
+    default_wave_id = f"w{wave_label}-{uuid.uuid4().hex[:8]}" if wave_label else f"w-{uuid.uuid4().hex[:8]}"
+    wave_id = str(_ARGS.get("run_id") or default_wave_id).strip() or default_wave_id
     apply_on_pass = bool(_ARGS.get("apply_on_pass", True))
     raw_wt_base = _ARGS.get("worktree_base")
     wt_base = (
@@ -543,15 +599,15 @@ if _is_workflow_runtime():
     builder_timeout_s = resolve_timeout_seconds(_ARGS.get("builder_timeout_s"), DEFAULT_BUILDER_TIMEOUT_S)
     reviewer_timeout_s = resolve_timeout_seconds(_ARGS.get("reviewer_timeout_s"), DEFAULT_REVIEWER_TIMEOUT_S)
 
-    phase(f"1. Exécution vague parallèle ({len(raw_tasks)} tâche(s), id={wave_id})")
-    if not raw_tasks:
+    phase(f"1. Exécution vague parallèle ({len(validated_specs)} tâche(s), id={wave_id})")
+    if not validated_specs:
         WAVE_RESULTS: List[Dict[str, Any]] = []
-        _log_warn("[WARN] Aucune tâche fournie dans args['tasks'].")
+        _log_warn("[WARN] Aucune tâche fournie dans args['wave_plan'] / args['tasks'].")
     else:
         WAVE_RESULTS = await parallel(
-            list(enumerate(raw_tasks, 1)),
+            list(enumerate(validated_specs, 1)),
             lambda item: _run_single_task(
-                item, ws_root=WS_ROOT, worktree_base=wt_base, wave_id=wave_id,
+                item, ws_root=effective_ws, worktree_base=wt_base, wave_id=wave_id,
                 apply_on_pass=apply_on_pass, builder_timeout_s=builder_timeout_s,
                 reviewer_timeout_s=reviewer_timeout_s, global_args=_ARGS,
             ),

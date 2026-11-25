@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Generic `wave_plan_v1` Runner & `quick` Profile Docs Alignment (`plugin/workflows/wave_runner.py`, `plugin/skills/gravity-workflow/{SKILL,references/05-*,references/08-*}.md`, `tests/test_wave_runner.py`):**
+  - Replaced FR Architect Markdown regexes and `WS_ROOT.parent` fallbacks with fail-closed `wave_plan_v1` (`args["wave_plan"]` dict or JSON file path) and structured `args["tasks"]` (`repo_root` required, `draft`/`done`/`archived`/`cancelled` status rejection).
+  - Aligned `SKILL.md` and `references/05-workflows-and-routing.md` on the actual `quick` preset (`Builder` + `Reviewer flash`, `0` remediation, `Planner` skipped; `--no-verify`/`unsafe` alone skips `Reviewer`).
+
 ### Added
 - **Native Multi-Repo Wave Runner, Watchdogs & Detached Worktree Helpers (`plugin/workflows/{wave_runner,review_pipeline,patch_apply}.py`, `tests/test_wave_runner.py`):**
   - Added `plugin/workflows/wave_runner.py` (`< 600` L, 100 % stdlib) for native `run_workflow` multi-repo execution (`parallel` *fail-isolated* via `try/except`): parses `tasks/*.md` + `<repo>/AGENTS.md` in Python (`0` LLM tokens), creates detached `git worktree` instances under `$GRAVITY_HOME/workflow/worktrees/<repo>-<id>`, skips `Planner` on `plan_file`, enforces `asyncio.wait_for` watchdogs (`900s` Builder / `360s` Reviewer) with `quick`/`standard`/`deep` routing, applies verified patches onto `dev` (`apply_on_pass=True`) with guaranteed `try/finally` cleanup, and outputs compact JSON (`<= 10` lines/repo, `changed_files` `1..20`).

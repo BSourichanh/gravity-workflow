@@ -275,7 +275,7 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
         wr_path = PLUGIN_ROOT / "workflows" / "wave_runner.py"
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            studio = base / "gravity-studio"
+            studio = base / "atelier"
             (studio / "tasks").mkdir(parents=True)
             wt_base = base / "wf_worktrees"
 
@@ -289,23 +289,39 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
             _init_git_repo(repo_err, {"e.txt": "init\n", "AGENTS.md": "# Error Repo Rules\n"}, branch="dev")
             _init_git_repo(repo_to, {"t.txt": "init\n", "AGENTS.md": "# Timeout Repo Rules\n"}, branch="dev")
 
-            task_files = []
-            for fname, rname, prof in (
-                ("t1-quick.md", "repo-quick", "quick"),
-                ("t2-std.md", "repo-standard", "standard"),
-                ("t3-err.md", "repo-error", "standard"),
-                ("t4-to.md", "repo-timeout", "standard"),
+            wave_tasks = []
+            for fname, repo_dir, rname, prof, target in (
+                ("t1-quick.md", repo_q, "repo-quick", "quick", ["q.txt"]),
+                ("t2-std.md", repo_s, "repo-standard", "standard", ["s.txt"]),
+                ("t3-err.md", repo_err, "repo-error", "standard", ["e.txt"]),
+                ("t4-to.md", repo_to, "repo-timeout", "standard", ["t.txt"]),
             ):
                 tpath = studio / "tasks" / fname
                 tpath.write_text(
-                    f"# Task {rname}\n\n"
-                    f"- **Dépôt cible :** `{rname}` (`../{rname}`)\n"
-                    f"- **Branche attendue :** `dev`\n"
-                    f"- **Profil workflow :** `{prof}`\n",
+                    f"# Task {rname}\n\n- Update `{target[0]}` in `{rname}`.\n",
                     encoding="utf-8",
                     newline="\n",
                 )
-                task_files.append(f"tasks/{fname}")
+                wave_tasks.append(
+                    {
+                        "id": Path(fname).stem,
+                        "title": f"Task {rname}",
+                        "repo_id": rname,
+                        "repo_root": str(repo_dir),
+                        "expected_branch": "dev",
+                        "profile": prof,
+                        "plan_file": str(tpath),
+                        "target_files": target,
+                        "status": "ready",
+                    }
+                )
+
+            wave_plan = {
+                "schema_version": "wave_plan_v1",
+                "workspace": str(studio),
+                "wave": 1,
+                "tasks": wave_tasks,
+            }
 
             calls = []
 
@@ -379,7 +395,7 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
                 workspaces=[studio],
                 args_dict={
                     "plugin_root": str(PLUGIN_ROOT),
-                    "tasks": task_files,
+                    "wave_plan": wave_plan,
                     "apply_on_pass": True,
                     "worktree_base": str(wt_base),
                     "builder_timeout_s": 0.1,
@@ -423,6 +439,7 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
             self.assertNotIn("spoofed_llm_ws", rev_q[2])
             bld_q = [c for c in calls if c[0] == "Builder repo-quick"][0]
             self.assertIn("# Quick Repo Rules", bld_q[2])
+            self.assertIn("q.txt", bld_q[2])
 
             # Compact JSON <= 10 lines/repo (even with 20 changed_files)
             summary_text = ns["WAVE_SUMMARY"]
@@ -430,6 +447,208 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
             self.assertEqual(parsed["passed"], 2)
             self.assertEqual(parsed["total"], 4)
             self.assertLessEqual(len(summary_text.splitlines()), 10 * 4)
+
+    def test_wave_runner_wave_plan_json_file_and_structured_tasks(self) -> None:
+        wr_path = PLUGIN_ROOT / "workflows" / "wave_runner.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ws = base / "runner-ws"
+            ws.mkdir(parents=True)
+            wt_base = base / "wf_worktrees"
+            repo_a = base / "alpha"
+            repo_b = base / "beta"
+            _init_git_repo(repo_a, {"a.txt": "v0\n"}, branch="dev")
+            _init_git_repo(repo_b, {"b.txt": "v0\n"}, branch="dev")
+
+            plan_md = ws / "alpha-task.md"
+            plan_md.write_text("# Alpha Task\n\nUpdate a.txt\n", encoding="utf-8", newline="\n")
+
+            wave_json = ws / "wave1.json"
+            wave_json.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "wave_plan_v1",
+                        "workspace": str(ws),
+                        "wave": 2,
+                        "tasks": [
+                            {
+                                "id": "w2-alpha",
+                                "title": "Alpha Task",
+                                "repo_id": "alpha",
+                                "repo_root": str(repo_a),
+                                "expected_branch": "dev",
+                                "profile": "quick",
+                                "plan_file": "alpha-task.md",
+                                "target_files": ["a.txt"],
+                                "status": "ready",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+                newline="\n",
+            )
+
+            seen_roles = []
+
+            class _OkBuilder:
+                def __init__(self, role: str) -> None:
+                    self.role = role
+
+                async def __call__(self, prompt, schema):
+                    seen_roles.append(self.role)
+                    marker = "Travaille EXCLUSIVEMENT dans le worktree isolé `"
+                    wt_dir = Path(prompt.split(marker, 1)[1].split("`", 1)[0])
+                    target_name = "a.txt" if "alpha" in self.role else "b.txt"
+                    (wt_dir / target_name).write_text("v1\n", encoding="utf-8", newline="\n")
+                    subprocess.run(["git", "-C", str(wt_dir), "add", "-N", "."], check=True, capture_output=True)
+                    subprocess.run(
+                        [
+                            "git", "-C", str(wt_dir), "diff",
+                            f"--output={wt_dir / '.gravity_verified.patch'}", "--", ".", ":(exclude).gravity_verified.patch",
+                        ],
+                        check=True,
+                        capture_output=True,
+                    )
+                    return {
+                        "workspace_path": str(wt_dir),
+                        "modified_files": [target_name],
+                        "git_diff": "",
+                        "validation_summary": "ok",
+                        "refused": False,
+                        "summary": "Done",
+                    }
+
+            def fake_agent(*_a, **kw):
+                role = kw.get("role", "")
+                if role.startswith("Builder"):
+                    return _OkBuilder(role)
+
+                async def _oneshot():
+                    seen_roles.append(role)
+                    return {
+                        "verdict": "PASS",
+                        "comprehension_check": "OK",
+                        "blockers": [],
+                        "majors": [],
+                        "uncertain": [],
+                        "nits": [],
+                        "manual_checks": [],
+                        "summary": "PASS",
+                    }
+
+                return _oneshot()
+
+            # 1. wave_plan passed as JSON file path; quick runs Reviewer flash
+            ns_json, _, _ = _exec_workflow(
+                wr_path,
+                workspaces=[ws],
+                args_dict={
+                    "plugin_root": str(PLUGIN_ROOT),
+                    "wave_plan": str(wave_json),
+                    "apply_on_pass": True,
+                    "worktree_base": str(wt_base),
+                },
+                fake_agent=fake_agent,
+            )
+            self.assertEqual(ns_json["WAVE_RESULTS"][0]["status"], "PASS")
+            self.assertEqual((repo_a / "a.txt").read_text(encoding="utf-8"), "v1\n")
+            self.assertIn("Reviewer alpha", seen_roles)
+
+            # 2. Structured args["tasks"] with inline plan + no_verify skips Reviewer
+            seen_roles.clear()
+            ns_tasks, _, _ = _exec_workflow(
+                wr_path,
+                workspaces=[ws],
+                args_dict={
+                    "plugin_root": str(PLUGIN_ROOT),
+                    "tasks": [
+                        {
+                            "repo_root": str(repo_b),
+                            "expected_branch": "dev",
+                            "profile": "quick",
+                            "plan": "# Beta inline\nUpdate b.txt\n",
+                            "no_verify": True,
+                        }
+                    ],
+                    "apply_on_pass": True,
+                    "worktree_base": str(wt_base),
+                },
+                fake_agent=fake_agent,
+            )
+            self.assertEqual(ns_tasks["WAVE_RESULTS"][0]["status"], "UNSAFE_SKIPPED")
+            self.assertEqual((repo_b / "b.txt").read_text(encoding="utf-8"), "v1\n")
+            self.assertFalse(any(r.startswith("Reviewer") for r in seen_roles))
+
+    def test_wave_runner_fail_closed_rejections(self) -> None:
+        wr_path = PLUGIN_ROOT / "workflows" / "wave_runner.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ws = base / "ws"
+            ws.mkdir()
+            repo = base / "repo"
+            _init_git_repo(repo, {"x.txt": "1\n"}, branch="dev")
+            non_git = base / "non-git"
+            non_git.mkdir()
+
+            agent_calls = []
+
+            def fail_if_called(*_a, **_kw):
+                agent_calls.append(True)
+                raise AssertionError("Agent must not be called on fail-closed rejection")
+
+            valid_task = {
+                "id": "t1",
+                "title": "Valid",
+                "repo_id": "repo",
+                "repo_root": str(repo),
+                "expected_branch": "dev",
+                "profile": "standard",
+                "plan": "# Valid\nUpdate x.txt\n",
+                "status": "ready",
+            }
+
+            bad_args_cases = [
+                # Wrong or missing schema_version
+                {"wave_plan": {"schema_version": "wave_plan_v0", "tasks": [valid_task]}},
+                {"wave_plan": {"tasks": [valid_task]}},
+                # Raw string entry without repo_root
+                {"tasks": ["tasks/raw-markdown.md"]},
+                {
+                    "wave_plan": {
+                        "schema_version": "wave_plan_v1",
+                        "workspace": str(ws),
+                        "wave": 1,
+                        "tasks": ["tasks/raw-markdown.md"],
+                    }
+                },
+                # Missing or invalid repo_root
+                {"tasks": [{"plan": "# No repo", "profile": "standard"}]},
+                {"tasks": [{"repo_root": str(base / "missing-repo"), "plan": "# Missing"}]},
+                {"tasks": [{"repo_root": str(non_git), "plan": "# Non git"}]},
+            ]
+            for blocked_status in ("draft", "done", "archived", "cancelled", "DRAFT"):
+                bad_args_cases.append(
+                    {
+                        "wave_plan": {
+                            "schema_version": "wave_plan_v1",
+                            "workspace": str(ws),
+                            "wave": 1,
+                            "tasks": [{**valid_task, "status": blocked_status}],
+                        }
+                    }
+                )
+
+            for idx, bad_args in enumerate(bad_args_cases):
+                with self.subTest(case=idx, bad_args=bad_args):
+                    with self.assertRaises(ValueError):
+                        _exec_workflow(
+                            wr_path,
+                            workspaces=[ws],
+                            args_dict={"plugin_root": str(PLUGIN_ROOT), **bad_args},
+                            fake_agent=fail_if_called,
+                        )
+            self.assertEqual(agent_calls, [])
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ Ne jamais « bricoler » un prompt global de façon empirique. Dès qu'une corre
    - Rejouer `/gravity-workflow evals` (via l'outil `run_workflow`) pour vérifier l'intégration avant la prochaine release.
 
 ## 3. Clôture finale `gravity-metrics` (session racine mono-dépôt uniquement)
-Dans une session `/gravity-workflow` autonome (hors atelier `gravity-architect`), la clôture finale de la fenêtre `gravity-metrics` évite de laisser la session dans la file « À archiver ». Ce mécanisme reste **100 % découplé en Python** (zéro import ni écriture depuis le plugin) et doit être un **no-op silencieux** si `~/.gemini/config/plugins/gravity-metrics/scripts/cli.py` n'existe pas.
+Dans une session `/gravity-workflow` autonome (hors orchestration multi-dépôts `wave_plan_v1` / `wave_runner.py`), la clôture finale de la fenêtre `gravity-metrics` évite de laisser la session dans la file « À archiver ». Ce mécanisme reste **100 % découplé en Python** (zéro import ni écriture depuis le plugin) et doit être un **no-op silencieux** si `~/.gemini/config/plugins/gravity-metrics/scripts/cli.py` n'existe pas.
 
 - **Déclenchement :** uniquement **après** le passage au vert de toutes les vérifications obligatoires, le `git commit` et l'éventuel `git push` demandé par l'utilisateur.
 - **Commande en toute fin de séquence :**
