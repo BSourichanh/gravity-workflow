@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Untracked Worktree Files & Cleanup Guard (`plugin/workflows/patch_apply.py`, `plugin/workflows/swarm_wave.py`, `tests/test_validators.py`, `tests/test_swarm_wave.py`):**
+  - Added `_stage_untracked_intent()` (via `git ls-files --others --exclude-standard -z` and batched `git add -N`, excluding `.gravity_verified.patch` and `EXCLUDED_TREE_DIRS`) inside `_read_worktree_patch()` so untracked files are always captured in unified diffs.
+  - Hardened `apply_verified_patch(..., cleanup_worktree=True)` to compare `git status --porcelain -z -uall` against `extract_changed_files_from_diff()` and preserve the worktree with an explicit `[WARN]` whenever any modified/untracked file is missing from the applied patch.
+  - Replaced blind `git add -N .` in `swarm_wave.extract_wave_diffs()` with filtered `_read_worktree_patch()`, added a fail-closed check when `changed_files`/diff is empty despite dirty worktree files, and required explicit `.patch` auditing in `reviewer_briefs`.
+
 ### Added
 - **Deterministic Multi-Repo Swarm Wave CLI (`plugin/workflows/swarm_wave.py`, `tests/test_swarm_wave.py`):**
   - Added `< 450` L 100% stdlib CLI (`prepare`, `diff`, `apply`, `cleanup`) consuming `wave_plan_v1` with fail-closed `schema_version`/`repo_root`/`expected_branch`/status checks, persistent JSON state under `<worktree_base>/swarm-wave-<id>.json`, compact `<= 700` char `builder_briefs` (zero inline plan content, Caveman + `BUILDER_HYGIENE_DIRECTIVE`, zero `git commit/push/tag`), `reviewer_topology` (`quick` shared `flash` vs `standard`/`deep` independent `pro` or `flash` when `allow_pro=false`, `monitor: false`), cold `reviewer_briefs` with `.patch` extraction, selective `PASS` application via `apply_verified_patch(..., cleanup_worktree=True)`, and idempotent `cleanup`.

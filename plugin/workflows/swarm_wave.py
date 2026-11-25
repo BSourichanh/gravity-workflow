@@ -35,10 +35,11 @@ for _sub in ("observability", "workflows"):
         sys.path.insert(0, str(_sub_dir))
 
 from patch_apply import (  # type: ignore[import-not-found]  # noqa: E402
-    BUILDER_HYGIENE_DIRECTIVE, _read_worktree_patch, _safe_save_verified_patch,
-    apply_verified_patch, caveman_directive, cleanup_worktree_best_effort,
-    collect_changed_files, create_repo_worktree, load_level_preset_for_ws,
-    resolve_worktree_base,
+    BUILDER_HYGIENE_DIRECTIVE, MAX_TREE_FILES, _list_worktree_dirty_files,
+    _read_worktree_patch, _safe_save_verified_patch, apply_verified_patch,
+    caveman_directive, cleanup_worktree_best_effort, collect_changed_files,
+    create_repo_worktree, extract_changed_files_from_diff,
+    load_level_preset_for_ws, resolve_worktree_base,
 )
 
 
@@ -273,9 +274,18 @@ def extract_wave_diffs(state_file: Any, *, task_ids: Optional[Sequence[str]] = N
         wt_path = Path(task["worktree_path"])
         if not wt_path.is_dir():
             raise FileNotFoundError(f"Worktree introuvable pour '{tid}' : {wt_path}")
-        _run_git(wt_path, ("add", "-N", "."), timeout=15)
-        diff_text = _read_worktree_patch(str(wt_path), "", task.get("target_files"))
+        diff_text = _read_worktree_patch(
+            str(wt_path), "", task.get("target_files"), stage_untracked=True
+        )
+        dirty_files = _list_worktree_dirty_files(wt_path)
+        extracted_files = extract_changed_files_from_diff(diff_text, max_items=MAX_TREE_FILES * 10)
+        if dirty_files and (not diff_text.strip() or not extracted_files):
+            raise RuntimeError(
+                f"Diff vide ou incomplet pour '{tid}' malgré des changements worktree : {dirty_files}"
+            )
         changed_files = collect_changed_files(diff_text, task.get("target_files"))
+        if dirty_files and not changed_files:
+            raise RuntimeError(f"changed_files vide pour '{tid}' malgré des changements worktree : {dirty_files}")
         patch_file = patches_dir / f"{_sanitize_name(tid, 'task')}.patch"
         normalized = diff_text.replace("\r\n", "\n").replace("\r", "\n")
         if normalized and not normalized.endswith("\n"):
@@ -289,7 +299,8 @@ def extract_wave_diffs(state_file: Any, *, task_ids: Optional[Sequence[str]] = N
         plan_ref = task.get("plan_file") or f"task:{tid}"
         reviewer_briefs[tid] = (
             f"Revue à froid (0 fork) tâche `{tid}` ({task['repo_name']}). "
-            f"Patch: `{patch_file}`. Plan: `{plan_ref}`. Verdict PASS/FAIL + BLOCKER/MAJOR/NIT. {caveman_rev}"
+            f"Audite explicitement le fichier `.patch` extrait (`{patch_file}`), pas seulement l'arbre du worktree. "
+            f"Plan: `{plan_ref}`. Verdict PASS/FAIL + BLOCKER/MAJOR/NIT. {caveman_rev}"
         ).strip()
         diffs_out.append({
             "id": tid, "repo_name": task["repo_name"], "patch_path": str(patch_file),

@@ -186,8 +186,9 @@ class TestSwarmWave(WorkflowEnvTestCase):
             wt_a = Path(prep["worktrees"]["../evil/task-alpha"])
             wt_b = Path(prep["worktrees"]["task-beta"])
 
-            # Untracked file in wt_a + modified tracked file in wt_b
+            # Untracked file + .gravity_verified.patch in wt_a + modified tracked file in wt_b
             (wt_a / "new_untracked.py").write_text("NEW_VAR = 42\n", encoding="utf-8", newline="\n")
+            (wt_a / ".gravity_verified.patch").write_text("", encoding="utf-8", newline="\n")
             (wt_b / "lib.py").write_text("print('b_v2')\n", encoding="utf-8", newline="\n")
 
             diff_res = swarm_wave.extract_wave_diffs(prep["state_file"])
@@ -197,8 +198,13 @@ class TestSwarmWave(WorkflowEnvTestCase):
             self.assertIn("swarm-wave-w4-diff-patches", str(patch_a.parent))
             self.assertNotIn("..", patch_a.name)
             self.assertIn("new_untracked.py", patches_by_id["../evil/task-alpha"]["changed_files"])
-            self.assertIn("NEW_VAR = 42", patch_a.read_text(encoding="utf-8"))
+            self.assertNotIn(".gravity_verified.patch", patches_by_id["../evil/task-alpha"]["changed_files"])
+            patch_a_text = patch_a.read_text(encoding="utf-8")
+            self.assertIn("NEW_VAR = 42", patch_a_text)
+            self.assertNotIn(".gravity_verified.patch", patch_a_text)
             self.assertNotIn("NEW_VAR = 42", diff_res["reviewer_briefs"]["../evil/task-alpha"])
+            self.assertIn(".patch", diff_res["reviewer_briefs"]["../evil/task-alpha"])
+            self.assertIn("Audite explicitement le fichier `.patch` extrait", diff_res["reviewer_briefs"]["../evil/task-alpha"])
 
             # Strict task ID matching: passing repo_name instead of task ID must fail
             with self.assertRaises(ValueError):

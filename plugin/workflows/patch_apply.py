@@ -372,6 +372,89 @@ def cleanup_worktree_best_effort(
     return not wt.exists()
 
 
+def _is_excluded_wt_path(rel_path: str) -> bool:
+    """Retourne True si `rel_path` cible `.gravity_verified.patch` ou traverse `EXCLUDED_TREE_DIRS`."""
+    norm = str(rel_path or "").replace("\\", "/").strip("/")
+    if not norm:
+        return True
+    parts = [p for p in norm.split("/") if p and p != "."]
+    if not parts:
+        return True
+    return parts[-1] == ".gravity_verified.patch" or any(p in EXCLUDED_TREE_DIRS for p in parts)
+
+
+def _list_worktree_dirty_files(wt: Path) -> Optional[List[str]]:
+    """Liste les fichiers modifiés/non suivis d'un worktree (hors exclusions), ou None si erreur git."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(wt), "status", "--porcelain", "-z", "-uall"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    entries = proc.stdout.split("\0")
+    dirty: List[str] = []
+    seen = set()
+    idx = 0
+    while idx < len(entries):
+        entry = entries[idx]
+        idx += 1
+        if not entry or len(entry) < 4:
+            continue
+        xy = entry[:2]
+        rel = entry[3:] if entry[2] == " " else entry[2:].lstrip()
+        if "R" in xy or "C" in xy:
+            idx += 1
+        cleaned = _clean_diff_path(rel)
+        if not cleaned or _is_excluded_wt_path(cleaned) or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        dirty.append(cleaned)
+    return dirty
+
+
+def _stage_untracked_intent(
+    raw_ws: str,
+    *,
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Enregistre l'intention d'ajout (`git add -N`) des fichiers untracked hors exclusions."""
+    warn = log_fn or _log_warn
+    try:
+        proc = subprocess.run(
+            ["git", "-C", raw_ws, "ls-files", "--others", "--exclude-standard", "-z"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+        )
+        if proc.returncode != 0 or not proc.stdout:
+            return
+        to_stage = [p for p in proc.stdout.split("\0") if p and not _is_excluded_wt_path(p)]
+        for idx in range(0, len(to_stage), 50):
+            chunk = to_stage[idx : idx + 50]
+            subprocess.run(
+                ["git", "-C", raw_ws, "add", "-N", "--", *chunk],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                check=False,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        warn(f"[WARN] Enregistrement git add -N échoué ({type(exc).__name__}: {exc})")
+
+
 def apply_verified_patch(
     workspace_root: Path,
     patch_path: Optional[Path] = None,
@@ -438,12 +521,29 @@ def apply_verified_patch(
         return False
 
     if cleanup_worktree and worktree_path is not None:
-        cleanup_worktree_best_effort(
-            worktree_path,
-            ws,
-            plugin_root=plugin_root,
-            log_fn=warn,
-        )
+        wt = Path(worktree_path).expanduser().resolve()
+        skip_cleanup = False
+        if wt.is_dir() and _is_verified_linked_worktree(wt, ws):
+            dirty_files = _list_worktree_dirty_files(wt)
+            if dirty_files is None:
+                warn(f"[WARN] Vérification git status impossible sur le worktree : {wt} (worktree conservé)")
+                skip_cleanup = True
+            elif dirty_files:
+                covered = set(extract_changed_files_from_diff(patch_text, max_items=MAX_TREE_FILES * 10))
+                missing = [f for f in dirty_files if f not in covered]
+                if missing:
+                    warn(
+                        f"[WARN] Worktree conservé ({wt}) : fichiers modifiés/non suivis absents du patch appliqué : "
+                        + ", ".join(missing)
+                    )
+                    skip_cleanup = True
+        if not skip_cleanup:
+            cleanup_worktree_best_effort(
+                worktree_path,
+                ws,
+                plugin_root=plugin_root,
+                log_fn=warn,
+            )
     return True
 
 
@@ -453,6 +553,7 @@ def _read_worktree_patch(
     modified_files: Any = None,
     *,
     max_prompt_diff_chars: int = MAX_PROMPT_DIFF_CHARS,
+    stage_untracked: Optional[bool] = None,
     log_fn: Optional[Callable[[str], None]] = None,
 ) -> str:
     """Lit `.gravity_verified.patch`, sinon `fallback_diff`, sinon extrait borné des fichiers modifiés."""
@@ -479,6 +580,13 @@ def _read_worktree_patch(
         return text_fallback
 
     if raw_ws and Path(raw_ws).is_dir():
+        should_stage = (
+            bool(stage_untracked)
+            if stage_untracked is not None
+            else (Path(raw_ws) / ".git").is_file()
+        )
+        if should_stage:
+            _stage_untracked_intent(raw_ws, log_fn=warn)
         try:
             diff_proc = subprocess.run(
                 ["git", "-C", raw_ws, "diff"],

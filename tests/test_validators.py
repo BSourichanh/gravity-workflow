@@ -732,6 +732,74 @@ class TestReviewPipelineHelpers(unittest.TestCase):
                 self.assertEqual((repo / "hello.txt").read_text(encoding="utf-8"), "world\n")
                 self.assertFalse(wt_dir.exists())
 
+    def test_read_worktree_patch_stages_untracked_excludes_verified_patch_and_apply_guards_wt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo = base / "repo"
+            repo.mkdir()
+            (repo / "tracked.txt").write_text("v1\n", encoding="utf-8", newline="\n")
+            for args in (
+                ["git", "init", "-q"],
+                ["git", "config", "user.email", "test@example.com"],
+                ["git", "config", "user.name", "Test"],
+                ["git", "add", "tracked.txt"],
+                ["git", "commit", "-q", "-m", "init"],
+            ):
+                subprocess.run(args, cwd=str(repo), check=True, capture_output=True)
+
+            (repo / "main_untracked.txt").write_text("stay_untracked\n", encoding="utf-8", newline="\n")
+            self.assertEqual(patch_apply._read_worktree_patch(str(repo), ""), "")
+            (repo / "main_untracked.txt").unlink()
+
+            wt_dir = base / "wt_untracked"
+            subprocess.run(
+                ["git", "-C", str(repo), "worktree", "add", "-q", "--detach", str(wt_dir)],
+                check=True,
+                capture_output=True,
+            )
+            (wt_dir / "tracked.txt").write_text("v2\n", encoding="utf-8", newline="\n")
+            (wt_dir / "brand_new.py").write_text("X = 1\n", encoding="utf-8", newline="\n")
+            (wt_dir / ".gravity_verified.patch").write_text("", encoding="utf-8", newline="\n")
+
+            read_diff = patch_apply._read_worktree_patch(str(wt_dir), "")
+            self.assertIn("diff --git a/tracked.txt b/tracked.txt", read_diff)
+            self.assertIn("diff --git a/brand_new.py b/brand_new.py", read_diff)
+            self.assertIn("+X = 1", read_diff)
+            self.assertNotIn(".gravity_verified.patch", read_diff)
+
+            # Patch partiel (omettant brand_new.py) -> apply_verified_patch préserve le worktree avec [WARN]
+            partial_patch = base / "partial.patch"
+            only_tracked = subprocess.run(
+                ["git", "-C", str(wt_dir), "diff", "--", "tracked.txt"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=True,
+            ).stdout
+            partial_patch.write_text(only_tracked, encoding="utf-8", newline="\n")
+            warnings: list[str] = []
+            self.assertTrue(
+                patch_apply.apply_verified_patch(
+                    repo, partial_patch, worktree_path=wt_dir, cleanup_worktree=True, log_fn=warnings.append
+                )
+            )
+            self.assertTrue(wt_dir.exists())
+            self.assertTrue(any("[WARN]" in w and "brand_new.py" in w for w in warnings))
+
+            # Patch complet -> supprime normalement le worktree
+            subprocess.run(["git", "-C", str(repo), "checkout", "--", "tracked.txt"], check=True, capture_output=True)
+            full_patch = base / "full.patch"
+            full_patch.write_text(read_diff, encoding="utf-8", newline="\n")
+            warnings_ok: list[str] = []
+            self.assertTrue(
+                patch_apply.apply_verified_patch(
+                    repo, full_patch, worktree_path=wt_dir, cleanup_worktree=True, log_fn=warnings_ok.append
+                )
+            )
+            self.assertFalse(wt_dir.exists())
+            self.assertTrue((repo / "brand_new.py").is_file())
+            self.assertEqual(warnings_ok, [])
+
 
 class TestFrontmatterParser(unittest.TestCase):
     def test_scalars_blocks_and_lists(self) -> None:
