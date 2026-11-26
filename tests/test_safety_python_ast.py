@@ -320,6 +320,80 @@ class TestSafetyPythonAst(unittest.TestCase):
         expr = ast.parse("a + b", mode="eval").body
         self.assertEqual(python_ast_eval._eval_static_str(expr, cvars), ".env")
 
+    def test_base64_and_obfuscated_dynamic_exec_fail_closed(self) -> None:
+        import base64
+
+        rm_b64 = "aW1wb3J0IG9zOyBvcy5zeXN0ZW0oInJtIC1yZiAvIik="
+        env_b64 = base64.b64encode(b"import os; print(os.environ)").decode("ascii")
+        env_urlsafe_b64 = base64.urlsafe_b64encode(b"import os; print(os.environ)").decode("ascii")
+        benign_b64 = base64.b64encode(b"print(1)").decode("ascii")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            gravity_ws = make_gravity_workspace(base, "gravity_b64")
+            plain_ws = base / "plain_b64"
+            plain_ws.mkdir()
+
+            deny_cmds = (
+                f'python3 -c "import base64; exec(base64.b64decode(\'{rm_b64}\'))"',
+                f'python3 -c "import base64; exec(base64.b64decode(b\'{rm_b64}\').decode())"',
+                f'python3 -c "import base64; eval(base64.standard_b64decode(\'{env_b64}\').decode(\'utf-8\'))"',
+                f'python3 -c "import base64; exec(base64.urlsafe_b64decode(\'{env_urlsafe_b64}\'))"',
+                f'python3 -c "import base64; exec(base64.decodebytes(b\'{rm_b64}\'))"',
+                f'python3 -c "import base64 as b; exec(b.b64decode(\'{rm_b64}\'))"',
+                f'python3 -c "from base64 import b64decode as d; exec(d(\'{rm_b64}\'))"',
+                f'python3 -c "import base64; d = base64.b64decode; exec(d(\'{rm_b64}\'))"',
+                f'python3 -c "exec(__import__(\'base64\').b64decode(\'{rm_b64}\'))"',
+                f'python3 -c "import base64; exec(compile(base64.b64decode(\'{rm_b64}\'), \'<x>\', \'exec\'))"',
+                f'python3 -c "import base64; compile(base64.b64decode(\'{rm_b64}\'), \'<x>\', \'exec\')"',
+                f'python3 -c "import base64; p = base64.b64decode(\'{rm_b64}\'); exec(p)"',
+                'python3 -c "import base64; var = input(); exec(base64.b64decode(var))"',
+                'python3 -c "from base64 import b64decode as d; var = input(); exec(d(var))"',
+                'python3 -c "import base64; var = input(); eval(base64.urlsafe_b64decode(var))"',
+                'python3 -c "import base64; var = input(); compile(base64.b64decode(var), \'<x>\', \'exec\')"',
+                'python3 -c "import base64; p = base64.b64decode(input()); exec(p)"',
+                'python3 -c "import codecs; exec(codecs.decode(input(), \'rot_13\'))"',
+                'python3 -c "import zlib; exec(zlib.decompress(input().encode()))"',
+                'python3 -c "exec(bytes.fromhex(input()).decode())"',
+                'python3 -c "import base64; exec(base64.b64decode(\'!!!invalid_b64!!!\'))"',
+            )
+            assert_run_commands_decision(
+                self, safety_policy, (gravity_ws, plain_ws), deny_cmds, "deny", "b64_deny"
+            )
+
+            allow_cmds = (
+                f'python3 -c "import base64; exec(base64.b64decode(\'{benign_b64}\'))"',
+                'python3 -c "import base64; print(base64.b64decode(\'aGVsbG8=\'))"',
+            )
+            assert_run_commands_decision(
+                self, safety_policy, (gravity_ws, plain_ws), allow_cmds, "allow", "b64_allow"
+            )
+
+            for wf_bad in (
+                f"import base64\nexec(base64.b64decode('{rm_b64}'))\n",
+                f"from base64 import b64decode as d\nexec(d('{rm_b64}'))\n",
+                "import base64\nexec(base64.b64decode(var))\n",
+                "from base64 import b64decode as d\nexec(d(var))\n",
+            ):
+                for ws in (gravity_ws, plain_ws):
+                    dec, reason = safety_policy.evaluate_tool_call(
+                        {"toolCall": {"name": "run_workflow", "args": {"Script": wf_bad}}},
+                        ws,
+                    )
+                    self.assertNotEqual(dec, "allow", f"run_workflow ne doit pas autoriser {wf_bad!r}")
+                    self.assertEqual(dec, "deny", f"Attendu deny sur {wf_bad!r}, obtenu {dec} ({reason})")
+
+            wf_ok_dec, wf_ok_reason = safety_policy.evaluate_tool_call(
+                {
+                    "toolCall": {
+                        "name": "run_workflow",
+                        "args": {"Script": f"import base64\nexec(base64.b64decode('{benign_b64}'))\n"},
+                    }
+                },
+                gravity_ws,
+            )
+            self.assertEqual(wf_ok_dec, "allow", wf_ok_reason)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

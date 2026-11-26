@@ -111,7 +111,7 @@ workspace-template/
 
 ## Initialisation, cycle de vie global & stockage centralisé
 
-- **Cycle de vie actif partout :** `SessionStart`, `Stop`, `Live` et `profile_engine` s'exécutent sur tous les dépôts sans nécessiter `/gravity-workflow init`.
+- **Cycle de vie actif partout :** `PreToolUse`, `PostToolUse`, `Stop`, `Live` et `profile_engine` s'exécutent sur tous les dépôts sans nécessiter `/gravity-workflow init` (`SessionStart` reste fonctionnel à l'appel direct mais est configuré avec `"enabled": false` dans `plugin/hooks.json`).
 - **Zéro écriture cible par défaut :** tout l'état runtime (`profile.json`, `live_state.json`, `runs.jsonl`, `last_verified.patch`, `evals/report.*`) est centralisé sous `$GRAVITY_WORKFLOW_HOME/workspaces/<slug>-<sha256_8>/` (`$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/`), avec repli lecture seule sur `<ws>/.agents/gravity-workflow/profile.json` si présent.
 
 À l'appel explicite de `/gravity-workflow init` ou via [`init_workspace.py`](../plugin/scripts/init_workspace.py) :

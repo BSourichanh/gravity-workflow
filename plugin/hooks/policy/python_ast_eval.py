@@ -2,10 +2,19 @@
 """Évaluation statique AST (chaînes, séquences, entiers, liaisons) et structures d'état pour `python_ast`."""
 
 import ast
+import base64
 from dataclasses import dataclass, field
 from pathlib import Path
 import shlex
 from typing import Dict, List, Optional, Set, Tuple
+
+_BASE64_DECODE_FUNCS = frozenset(
+    {"b64decode", "standard_b64decode", "urlsafe_b64decode", "decodebytes"}
+)
+_OBFUSCATED_DECODE_ATTRS = _BASE64_DECODE_FUNCS | frozenset(
+    {"b32decode", "b16decode", "b85decode", "a85decode", "fromhex", "decompress", "a2b_base64", "a2b_hex", "unhexlify"}
+)
+_OBFUSCATED_DECODE_MODS = frozenset({"base64", "codecs", "binascii", "zlib", "bz2", "lzma", "gzip"})
 
 
 @dataclass
@@ -17,6 +26,9 @@ class _PyImports:
     shlex_mod_names: Set[str] = field(default_factory=lambda: {"shlex"})
     shutil_mod_names: Set[str] = field(default_factory=lambda: {"shutil"})
     importlib_mod_names: Set[str] = field(default_factory=lambda: {"importlib"})
+    base64_mod_names: Set[str] = field(default_factory=lambda: {"base64"})
+    base64_decode_fns: Dict[str, str] = field(default_factory=dict)
+    codecs_mod_names: Set[str] = field(default_factory=lambda: {"codecs"})
     import_module_fns: Set[str] = field(default_factory=set)
     shlex_split_names: Set[str] = field(default_factory=set)
     rmtree_func_names: Set[str] = field(default_factory=set)
@@ -47,6 +59,9 @@ class _ScopeState:
     rmtree_fns: Set[str]
     os_shell_fns: Set[str]
     subproc_fns: Set[str]
+    base64_mods: Set[str] = field(default_factory=lambda: {"base64"})
+    base64_fns: Dict[str, str] = field(default_factory=dict)
+    cur_bytes: Dict[str, bytes] = field(default_factory=dict)
 
     def clone(self) -> "_ScopeState":
         return _ScopeState(
@@ -57,6 +72,9 @@ class _ScopeState:
             rmtree_fns=set(self.rmtree_fns),
             os_shell_fns=set(self.os_shell_fns),
             subproc_fns=set(self.subproc_fns),
+            base64_mods=set(self.base64_mods),
+            base64_fns=dict(self.base64_fns),
+            cur_bytes=dict(self.cur_bytes),
         )
 
 
@@ -221,17 +239,144 @@ def _eval_static_seq(
     return None
 
 
+def _is_base64_mod_expr(node: ast.AST, base64_mod_names: Set[str]) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in base64_mod_names
+    if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "base64":
+        fn = node.func
+        return (isinstance(fn, ast.Name) and fn.id == "__import__") or (
+            isinstance(fn, ast.Attribute) and fn.attr == "import_module"
+        )
+    return False
+
+
+def _match_base64_decode_call(
+    node: ast.Call,
+    base64_mod_names: Optional[Set[str]] = None,
+    base64_decode_fns: Optional[Dict[str, str]] = None,
+) -> Optional[Tuple[str, ast.AST]]:
+    """Retourne `(fn_canon, arg_node)` si `node` appelle une fonction de décodage `base64`."""
+    mods, fns, fn = base64_mod_names or {"base64"}, base64_decode_fns or {}, node.func
+    fn_canon: Optional[str] = None
+    if isinstance(fn, ast.Name) and fn.id in fns:
+        fn_canon = fns[fn.id]
+    elif isinstance(fn, ast.Attribute) and fn.attr in _BASE64_DECODE_FUNCS and _is_base64_mod_expr(fn.value, mods):
+        fn_canon = fn.attr
+    elif (
+        isinstance(fn, ast.Call)
+        and isinstance(fn.func, ast.Name)
+        and fn.func.id == "getattr"
+        and len(fn.args) >= 2
+        and isinstance(fn.args[1], ast.Constant)
+        and fn.args[1].value in _BASE64_DECODE_FUNCS
+        and _is_base64_mod_expr(fn.args[0], mods)
+    ):
+        fn_canon = str(fn.args[1].value)
+    if fn_canon is None:
+        return None
+    kw = {k.arg: k.value for k in node.keywords if k.arg is not None}
+    arg0 = node.args[0] if node.args else kw.get("s")
+    if arg0 is None or len(node.args) > 1 or any(k not in ("s", "validate") for k in kw):
+        return None
+    return fn_canon, arg0
+
+
+def _decode_base64_payload(raw: object, fn_canon: str) -> Optional[bytes]:
+    if isinstance(raw, str):
+        try:
+            raw_b = raw.encode("ascii")
+        except UnicodeEncodeError:
+            return None
+    elif isinstance(raw, bytes):
+        raw_b = raw
+    else:
+        return None
+    decoder = getattr(base64, fn_canon, None)
+    if decoder is None:
+        return None
+    try:
+        return decoder(raw_b)
+    except (ValueError, TypeError):
+        return None
+
+
+def _eval_static_bytes(
+    node: ast.AST,
+    const_vars: Dict[str, str],
+    const_seq_vars: Optional[Dict[str, List[Optional[str]]]] = None,
+    _depth: int = 0,
+    func_returns: Optional[Dict[str, List[ast.AST]]] = None,
+    base64_mod_names: Optional[Set[str]] = None,
+    base64_decode_fns: Optional[Dict[str, str]] = None,
+    cur_bytes: Optional[Dict[str, bytes]] = None,
+) -> Optional[bytes]:
+    """Évalue statiquement une expression AST vers `bytes` (littéraux, `+`, `.encode()`, `bytes.fromhex`, `base64.*decode`)."""
+    if _depth > 8:
+        return None
+    rec_b = lambda n: _eval_static_bytes(
+        n, const_vars, const_seq_vars, _depth + 1, func_returns, base64_mod_names, base64_decode_fns, cur_bytes
+    )
+    rec_s = lambda n: _eval_static_str(
+        n, const_vars, const_seq_vars, _depth + 1, func_returns, base64_mod_names, base64_decode_fns, cur_bytes
+    )
+    if isinstance(node, ast.NamedExpr):
+        return rec_b(node.value)
+    if isinstance(node, ast.Constant) and isinstance(node.value, bytes):
+        return node.value
+    if isinstance(node, ast.Name) and cur_bytes and node.id in cur_bytes:
+        return cur_bytes[node.id]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = rec_b(node.left), rec_b(node.right)
+        return (left + right) if (left is not None and right is not None) else None
+    if isinstance(node, ast.Call):
+        b64_match = _match_base64_decode_call(node, base64_mod_names, base64_decode_fns)
+        if b64_match is not None:
+            fn_canon, arg0 = b64_match
+            raw: object = rec_b(arg0)
+            if raw is None:
+                raw = rec_s(arg0)
+            return _decode_base64_payload(raw, fn_canon) if raw is not None else None
+        fn = node.func
+        if isinstance(fn, ast.Attribute) and fn.attr == "encode" and len(node.args) <= 1 and not node.keywords:
+            s_val, enc = rec_s(fn.value), (rec_s(node.args[0]) if node.args else "utf-8")
+            if s_val is not None and enc:
+                try:
+                    return s_val.encode(enc)
+                except (LookupError, UnicodeEncodeError):
+                    return None
+        if (
+            isinstance(fn, ast.Attribute)
+            and fn.attr == "fromhex"
+            and isinstance(fn.value, ast.Name)
+            and fn.value.id in ("bytes", "bytearray")
+            and len(node.args) == 1
+            and not node.keywords
+        ):
+            hex_s = rec_s(node.args[0])
+            if hex_s is not None:
+                try:
+                    return bytes.fromhex(hex_s)
+                except ValueError:
+                    return None
+    return None
+
+
 def _eval_static_str(
     node: ast.AST,
     const_vars: Dict[str, str],
     const_seq_vars: Optional[Dict[str, List[Optional[str]]]] = None,
     _depth: int = 0,
     func_returns: Optional[Dict[str, List[ast.AST]]] = None,
+    base64_mod_names: Optional[Set[str]] = None,
+    base64_decode_fns: Optional[Dict[str, str]] = None,
+    cur_bytes: Optional[Dict[str, bytes]] = None,
 ) -> Optional[str]:
-    """Évalue statiquement une expression AST vers une chaîne (constantes, `+`, f-strings, slices, `.join`, `chr`, `Path`/`os.path.join`)."""
+    """Évalue statiquement une expression AST vers une chaîne (constantes, `+`, f-strings, slices, `.join`, `chr`, `Path`, `base64`)."""
     if _depth > 8:
         return None
-    rec = lambda n: _eval_static_str(n, const_vars, const_seq_vars, _depth + 1, func_returns)
+    rec = lambda n: _eval_static_str(
+        n, const_vars, const_seq_vars, _depth + 1, func_returns, base64_mod_names, base64_decode_fns, cur_bytes
+    )
     if isinstance(node, ast.NamedExpr):
         return rec(node.value)
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -281,6 +426,32 @@ def _eval_static_str(
         return "".join(parts)
     if isinstance(node, ast.Call):
         fn = node.func
+        b64_match = _match_base64_decode_call(node, base64_mod_names, base64_decode_fns)
+        if b64_match is not None:
+            fn_canon, arg0 = b64_match
+            raw: object = _eval_static_bytes(
+                arg0, const_vars, const_seq_vars, _depth + 1, func_returns, base64_mod_names, base64_decode_fns, cur_bytes
+            )
+            if raw is None:
+                raw = rec(arg0)
+            decoded_b = _decode_base64_payload(raw, fn_canon) if raw is not None else None
+            if decoded_b is not None:
+                try:
+                    return decoded_b.decode("utf-8")
+                except UnicodeDecodeError:
+                    return None
+            return None
+        if isinstance(fn, ast.Attribute) and fn.attr == "decode" and len(node.args) <= 1 and not node.keywords:
+            b_val = _eval_static_bytes(
+                fn.value, const_vars, const_seq_vars, _depth + 1, func_returns, base64_mod_names, base64_decode_fns, cur_bytes
+            )
+            if b_val is not None:
+                enc = rec(node.args[0]) if node.args else "utf-8"
+                if enc:
+                    try:
+                        return b_val.decode(enc)
+                    except (LookupError, UnicodeDecodeError):
+                        return None
         if isinstance(fn, ast.Name) and func_returns and fn.id in func_returns and not node.args and not node.keywords:
             for ret_expr in func_returns[fn.id]:
                 val = rec(ret_expr)
@@ -321,110 +492,6 @@ def _eval_static_str(
                     segs.append(val)
                 return "/".join(s.replace("\\", "/") for s in segs)
     return None
-
-
-def _eval_static_str_candidates(
-    node: ast.AST,
-    cur_str: Dict[str, str],
-    cur_seq: Dict[str, List[Optional[str]]],
-    alt_str: Dict[str, List[str]],
-    func_returns: Dict[str, List[ast.AST]],
-    _depth: int = 0,
-) -> List[str]:
-    """Retourne les chaînes statiques candidates d'une expression AST (y compris `IfExp`, branches, helpers)."""
-    if _depth > 6:
-        return []
-    out: List[str] = []
-
-    def _add(val: Optional[str]) -> None:
-        if val is not None and val not in out and len(out) < 8:
-            out.append(val)
-
-    if isinstance(node, ast.IfExp):
-        for branch in (node.body, node.orelse):
-            for c in _eval_static_str_candidates(branch, cur_str, cur_seq, alt_str, func_returns, _depth + 1):
-                _add(c)
-        return out
-    if isinstance(node, ast.NamedExpr):
-        return _eval_static_str_candidates(node.value, cur_str, cur_seq, alt_str, func_returns, _depth + 1)
-    if isinstance(node, ast.Name):
-        if node.id in cur_str:
-            _add(cur_str[node.id])
-        for alt in alt_str.get(node.id, ()):
-            _add(alt)
-        return out
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id in func_returns
-        and not node.args
-        and not node.keywords
-    ):
-        for ret_expr in func_returns[node.func.id]:
-            for c in _eval_static_str_candidates(ret_expr, cur_str, cur_seq, alt_str, func_returns, _depth + 1):
-                _add(c)
-        if out:
-            return out
-    _add(_eval_static_str(node, cur_str, cur_seq, 0, func_returns))
-    return out
-
-
-def _eval_static_seq_candidates(
-    node: ast.AST,
-    cur_str: Dict[str, str],
-    cur_seq: Dict[str, List[Optional[str]]],
-    alt_seq: Dict[str, List[List[Optional[str]]]],
-    shlex_mod_names: Set[str],
-    shlex_split_names: Set[str],
-    func_returns: Dict[str, List[ast.AST]],
-    _depth: int = 0,
-) -> List[List[Optional[str]]]:
-    """Retourne les séquences statiques candidates d'une expression AST (y compris `IfExp`, branches, helpers)."""
-    if _depth > 6:
-        return []
-    out: List[List[Optional[str]]] = []
-
-    def _add(val: Optional[List[Optional[str]]]) -> None:
-        if val is not None and val not in out and len(out) < 8:
-            out.append(list(val))
-
-    if isinstance(node, ast.IfExp):
-        for branch in (node.body, node.orelse):
-            for c in _eval_static_seq_candidates(
-                branch, cur_str, cur_seq, alt_seq, shlex_mod_names, shlex_split_names, func_returns, _depth + 1
-            ):
-                _add(c)
-        return out
-    if isinstance(node, ast.NamedExpr):
-        return _eval_static_seq_candidates(
-            node.value, cur_str, cur_seq, alt_seq, shlex_mod_names, shlex_split_names, func_returns, _depth + 1
-        )
-    if isinstance(node, ast.Name):
-        if node.id in cur_seq:
-            _add(cur_seq[node.id])
-        for alt in alt_seq.get(node.id, ()):
-            _add(alt)
-        return out
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id in func_returns
-        and not node.args
-        and not node.keywords
-    ):
-        for ret_expr in func_returns[node.func.id]:
-            for c in _eval_static_seq_candidates(
-                ret_expr, cur_str, cur_seq, alt_seq, shlex_mod_names, shlex_split_names, func_returns, _depth + 1
-            ):
-                _add(c)
-        if out:
-            return out
-    _add(
-        _eval_static_seq(
-            node, cur_str, cur_seq, 0, shlex_mod_names, shlex_split_names, func_returns
-        )
-    )
-    return out
 
 
 def _collect_static_bindings(
@@ -508,40 +575,3 @@ def _collect_const_str_vars(tree: ast.Module) -> Dict[str, str]:
     """Collecte les constantes chaînes assignées une seule fois dans l'AST."""
     const_vars, _, _ = _collect_static_bindings(tree, {"shlex"}, set())
     return const_vars
-
-
-def _mark_subtree(node: ast.AST, target_set: Set[ast.AST]) -> None:
-    """Marque tous les descendants AST de `node` dans `target_set`."""
-    for child in ast.walk(node):
-        target_set.add(child)
-
-
-def _iter_stmt_expr_nodes(stmt: ast.AST) -> List[ast.AST]:
-    """Retourne les nœuds d'expressions appartenant directement à `stmt` (sans descendre dans les blocs imbriqués)."""
-    out: List[ast.AST] = []
-    skip_types = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-
-    def _visit(node: ast.AST) -> None:
-        out.append(node)
-        for field_name, field_val in ast.iter_fields(node):
-            if node is stmt and field_name in ("body", "orelse", "handlers", "finalbody"):
-                continue
-            if isinstance(field_val, ast.AST):
-                if not isinstance(field_val, skip_types):
-                    _visit(field_val)
-            elif isinstance(field_val, list):
-                for item in field_val:
-                    if isinstance(item, ast.AST) and not isinstance(item, skip_types):
-                        _visit(item)
-
-    _visit(stmt)
-    return out
-
-
-def _mark_benign_cmd_node(state: _PyAstState, arg_node: ast.AST) -> None:
-    """Marque un nœud d'argument déjà validé afin d'éviter un faux positif en passe 2."""
-    _mark_subtree(arg_node, state.checked_cmd_nodes)
-    if isinstance(arg_node, ast.Name):
-        state.benign_cmd_name_nodes.add(arg_node)
-        if arg_node.id in state.single_use_defs:
-            _mark_subtree(state.single_use_defs[arg_node.id], state.checked_cmd_nodes)

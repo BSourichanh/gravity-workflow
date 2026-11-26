@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`TASK-WF-01a` — Base64 Static Decoding & Fail-Closed Dynamic Execution in `python_ast` + Minor Validator/Doc Cleanup (`plugin/hooks/policy/`, `plugin/scripts/validate.py`, `docs/architecture.md`, `tests/`):**
+  - Extended `plugin/hooks/policy/python_ast_eval.py`, `python_ast_imports.py`, and `python_ast.py` (all strictly `< 650` L, 100% Python 3.10+ stdlib) to statically decode `base64.{b64decode,standard_b64decode,urlsafe_b64decode,decodebytes}` (including aliased imports, `bytes` literals, `.decode()`, and variable propagation) for recursive `eval`/`exec`/`compile` AST inspection and fail closed (`deny`) on unresolvable/dynamic obfuscated decoding (`EC-2`), with regression tests in `tests/test_safety_python_ast.py`.
+  - Removed obsolete `"hook_runtime"` from `WORKFLOW_ALLOWED_MODULES` in `plugin/scripts/validate.py` and aligned `docs/architecture.md` lifecycle phrasing with `SessionStart` `"enabled": false` in `plugin/hooks.json`.
+
 ### Changed
 - **`TASK-WF-04c` — Add `SPI-1` `dashboard_provider.py`, Update `module.json`, Clean `evals/` & Docs, and Remove `hooks/hook_runtime.py` (`plugin/`, `README.md`, `docs/`, `tests/`):**
   - Added read-only `SPI-1` provider `plugin/scripts/dashboard_provider.py` (`< 450` L, `100755`, 100% Python 3.10+ stdlib, `--view workflow [--workspace WS] [--since-signature SIG] --json`) matching the `workflow` dashboard contract (`"0/0"` default progress, `live_state.json`, `profile.json`, `runs.jsonl` summary for `T3-P06`/`T3-P25`, and `signal_v1` enrichment via `observability/metrics_signals.py`).

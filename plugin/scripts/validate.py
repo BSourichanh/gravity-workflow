@@ -17,7 +17,7 @@ from _shared import validator_core  # noqa: E402
 from validators import Report, validate_plugin, validate_workspace  # noqa: E402
 from validators.plugin_validator import WORKFLOW_LOCAL_MODULES, build_validator_config  # noqa: E402
 
-WORKFLOW_ALLOWED_MODULES: frozenset[str] = WORKFLOW_LOCAL_MODULES | frozenset({"hook_runtime"})
+WORKFLOW_ALLOWED_MODULES: frozenset[str] = WORKFLOW_LOCAL_MODULES
 
 _BASE_CFG = build_validator_config(
     PLUGIN_ROOT_DEFAULT,

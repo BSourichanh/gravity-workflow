@@ -26,16 +26,18 @@ from .python_ast_eval import (
     _collect_static_bindings,
     _eval_static_int,
     _eval_static_seq,
-    _eval_static_seq_candidates,
     _eval_static_str,
-    _eval_static_str_candidates,
-    _iter_stmt_expr_nodes,
-    _mark_benign_cmd_node,
-    _mark_subtree,
 )
 from .python_ast_imports import (
     _bind_var,
     _collect_python_imports,
+    _eval_scope_str_cands,
+    _eval_static_seq_candidates,
+    _eval_static_str_candidates,
+    _expr_has_obfuscated_decode,
+    _iter_stmt_expr_nodes,
+    _mark_benign_cmd_node,
+    _mark_subtree,
     _resolve_dynamic_import_module,
 )
 from .python_ast_readonly import (
@@ -70,9 +72,7 @@ def _inspect_rmtree_call(
         return None
     target_node = node.args[0] if node.args else kw_map.get("path")
     if target_node is not None:
-        for target_str in _eval_static_str_candidates(
-            target_node, scope.cur_str, scope.cur_seq, state.alt_str, state.imp.func_returns
-        ):
+        for target_str in _eval_scope_str_cands(target_node, state, scope):
             if is_harness_protected(target_str, state.ws_root) or _is_active_plugin_root_path(
                 target_str, state.ws_root
             ):
@@ -103,9 +103,7 @@ def _inspect_os_shell_call(
     shell_arg = node.args[0] if node.args else (kw_map.get("command") or kw_map.get("cmd"))
     if shell_arg is None:
         return None
-    str_cands = _eval_static_str_candidates(
-        shell_arg, scope.cur_str, scope.cur_seq, state.alt_str, state.imp.func_returns
-    )
+    str_cands = _eval_scope_str_cands(shell_arg, state, scope)
     if str_cands:
         for cmd_str in str_cands:
             deny_reason, _ = _evaluate_shell_command(cmd_str, state.ws_root, _depth=state.depth + 1)
@@ -141,9 +139,7 @@ def _inspect_subprocess_call(
     cmd_node = node.args[0] if node.args else kw_map.get("args")
     if cmd_node is None:
         return None
-    str_cands = _eval_static_str_candidates(
-        cmd_node, scope.cur_str, scope.cur_seq, state.alt_str, state.imp.func_returns
-    )
+    str_cands = _eval_scope_str_cands(cmd_node, state, scope)
     seq_cands = _eval_static_seq_candidates(
         cmd_node,
         scope.cur_str,
@@ -217,9 +213,7 @@ def _inspect_exec_spawn_call(
     argv_candidates: List[List[str]] = []
     if (exec_list_hit and len(node.args) >= 2) or (spawn_list_hit and len(node.args) >= 3):
         exe_idx, seq_idx = (0, 1) if exec_list_hit else (1, 2)
-        exe_cands = _eval_static_str_candidates(
-            node.args[exe_idx], scope.cur_str, scope.cur_seq, state.alt_str, state.imp.func_returns
-        )
+        exe_cands = _eval_scope_str_cands(node.args[exe_idx], state, scope)
         for seq_vals in _eval_static_seq_candidates(
             node.args[seq_idx],
             scope.cur_str,
@@ -236,9 +230,7 @@ def _inspect_exec_spawn_call(
                     argv_candidates.append([exe_s] + argv[1:])
     elif (exec_var_hit and len(node.args) >= 2) or (spawn_var_hit and len(node.args) >= 3):
         exe_idx, arg_start = (0, 1) if exec_var_hit else (1, 2)
-        exe_cands = _eval_static_str_candidates(
-            node.args[exe_idx], scope.cur_str, scope.cur_seq, state.alt_str, state.imp.func_returns
-        )
+        exe_cands = _eval_scope_str_cands(node.args[exe_idx], state, scope)
         argv = [
             _eval_static_str(e, scope.cur_str, scope.cur_seq, 0, state.imp.func_returns) or "__dynamic__"
             for e in node.args[arg_start:]
@@ -276,9 +268,7 @@ def _inspect_python_call(
             _mark_subtree(state.single_use_defs[pat_node.id], state.exempt_regex_nodes)
 
     if isinstance(fn, ast.Name) and fn.id == "getattr" and len(node.args) >= 2:
-        for attr_str in _eval_static_str_candidates(
-            node.args[1], scope.cur_str, scope.cur_seq, state.alt_str, state.imp.func_returns
-        ):
+        for attr_str in _eval_scope_str_cands(node.args[1], state, scope):
             if attr_str in ("environ", "environb"):
                 return "deny", f"Accès dynamique à `environ` dans `{state.context_label}` bloqué."
 
@@ -289,9 +279,7 @@ def _inspect_python_call(
         and fn.func.id == "getattr"
         and len(fn.args) >= 2
     ):
-        resolved_dyn_attrs = _eval_static_str_candidates(
-            fn.args[1], scope.cur_str, scope.cur_seq, state.alt_str, state.imp.func_returns
-        )
+        resolved_dyn_attrs = _eval_scope_str_cands(fn.args[1], state, scope)
 
     dyn_recv_mod = (
         _resolve_dynamic_import_module(
@@ -310,22 +298,29 @@ def _inspect_python_call(
         if verdict is not None:
             return verdict
 
-    if isinstance(fn, ast.Name) and fn.id in ("eval", "exec") and node.args and state.depth < MAX_SUBSHELL_DEPTH:
-        code_cands = _eval_static_str_candidates(
-            node.args[0], scope.cur_str, scope.cur_seq, state.alt_str, state.imp.func_returns
-        )
-        if code_cands:
-            for inner_code in code_cands:
-                sub_dec, sub_reason = _inspect_python_ast(
-                    inner_code,
-                    state.ws_root,
-                    context_label=state.context_label,
-                    allow_top_level_await=state.allow_top_level_await,
-                    _depth=state.depth + 1,
-                )
-                if sub_dec == "deny":
-                    return sub_dec, sub_reason or f"Code dynamique `{fn.id}` bloqué."
-            _mark_benign_cmd_node(state, node.args[0])
+    if isinstance(fn, ast.Name) and fn.id in ("eval", "exec", "compile") and not (fn.id == "compile" and is_re_call):
+        code_arg = node.args[0] if node.args else kw_map.get("source")
+        if code_arg is not None:
+            code_cands = _eval_scope_str_cands(code_arg, state, scope)
+            obf_hint = _expr_has_obfuscated_decode(code_arg, state, scope)
+            if code_cands:
+                if state.depth >= MAX_SUBSHELL_DEPTH:
+                    if obf_hint:
+                        return "deny", f"Profondeur maximale atteinte avec décodage `{obf_hint}` dans `{fn.id}`."
+                else:
+                    for inner_code in code_cands:
+                        sub_dec, sub_reason = _inspect_python_ast(
+                            inner_code,
+                            state.ws_root,
+                            context_label=state.context_label,
+                            allow_top_level_await=state.allow_top_level_await,
+                            _depth=state.depth + 1,
+                        )
+                        if sub_dec != "allow":
+                            return "deny", sub_reason or f"Code dynamique `{fn.id}` bloqué."
+                    _mark_benign_cmd_node(state, code_arg)
+            elif obf_hint:
+                return "deny", f"Exécution dynamique `{fn.id}` avec décodage non résolvable (`{obf_hint}`) bloquée."
 
     return None
 
@@ -347,9 +342,7 @@ def _walk_python_stmts(
             if isinstance(enode, (ast.Name, ast.BinOp, ast.JoinedStr, ast.Call, ast.Subscript)):
                 if isinstance(enode, ast.Name) and not isinstance(enode.ctx, ast.Load):
                     continue
-                for s_val in _eval_static_str_candidates(
-                    enode, scope.cur_str, scope.cur_seq, state.alt_str, state.imp.func_returns
-                ):
+                for s_val in _eval_scope_str_cands(enode, state, scope):
                     if s_val:
                         state.add_resolved_str(enode, s_val)
 
@@ -471,6 +464,9 @@ def _walk_python_stmts(
                 scope.rmtree_fns.update(b_scope.rmtree_fns)
                 scope.os_shell_fns.update(b_scope.os_shell_fns)
                 scope.subproc_fns.update(b_scope.subproc_fns)
+                scope.base64_mods.update(b_scope.base64_mods)
+                scope.base64_fns.update(b_scope.base64_fns)
+                scope.cur_bytes.update(b_scope.cur_bytes)
                 for k, v in b_scope.cur_str.items():
                     scope.cur_str[k] = v
                     state.record_alt_str(k, v)
@@ -622,6 +618,8 @@ def _inspect_python_ast(
         rmtree_fns=set(imp.rmtree_func_names),
         os_shell_fns=set(imp.os_shell_func_names),
         subproc_fns=set(imp.subprocess_func_names),
+        base64_mods=set(imp.base64_mod_names),
+        base64_fns=dict(imp.base64_decode_fns),
     )
     pass1_verdict = _walk_python_stmts(state, scope, list(tree.body))
     if pass1_verdict is not None:
