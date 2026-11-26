@@ -1,0 +1,383 @@
+#!/usr/bin/env python3
+"""Structures d'état AST, collecte d'imports et utilitaires scalaires/`base64` pour `python_ast`."""
+
+import ast
+import base64
+from dataclasses import dataclass, field
+from pathlib import Path
+import string
+from typing import Dict, List, Optional, Set, Tuple, Union
+
+from .constants import (
+    OS_EXEC_LIST_FUNCS,
+    OS_EXEC_VAR_FUNCS,
+    OS_SHELL_FUNCS,
+    OS_SPAWN_LIST_FUNCS,
+    OS_SPAWN_VAR_FUNCS,
+    RE_PATTERN_FUNCS,
+    SUBPROCESS_CALL_FUNCS,
+)
+
+_BASE64_DECODE_FUNCS = frozenset(
+    {"b64decode", "standard_b64decode", "urlsafe_b64decode", "decodebytes"}
+)
+_OBFUSCATED_DECODE_ATTRS = _BASE64_DECODE_FUNCS | frozenset(
+    {
+        "b32decode", "b16decode", "b85decode", "a85decode", "fromhex",
+        "decompress", "a2b_base64", "a2b_hex", "unhexlify", "getdecoder",
+    }
+)
+_OBFUSCATED_DECODE_MODS = frozenset({"base64", "codecs", "binascii", "zlib", "bz2", "lzma", "gzip"})
+_OS_PATH_TERMINAL_FUNCS = frozenset(
+    {
+        "exists", "lexists", "isfile", "isdir", "islink", "ismount",
+        "getsize", "getmtime", "getctime", "getatime", "samefile", "sameopenfile",
+    }
+)
+_OS_PATH_PROPAGATING_FUNCS = frozenset(
+    {
+        "join", "abspath", "realpath", "normpath", "normcase", "dirname", "basename",
+        "split", "splitdrive", "splitext", "expanduser", "expandvars", "relpath",
+        "commonpath", "commonprefix",
+    }
+)
+_FORMATTER = string.Formatter()
+
+
+@dataclass
+class _PyImports:
+    os_mod_names: Set[str] = field(default_factory=lambda: {"os", "posix", "nt"})
+    subprocess_mod_names: Set[str] = field(default_factory=lambda: {"subprocess"})
+    re_mod_names: Set[str] = field(default_factory=lambda: {"re"})
+    re_func_names: Set[str] = field(default_factory=set)
+    shlex_mod_names: Set[str] = field(default_factory=lambda: {"shlex"})
+    shutil_mod_names: Set[str] = field(default_factory=lambda: {"shutil"})
+    importlib_mod_names: Set[str] = field(default_factory=lambda: {"importlib"})
+    base64_mod_names: Set[str] = field(default_factory=lambda: {"base64"})
+    base64_decode_fns: Dict[str, str] = field(default_factory=dict)
+    codecs_mod_names: Set[str] = field(default_factory=lambda: {"codecs"})
+    codecs_decode_fns: Dict[str, str] = field(default_factory=dict)
+    sys_mod_names: Set[str] = field(default_factory=lambda: {"sys"})
+    functools_mod_names: Set[str] = field(default_factory=lambda: {"functools"})
+    partial_func_names: Set[str] = field(default_factory=set)
+    operator_mod_names: Set[str] = field(default_factory=lambda: {"operator"})
+    attrgetter_func_names: Set[str] = field(default_factory=set)
+    builtins_mod_names: Set[str] = field(default_factory=lambda: {"builtins", "__builtins__"})
+    eval_exec_fns: Dict[str, str] = field(
+        default_factory=lambda: {"eval": "eval", "exec": "exec", "compile": "compile"}
+    )
+    import_module_fns: Set[str] = field(default_factory=set)
+    shlex_split_names: Set[str] = field(default_factory=set)
+    rmtree_func_names: Set[str] = field(default_factory=set)
+    os_shell_func_names: Set[str] = field(default_factory=set)
+    os_exec_list_names: Set[str] = field(default_factory=set)
+    os_exec_var_names: Set[str] = field(default_factory=set)
+    os_spawn_list_names: Set[str] = field(default_factory=set)
+    os_spawn_var_names: Set[str] = field(default_factory=set)
+    subprocess_func_names: Set[str] = field(default_factory=set)
+    pathlib_mod_names: Set[str] = field(default_factory=lambda: {"pathlib"})
+    path_ctor_names: Set[str] = field(default_factory=lambda: {"Path", "PurePath", "PosixPath", "WindowsPath"})
+    json_mod_names: Set[str] = field(default_factory=lambda: {"json"})
+    json_load_fns: Set[str] = field(default_factory=set)
+    os_path_mod_names: Set[str] = field(default_factory=lambda: {"posixpath", "ntpath"})
+    os_readonly_term_fns: Set[str] = field(default_factory=set)
+    os_readonly_prop_fns: Set[str] = field(default_factory=set)
+    shadowed_names: Set[str] = field(default_factory=set)
+    has_wildcard_import: bool = False
+    func_returns: Dict[str, List[ast.AST]] = field(default_factory=dict)
+    func_defs: Dict[str, List[ast.AST]] = field(default_factory=dict)
+
+
+@dataclass
+class _ScopeState:
+    cur_str: Dict[str, str]
+    cur_seq: Dict[str, List[Optional[str]]]
+    subproc_mods: Set[str]
+    os_mods: Set[str]
+    rmtree_fns: Set[str]
+    os_shell_fns: Set[str]
+    subproc_fns: Set[str]
+    base64_mods: Set[str] = field(default_factory=lambda: {"base64"})
+    base64_fns: Dict[str, str] = field(default_factory=dict)
+    codecs_mods: Set[str] = field(default_factory=lambda: {"codecs"})
+    codecs_fns: Dict[str, str] = field(default_factory=dict)
+    sys_mods: Set[str] = field(default_factory=lambda: {"sys"})
+    functools_mods: Set[str] = field(default_factory=lambda: {"functools"})
+    partial_fns: Set[str] = field(default_factory=set)
+    operator_mods: Set[str] = field(default_factory=lambda: {"operator"})
+    attrgetter_fns: Set[str] = field(default_factory=set)
+    builtins_mods: Set[str] = field(default_factory=lambda: {"builtins", "__builtins__"})
+    builtins_dicts: Set[str] = field(default_factory=set)
+    eval_exec_fns: Dict[str, str] = field(
+        default_factory=lambda: {"eval": "eval", "exec": "exec", "compile": "compile"}
+    )
+    func_defs: Dict[str, List[ast.AST]] = field(default_factory=dict)
+    class_attrs: Dict[str, Dict[str, ast.AST]] = field(default_factory=dict)
+    class_methods: Dict[str, Dict[str, List[ast.AST]]] = field(default_factory=dict)
+    var_class_inst: Dict[str, str] = field(default_factory=dict)
+    cur_bytes: Dict[str, bytes] = field(default_factory=dict)
+    cur_ints: Dict[str, int] = field(default_factory=dict)
+    var_nodes: Dict[str, ast.AST] = field(default_factory=dict)
+    incomplete_vars: Set[str] = field(default_factory=set)
+    obf_tainted: Set[str] = field(default_factory=set)
+    shadowed_alts: Set[str] = field(default_factory=set)
+
+    def clone(self) -> "_ScopeState":
+        return _ScopeState(
+            cur_str=dict(self.cur_str), cur_seq={k: list(v) for k, v in self.cur_seq.items()},
+            subproc_mods=set(self.subproc_mods), os_mods=set(self.os_mods),
+            rmtree_fns=set(self.rmtree_fns), os_shell_fns=set(self.os_shell_fns),
+            subproc_fns=set(self.subproc_fns), base64_mods=set(self.base64_mods),
+            base64_fns=dict(self.base64_fns), codecs_mods=set(self.codecs_mods),
+            codecs_fns=dict(self.codecs_fns), sys_mods=set(self.sys_mods),
+            functools_mods=set(self.functools_mods), partial_fns=set(self.partial_fns),
+            operator_mods=set(self.operator_mods), attrgetter_fns=set(self.attrgetter_fns),
+            builtins_mods=set(self.builtins_mods), builtins_dicts=set(self.builtins_dicts),
+            eval_exec_fns=dict(self.eval_exec_fns),
+            func_defs={k: list(v) for k, v in self.func_defs.items()},
+            class_attrs={k: dict(v) for k, v in self.class_attrs.items()},
+            class_methods={k: {mk: list(mv) for mk, mv in v.items()} for k, v in self.class_methods.items()},
+            var_class_inst=dict(self.var_class_inst),
+            cur_bytes=dict(self.cur_bytes), cur_ints=dict(self.cur_ints), var_nodes=dict(self.var_nodes),
+            incomplete_vars=set(self.incomplete_vars), obf_tainted=set(self.obf_tainted),
+            shadowed_alts=set(self.shadowed_alts),
+        )
+
+
+@dataclass
+class _PyAstState:
+    ws_root: Optional[Path]
+    context_label: str
+    allow_top_level_await: bool
+    depth: int
+    imp: _PyImports
+    const_vars: Dict[str, str]
+    const_seq_vars: Dict[str, List[Optional[str]]]
+    single_use_defs: Dict[str, ast.AST]
+    checked_cmd_nodes: Set[ast.AST] = field(default_factory=set)
+    exempt_regex_nodes: Set[ast.AST] = field(default_factory=set)
+    resolved_expr_strs: Dict[ast.AST, List[str]] = field(default_factory=dict)
+    alt_str: Dict[str, List[str]] = field(default_factory=dict)
+    alt_bytes: Dict[str, List[bytes]] = field(default_factory=dict)
+    alt_seq: Dict[str, List[List[Optional[str]]]] = field(default_factory=dict)
+    var_contributors: Dict[str, List[ast.AST]] = field(default_factory=dict)
+    benign_cmd_name_nodes: Set[ast.Name] = field(default_factory=set)
+    mutator_receiver_names: Set[ast.Name] = field(default_factory=set)
+    dynamic_tainted_vars: Set[str] = field(default_factory=set)
+    call_depth: int = 0
+    active_call_fns: Set[int] = field(default_factory=set)
+
+    def record_alt_str(self, name: str, val: str) -> None:
+        bucket = self.alt_str.setdefault(name, [])
+        if val not in bucket and len(bucket) < 8: bucket.append(val)
+
+    def record_alt_bytes(self, name: str, val: bytes) -> None:
+        bucket = self.alt_bytes.setdefault(name, [])
+        if val not in bucket and len(bucket) < 8: bucket.append(val)
+
+    def record_alt_seq(self, name: str, val: List[Optional[str]]) -> None:
+        bucket = self.alt_seq.setdefault(name, [])
+        snap = list(val)
+        if snap not in bucket and len(bucket) < 8: bucket.append(snap)
+
+    def add_resolved_str(self, node_key: ast.AST, val: str) -> None:
+        bucket = self.resolved_expr_strs.setdefault(node_key, [])
+        if val not in bucket and len(bucket) < 8: bucket.append(val)
+
+
+def _ast_subscript_slice(node: ast.Subscript) -> ast.AST:
+    idx_cls = getattr(ast, "Index", None)
+    return node.slice.value if (idx_cls is not None and isinstance(node.slice, idx_cls)) else node.slice
+
+
+def _decode_bytes_text(raw_b: bytes) -> str:
+    try: return raw_b.decode("utf-8")
+    except UnicodeDecodeError: return raw_b.decode("latin-1")
+
+
+def _is_named_mod_expr(node: ast.AST, target_mod: str, mod_aliases: Set[str]) -> bool:
+    if isinstance(node, ast.Name): return node.id in mod_aliases
+    if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == target_mod:
+        fn = node.func
+        return (isinstance(fn, ast.Name) and fn.id == "__import__") or (isinstance(fn, ast.Attribute) and fn.attr == "import_module")
+    return False
+
+
+def _match_base64_decode_call(
+    node: ast.Call, base64_mod_names: Optional[Set[str]] = None, base64_decode_fns: Optional[Dict[str, str]] = None,
+) -> Optional[Tuple[str, ast.AST]]:
+    mods, fns, fn = base64_mod_names or {"base64"}, base64_decode_fns or {}, node.func
+    fn_canon: Optional[str] = None
+    if isinstance(fn, ast.Name) and fn.id in fns: fn_canon = fns[fn.id]
+    elif isinstance(fn, ast.Attribute) and fn.attr in _BASE64_DECODE_FUNCS and _is_named_mod_expr(fn.value, "base64", mods): fn_canon = fn.attr
+    elif isinstance(fn, ast.Call) and isinstance(fn.func, ast.Name) and fn.func.id == "getattr" and len(fn.args) >= 2 and isinstance(fn.args[1], ast.Constant) and fn.args[1].value in _BASE64_DECODE_FUNCS and _is_named_mod_expr(fn.args[0], "base64", mods):
+        fn_canon = str(fn.args[1].value)
+    if fn_canon is None: return None
+    kw = {k.arg: k.value for k in node.keywords if k.arg is not None}
+    arg0 = node.args[0] if node.args else kw.get("s")
+    if arg0 is None or len(node.args) > 1 or any(k not in ("s", "validate") for k in kw): return None
+    return fn_canon, arg0
+
+
+def _decode_base64_payload(raw: object, fn_canon: str) -> Optional[bytes]:
+    if isinstance(raw, str):
+        try: raw_b = raw.encode("ascii")
+        except UnicodeEncodeError: return None
+    elif isinstance(raw, bytes): raw_b = raw
+    else: return None
+    decoder = getattr(base64, fn_canon, None)
+    if decoder is None: return None
+    try: return decoder(raw_b)
+    except (ValueError, TypeError): return None
+
+
+def _eval_static_int(
+    node: Optional[ast.AST], env_ints: Optional[Dict[str, int]] = None, const_vars: Optional[Dict[str, str]] = None, _depth: int = 0,
+) -> Optional[int]:
+    """Évalue une expression entière statique AST (littéraux, opérateurs arithmétiques/bit-à-bit, `ord`)."""
+    if node is None or _depth > 10: return None
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool): return node.value
+    if isinstance(node, ast.Name) and env_ints and node.id in env_ints: return env_ints[node.id]
+    if isinstance(node, ast.UnaryOp):
+        val = _eval_static_int(node.operand, env_ints, const_vars, _depth + 1)
+        if val is None: return None
+        if isinstance(node.op, ast.USub): return -val
+        if isinstance(node.op, ast.UAdd): return val
+        if isinstance(node.op, ast.Invert): return ~val
+        return None
+    if isinstance(node, ast.BinOp):
+        left, right = _eval_static_int(node.left, env_ints, const_vars, _depth + 1), _eval_static_int(node.right, env_ints, const_vars, _depth + 1)
+        if left is None or right is None: return None
+        ops = {ast.Add: left + right, ast.Sub: left - right, ast.BitXor: left ^ right, ast.BitAnd: left & right, ast.BitOr: left | right}
+        if type(node.op) in ops: return ops[type(node.op)]
+        if isinstance(node.op, ast.Mult): return left * right if abs(left) <= 100000 and abs(right) <= 100000 else None
+        if isinstance(node.op, ast.FloorDiv): return left // right if right != 0 else None
+        if isinstance(node.op, ast.Mod): return left % right if right != 0 else None
+        if isinstance(node.op, ast.LShift): return left << right if 0 <= right <= 32 else None
+        if isinstance(node.op, ast.RShift): return left >> right if 0 <= right <= 32 else None
+        return None
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "ord" and len(node.args) == 1 and not node.keywords:
+        arg = node.args[0]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and len(arg.value) == 1: return ord(arg.value)
+        if isinstance(arg, ast.Name) and const_vars and arg.id in const_vars and len(const_vars[arg.id]) == 1: return ord(const_vars[arg.id])
+    return None
+
+
+def _eval_slice_bounds(slice_node: ast.Slice) -> Optional[slice]:
+    lo = _eval_static_int(slice_node.lower) if slice_node.lower is not None else None
+    hi = _eval_static_int(slice_node.upper) if slice_node.upper is not None else None
+    st = _eval_static_int(slice_node.step) if slice_node.step is not None else None
+    if (slice_node.lower is None or lo is not None) and (slice_node.upper is None or hi is not None) and (slice_node.step is None or (st is not None and st != 0)):
+        return slice(lo, hi, st)
+    return None
+
+
+def _apply_format_conversion(val: Union[str, int, float, bool], conversion: int) -> Optional[Union[str, int, float, bool]]:
+    return { -1: val, 115: str(val), 114: repr(val), 97: ascii(val) }.get(conversion)
+
+
+def _is_safe_format_template(tpl: str) -> bool:
+    try:
+        for _, field_name, format_spec, conversion in _FORMATTER.parse(tpl):
+            if field_name is not None and ("." in field_name or "[" in field_name): return False
+            if format_spec and len(format_spec) > 32: return False
+            if conversion not in (None, "s", "r", "a"): return False
+    except ValueError:
+        return False
+    return True
+
+
+def _collect_python_imports(tree: ast.Module, context_label: str) -> Tuple[Optional[Tuple[str, str]], _PyImports]:
+    """Collecte les alias importés et noms shadowés dans l'AST."""
+    imp = _PyImports()
+    symbol_sources: Dict[str, str] = {
+        "os": "mod:os", "posix": "mod:posix", "nt": "mod:nt", "re": "mod:re",
+        "pathlib": "mod:pathlib", "json": "mod:json", "posixpath": "mod:os.path", "ntpath": "mod:os.path",
+        "Path": "pathlib:Path", "PurePath": "pathlib:PurePath", "PosixPath": "pathlib:PosixPath", "WindowsPath": "pathlib:WindowsPath",
+    }
+    reserved_builtins = frozenset({"open", "print", "len", "compile", "str", "repr", "sorted", "list", "tuple", "set", "reversed", "enumerate", "zip"})
+    shadow_mod_sets = {
+        "subprocess": imp.subprocess_mod_names, "shlex": imp.shlex_mod_names, "shutil": imp.shutil_mod_names,
+        "importlib": imp.importlib_mod_names, "base64": imp.base64_mod_names, "codecs": imp.codecs_mod_names,
+        "builtins": imp.builtins_mod_names, "sys": imp.sys_mod_names,
+        "functools": imp.functools_mod_names, "operator": imp.operator_mod_names,
+    }
+    os_func_sets = (
+        (OS_SHELL_FUNCS, imp.os_shell_func_names), (OS_EXEC_LIST_FUNCS, imp.os_exec_list_names),
+        (OS_EXEC_VAR_FUNCS, imp.os_exec_var_names), (OS_SPAWN_LIST_FUNCS, imp.os_spawn_list_names), (OS_SPAWN_VAR_FUNCS, imp.os_spawn_var_names),
+    )
+
+    def _record_import_source(bound: str, source_tag: str) -> None:
+        if bound in reserved_builtins: imp.shadowed_names.add(bound); return
+        prev = symbol_sources.get(bound)
+        if prev is not None and prev != source_tag: imp.shadowed_names.add(bound)
+        else: symbol_sources[bound] = source_tag
+
+    def _mark_target_shadowed(target: ast.AST) -> None:
+        for sub in ast.walk(target):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, (ast.Store, ast.Del)): imp.shadowed_names.add(sub.id)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = alias.asname or alias.name.split(".")[0]
+                if alias.name in ("os", "posix", "nt"): imp.os_mod_names.add(bound); _record_import_source(bound, f"mod:{alias.name}")
+                elif alias.name in shadow_mod_sets: shadow_mod_sets[alias.name].add(bound); imp.shadowed_names.add(bound)
+                elif alias.name in ("re", "pathlib", "json"): getattr(imp, f"{alias.name}_mod_names").add(bound); _record_import_source(bound, f"mod:{alias.name}")
+                elif alias.name in ("posixpath", "ntpath", "os.path"):
+                    mb = alias.asname or alias.name; imp.os_path_mod_names.add(mb); _record_import_source(mb, "mod:os.path")
+                else: imp.shadowed_names.add(bound)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                if alias.name == "*": imp.has_wildcard_import = True; continue
+                bound = alias.asname or alias.name
+                if node.module in ("os", "posix", "nt"):
+                    if alias.name in ("environ", "environb"): return ("deny", f"Import de `os.environ` dans `{context_label}` bloqué."), imp
+                    os_tgt = next((t for s, t in os_func_sets if alias.name in s), None)
+                    if os_tgt is not None: os_tgt.add(bound); imp.shadowed_names.add(bound)
+                    elif alias.name == "path": imp.os_path_mod_names.add(bound); _record_import_source(bound, "mod:os.path")
+                    elif alias.name in ("stat", "lstat", "access", "readlink"): imp.os_readonly_term_fns.add(bound); _record_import_source(bound, f"os:{alias.name}")
+                    elif alias.name in ("fspath", "listdir", "scandir", "walk"): imp.os_readonly_prop_fns.add(bound); _record_import_source(bound, f"os:{alias.name}")
+                    else: imp.shadowed_names.add(bound)
+                elif node.module in ("os.path", "posixpath", "ntpath"):
+                    if alias.name in _OS_PATH_TERMINAL_FUNCS: imp.os_readonly_term_fns.add(bound); _record_import_source(bound, f"os.path:{alias.name}")
+                    elif alias.name in _OS_PATH_PROPAGATING_FUNCS: imp.os_readonly_prop_fns.add(bound); _record_import_source(bound, f"os.path:{alias.name}")
+                    else: imp.shadowed_names.add(bound)
+                elif node.module == "pathlib" and alias.name in ("Path", "PurePath", "PosixPath", "WindowsPath"):
+                    imp.path_ctor_names.add(bound); _record_import_source(bound, f"pathlib:{alias.name}")
+                elif node.module == "json" and alias.name in ("load", "loads"):
+                    imp.json_load_fns.add(bound); _record_import_source(bound, f"json:{alias.name}")
+                elif node.module == "re" and alias.name in RE_PATTERN_FUNCS:
+                    imp.re_func_names.add(bound)
+                    if bound == "compile": imp.eval_exec_fns.pop("compile", None)
+                    _record_import_source(bound, f"re:{alias.name}")
+                else:
+                    mod_fn_sets = {
+                        "shutil": ({"rmtree"}, imp.rmtree_func_names), "subprocess": (SUBPROCESS_CALL_FUNCS, imp.subprocess_func_names),
+                        "shlex": ({"split"}, imp.shlex_split_names), "importlib": ({"import_module"}, imp.import_module_fns),
+                        "functools": ({"partial"}, imp.partial_func_names), "operator": ({"attrgetter"}, imp.attrgetter_func_names),
+                    }
+                    mod_fn_dicts = {"base64": (_BASE64_DECODE_FUNCS, imp.base64_decode_fns), "codecs": ({"decode", "encode", "getdecoder"}, imp.codecs_decode_fns), "builtins": ({"eval", "exec", "compile"}, imp.eval_exec_fns)}
+                    if node.module in mod_fn_sets and alias.name in mod_fn_sets[node.module][0]: mod_fn_sets[node.module][1].add(bound)
+                    elif node.module in mod_fn_dicts and alias.name in mod_fn_dicts[node.module][0]: mod_fn_dicts[node.module][1][bound] = alias.name
+                    imp.shadowed_names.add(bound)
+        elif isinstance(node, ast.Assign):
+            for tgt in node.targets: _mark_target_shadowed(tgt)
+            if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Lambda):
+                imp.func_defs.setdefault(node.targets[0].id, []).append(node.value)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            _mark_target_shadowed(node.target)
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and isinstance(node.value, ast.Lambda):
+                imp.func_defs.setdefault(node.target.id, []).append(node.value)
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)): _mark_target_shadowed(node.target)
+        elif isinstance(node, ast.withitem) and node.optional_vars is not None: _mark_target_shadowed(node.optional_vars)
+        elif isinstance(node, (ast.NamedExpr, ast.ClassDef)): imp.shadowed_names.add(node.target.id if isinstance(node, ast.NamedExpr) else node.name)
+        elif isinstance(node, (ast.ExceptHandler, ast.arg)):
+            nm = node.name if isinstance(node, ast.ExceptHandler) else node.arg
+            if nm: imp.shadowed_names.add(nm)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            imp.shadowed_names.add(node.name); imp.func_defs.setdefault(node.name, []).append(node)
+            if not (node.args.args or node.args.posonlyargs or node.args.kwonlyargs):
+                rets = [s.value for s in ast.walk(node) if isinstance(s, ast.Return) and s.value is not None]
+                if rets: imp.func_returns.setdefault(node.name, []).extend(rets[:4])
+    return None, imp

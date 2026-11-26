@@ -55,7 +55,7 @@ TEMPLATE_MAPPINGS = (
 )
 WORKFLOW_LOCAL_MODULES: frozenset[str] = validator_core.ALLOWED_LOCAL_MODULES | frozenset({
     "_shared", "dashboard_provider", "policy", "constants", "paths", "shell_parser", "git_and_fs",
-    "python_ast", "python_ast_eval", "python_ast_imports", "python_ast_readonly",
+    "python_ast", "python_ast_state", "python_ast_eval", "python_ast_imports", "python_ast_readonly", "python_ast_flow",
     "inline_scripts", "js_eval", "stdin_inspect", "evaluator", "safety_policy",
     "state_writer", "profile_engine", "evo_engine", "metrics_signals", "caveman_protocol",
     "eval_checks", "init_workspace", "validators", "base", "plugin_validator", "workspace_validator",
