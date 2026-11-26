@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`TASK-WF-01a` — Modular Split of `plugin/hooks/policy/python_ast.py` & Readonly Harness AST Extensions (`plugin/hooks/policy/`, `tests/test_safety_python_ast.py`):**
+  - Synced shared Python 3.10+ stdlib foundation into `plugin/_shared/` + `plugin/.shared_manifest.json` (`[TASK-WF-PREP]`) and restored `0755` executable bits on scripts and hooks.
+  - Decomposed `plugin/hooks/policy/python_ast.py` into 4 SRP stdlib-only modules strictly `< 650` lines each: `python_ast_eval.py` (static string/sequence/int/binding evaluation and state), `python_ast_imports.py` (import/shadowing tracking, dynamic import resolution, variable binding), `python_ast_readonly.py` (non-AST fallback and fail-closed readonly harness AST verification ported from `dev`), and `python_ast.py` (call inspectors, Pass 1/2 walkers, `inspect_inline_python_code`, backward-compatible re-exports).
+  - Ported `dev` readonly-harness and raw fallback tests into `tests/test_safety_python_ast.py` alongside SRP split and re-export coverage.
+
 ## [0.4.0] - 2026-11-24
 
 ### Changed

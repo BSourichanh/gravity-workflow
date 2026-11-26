@@ -1,0 +1,498 @@
+#!/usr/bin/env python3
+"""Vérification lecture seule du harnais actif et repli hard-deny sur code Python non analysable par AST."""
+
+import ast
+from pathlib import Path
+import re
+from typing import Dict, List, Optional, Set, Tuple
+
+from .constants import QUOTED_LITERAL_RE, RE_PATTERN_FUNCS, SENSITIVE_PATH_PATTERNS
+from .paths import is_harness_protected, matches_any
+from .python_ast_eval import _PyAstState, _eval_static_str
+from .python_ast_imports import _OS_PATH_PROPAGATING_FUNCS, _OS_PATH_TERMINAL_FUNCS
+
+_RAW_OS_MUTATION_NAMES = (
+    r"remove|unlink|rmdir|rename|replace|chmod|lchmod|chown|open|system|popen|"
+    r"exec\w*|spawn\w*|truncate|mkdir|makedirs|link|symlink"
+)
+_RAW_HARNESS_MUTATION_RE = re.compile(
+    rf"\.(?:write_text|write_bytes|write|writelines|unlink|rmdir|rename|replace|"
+    rf"chmod|lchmod|chown|touch|mkdir|symlink_to|hardlink_to|truncate)\s*\("
+    rf"|\b(?:unlink|remove|rmdir|rename|replace|chmod|lchmod|chown|rmtree|symlink|link|"
+    rf"truncate|makedirs|mkdir|system|popen|exec\w*|spawn\w*)\s*\("
+    rf"|\b(?:shutil\.\w+|(?:os|posix|nt)\.(?:{_RAW_OS_MUTATION_NAMES})"
+    rf"|subprocess\.\w+|eval|exec|getattr|setattr|delattr|__import__)\s*\("
+    rf"|\bfrom\s+(?:shutil|subprocess)\s+import\b"
+    rf"|\bfrom\s+(?:os|posix|nt)\s+import\b[^\n;]*\b(?:{_RAW_OS_MUTATION_NAMES})\b"
+    rf"|\bfrom\s+(?:os|posix|nt)\s+import\s*\([^)]*\b(?:{_RAW_OS_MUTATION_NAMES})\b"
+)
+_RAW_OPEN_CALL_RE = re.compile(r"\bopen\s*\(")
+_RAW_READONLY_MODE_RE = re.compile(r"""^['"](?:r|rb|rt|br|tr)['"]$""")
+
+_PATH_READONLY_TERMINAL_METHODS = frozenset(
+    {
+        "read_text", "read_bytes", "stat", "lstat", "exists", "is_file", "is_dir",
+        "is_symlink", "is_mount", "is_socket", "is_fifo", "is_block_device",
+        "is_char_device", "is_absolute", "is_relative_to", "samefile", "match",
+        "splitlines", "startswith", "endswith",
+    }
+)
+_PATH_PROPAGATING_METHODS = frozenset(
+    {
+        "resolve", "absolute", "expanduser", "joinpath", "with_name", "with_stem",
+        "with_suffix", "relative_to", "as_posix", "glob", "rglob", "iterdir",
+    }
+)
+_PASSIVE_PATH_ATTRS = frozenset(
+    {"name", "stem", "suffix", "suffixes", "parent", "parents", "parts", "anchor", "drive", "root"}
+)
+_READONLY_OPEN_MODES = frozenset({"r", "rb", "rt", "br", "tr"})
+
+
+def _split_top_level_call_args(arg_str: str) -> Optional[List[str]]:
+    """Découpe une liste d'arguments brute au niveau 0 sans dépendre de `ast.parse`."""
+    parts: List[str] = []
+    cur: List[str] = []
+    depth = 0
+    quote: Optional[str] = None
+    i = 0
+    n = len(arg_str)
+    while i < n:
+        ch = arg_str[i]
+        if quote is not None:
+            cur.append(ch)
+            if ch == "\\" and i + 1 < n:
+                cur.append(arg_str[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            cur.append(ch)
+        elif ch in ("(", "[", "{"):
+            depth += 1
+            cur.append(ch)
+        elif ch in (")", "]", "}"):
+            if depth == 0:
+                return None
+            depth -= 1
+            cur.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(cur).strip())
+            cur.clear()
+        else:
+            cur.append(ch)
+        i += 1
+    if quote is not None or depth != 0:
+        return None
+    tail = "".join(cur).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _raw_code_has_harness_mutation_risk(code: str) -> bool:
+    """Retourne True si `code` (non analysable par AST) contient un indice de mutation/écriture/exécution."""
+    if _RAW_HARNESS_MUTATION_RE.search(code):
+        return True
+    for match in _RAW_OPEN_CALL_RE.finditer(code):
+        prefix = code[: match.start()].rstrip()
+        is_method = prefix.endswith(".")
+        idx = match.end()
+        depth = 1
+        quote: Optional[str] = None
+        while idx < len(code) and depth > 0:
+            ch = code[idx]
+            if quote is not None:
+                if ch == "\\" and idx + 1 < len(code):
+                    idx += 2
+                    continue
+                if ch == quote:
+                    quote = None
+            else:
+                if ch in ("'", '"'):
+                    quote = ch
+                elif ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            idx += 1
+        if depth != 0:
+            return True
+        args_list = _split_top_level_call_args(code[match.end() : idx])
+        if args_list is None:
+            return True
+        pos_args: List[str] = []
+        mode_expr: Optional[str] = None
+        allowed_kws = {"mode", "buffering", "encoding", "errors", "newline"}
+        if not is_method:
+            allowed_kws.add("file")
+        for item in args_list:
+            if not item or item.startswith("*"):
+                return True
+            if "=" in item and not item.startswith(("'", '"', "(")):
+                kw_name, kw_val = item.split("=", 1)
+                kw_clean = kw_name.strip()
+                if kw_clean not in allowed_kws:
+                    return True
+                if kw_clean == "mode":
+                    mode_expr = kw_val.strip()
+            else:
+                pos_args.append(item)
+        if len(pos_args) > (5 if is_method else 6):
+            return True
+        mode_pos = 0 if is_method else 1
+        if mode_expr is None and len(pos_args) > mode_pos:
+            mode_expr = pos_args[mode_pos].strip()
+        if mode_expr is not None and not _RAW_READONLY_MODE_RE.match(mode_expr):
+            return True
+    return False
+
+
+def _raw_code_hard_deny_check(
+    code: str, ws_root: Optional[Path], context_label: str
+) -> Optional[Tuple[str, str]]:
+    """Repli regex `deny` si un script Python/workflow est non analysable par AST."""
+    if re.search(r"\b(?:os|posix|nt)\.environb?\b", code):
+        return "deny", f"Accès à `os.environ` dans `{context_label}` bloqué."
+    for match in QUOTED_LITERAL_RE.finditer(code):
+        lit = match.group(1) if match.group(1) is not None else (
+            match.group(2) if match.group(2) is not None else match.group(3)
+        )
+        if not lit:
+            continue
+        if is_harness_protected(lit, ws_root) and _raw_code_has_harness_mutation_risk(code):
+            return "deny", f"Script `{context_label}` ciblant les garde-fous Gravity bloqué."
+        if matches_any(lit, SENSITIVE_PATH_PATTERNS):
+            return "deny", f"Script `{context_label}` ciblant un chemin sensible bloqué."
+    return None
+
+
+def _build_parent_map(tree: ast.AST) -> Dict[ast.AST, ast.AST]:
+    """Construit la table enfant -> parent de l'arbre AST."""
+    parents: Dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    return parents
+
+
+def _collect_target_var_names(target: ast.AST) -> Optional[List[str]]:
+    """Extrait les noms de variables d'une cible d'affectation/boucle si simple (`Name`/tuple/list)."""
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, ast.Starred):
+        return _collect_target_var_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        out: List[str] = []
+        for elt in target.elts:
+            sub = _collect_target_var_names(elt)
+            if sub is None:
+                return None
+            out.extend(sub)
+        return out
+    return None
+
+
+def _resolve_unambiguous_open_modes(
+    mode_node: ast.AST, state: _PyAstState
+) -> Optional[List[str]]:
+    """Résout statiquement et sans ambiguïté les modes possibles pour `open()`."""
+    for sub in ast.walk(mode_node):
+        if (
+            isinstance(sub, ast.Name)
+            and isinstance(sub.ctx, ast.Load)
+            and sub.id in state.dynamic_tainted_vars
+        ):
+            return None
+    if isinstance(mode_node, ast.IfExp):
+        left = _resolve_unambiguous_open_modes(mode_node.body, state)
+        right = _resolve_unambiguous_open_modes(mode_node.orelse, state)
+        if not left or not right:
+            return None
+        return left + [m for m in right if m not in left]
+    cands = list(state.resolved_expr_strs.get(mode_node, ()))
+    fallback = _eval_static_str(
+        mode_node, state.const_vars, state.const_seq_vars, 0, state.imp.func_returns
+    )
+    if fallback and fallback not in cands:
+        cands.append(fallback)
+    return cands or None
+
+
+def _is_open_call_readonly(call: ast.Call, *, is_method: bool, state: _PyAstState) -> bool:
+    """Vérifie qu'un appel `open(...)` ou `Path.open(...)` est strictement en lecture seule."""
+    if any(isinstance(a, ast.Starred) for a in call.args):
+        return False
+    if len(call.args) > (5 if is_method else 6):
+        return False
+    kw_map: Dict[str, ast.AST] = {}
+    allowed_kws = {"mode", "buffering", "encoding", "errors", "newline"}
+    if not is_method:
+        allowed_kws.add("file")
+    for kw in call.keywords:
+        if kw.arg is None or kw.arg not in allowed_kws:
+            return False
+        kw_map[kw.arg] = kw.value
+    mode_pos = 0 if is_method else 1
+    if len(call.args) > mode_pos:
+        if "mode" in kw_map:
+            return False
+        mode_node: Optional[ast.AST] = call.args[mode_pos]
+    else:
+        mode_node = kw_map.get("mode")
+    if mode_node is None:
+        return True
+    cands = _resolve_unambiguous_open_modes(mode_node, state)
+    return bool(cands) and all(m in _READONLY_OPEN_MODES for m in cands)
+
+
+def _classify_readonly_call(
+    call: ast.Call, arg_node: ast.AST, is_kw_arg: bool, kw_name: Optional[str], state: _PyAstState
+) -> str:
+    """Retourne `'terminal'`, `'propagate'` ou `'deny'` pour un `ast.Call` recevant `arg_node`."""
+    if call in state.checked_cmd_nodes:
+        return "terminal"
+    fn = call.func
+    if isinstance(fn, ast.Name):
+        if state.imp.has_wildcard_import or fn.id in state.imp.shadowed_names:
+            return "deny"
+        if fn.id == "open":
+            is_file_arg = (not is_kw_arg and bool(call.args) and call.args[0] is arg_node) or (
+                is_kw_arg and kw_name == "file"
+            )
+            if is_file_arg and _is_open_call_readonly(call, is_method=False, state=state):
+                return "terminal"
+            return "deny"
+        if fn.id in {"print", "len", "compile"}:
+            return "terminal"
+        if fn.id in {"str", "repr", "sorted", "list", "tuple", "set", "reversed", "enumerate", "zip"}:
+            return "propagate"
+        if fn.id in state.imp.path_ctor_names:
+            return "propagate"
+        if fn.id in state.imp.json_load_fns:
+            return "terminal"
+        if fn.id in state.imp.re_func_names:
+            return "terminal"
+        if fn.id in state.imp.os_readonly_term_fns:
+            return "terminal"
+        if fn.id in state.imp.os_readonly_prop_fns:
+            return "propagate"
+        return "deny"
+
+    if isinstance(fn, ast.Attribute):
+        val = fn.value
+        if (
+            isinstance(val, ast.Attribute)
+            and val.attr == "path"
+            and isinstance(val.value, ast.Name)
+            and val.value.id in state.imp.os_mod_names
+            and val.value.id not in state.imp.shadowed_names
+        ) or (
+            isinstance(val, ast.Name)
+            and val.id in state.imp.os_path_mod_names
+            and val.id not in state.imp.shadowed_names
+        ):
+            if fn.attr in _OS_PATH_TERMINAL_FUNCS:
+                return "terminal"
+            if fn.attr in _OS_PATH_PROPAGATING_FUNCS:
+                return "propagate"
+            return "deny"
+        if (
+            isinstance(val, ast.Name)
+            and val.id in state.imp.os_mod_names
+            and val.id not in state.imp.shadowed_names
+        ):
+            if fn.attr in {"stat", "lstat", "access", "readlink"}:
+                return "terminal"
+            if fn.attr in {"fspath", "listdir", "scandir", "walk"}:
+                return "propagate"
+            return "deny"
+        if (
+            isinstance(val, ast.Name)
+            and val.id in state.imp.pathlib_mod_names
+            and val.id not in state.imp.shadowed_names
+        ):
+            if fn.attr in {"Path", "PurePath", "PosixPath", "WindowsPath"}:
+                return "propagate"
+            return "deny"
+        if (
+            isinstance(val, ast.Name)
+            and val.id in state.imp.json_mod_names
+            and val.id not in state.imp.shadowed_names
+            and fn.attr in {"load", "loads"}
+        ):
+            return "terminal"
+        if (
+            isinstance(val, ast.Name)
+            and val.id in state.imp.re_mod_names
+            and val.id not in state.imp.shadowed_names
+            and fn.attr in RE_PATTERN_FUNCS
+        ):
+            return "terminal"
+    return "deny"
+
+
+def _is_readonly_harness_usage(
+    start_node: ast.AST,
+    parent_map: Dict[ast.AST, ast.AST],
+    var_loads: Dict[str, List[ast.Name]],
+    state: _PyAstState,
+) -> bool:
+    """Vérifie fail-closed que `start_node` et les variables/boucles associées restent en lecture seule."""
+    pending_nodes: List[ast.AST] = [start_node]
+    seen_nodes: Set[ast.AST] = set()
+    seen_vars: Set[str] = set()
+
+    def _queue_target(target: ast.AST) -> bool:
+        names = _collect_target_var_names(target)
+        if names is None:
+            return False
+        for vname in names:
+            if vname not in seen_vars:
+                seen_vars.add(vname)
+                pending_nodes.extend(var_loads.get(vname, ()))
+        return True
+
+    while pending_nodes:
+        cur = pending_nodes.pop()
+        while True:
+            if cur in seen_nodes:
+                break
+            seen_nodes.add(cur)
+            parent = parent_map.get(cur)
+            if parent is None:
+                break
+
+            if isinstance(parent, ast.Attribute) and cur is parent.value:
+                if not isinstance(parent.ctx, ast.Load):
+                    return False
+                grand = parent_map.get(parent)
+                if isinstance(grand, ast.Call) and grand.func is parent:
+                    attr = parent.attr
+                    if attr in _PATH_READONLY_TERMINAL_METHODS:
+                        break
+                    if attr == "open":
+                        if not _is_open_call_readonly(grand, is_method=True, state=state):
+                            return False
+                        break
+                    if attr in _PATH_PROPAGATING_METHODS:
+                        cur = grand
+                        continue
+                    return False
+                if parent.attr in _PASSIVE_PATH_ATTRS:
+                    cur = parent
+                    continue
+                return False
+
+            if isinstance(parent, ast.keyword) and cur is parent.value:
+                call = parent_map.get(parent)
+                if not isinstance(call, ast.Call):
+                    return False
+                verdict = _classify_readonly_call(call, cur, True, parent.arg, state)
+                if verdict == "deny":
+                    return False
+                if verdict == "terminal":
+                    break
+                cur = call
+                continue
+
+            if isinstance(parent, ast.Call):
+                if cur is parent.func:
+                    return False
+                verdict = _classify_readonly_call(parent, cur, False, None, state)
+                if verdict == "deny":
+                    return False
+                if verdict == "terminal":
+                    break
+                cur = parent
+                continue
+
+            if isinstance(parent, ast.BinOp):
+                if isinstance(parent.op, (ast.Div, ast.Add)):
+                    cur = parent
+                    continue
+                return False
+
+            if isinstance(parent, (ast.FormattedValue, ast.JoinedStr, ast.Compare, ast.BoolOp, ast.UnaryOp)):
+                cur = parent
+                continue
+
+            if isinstance(parent, ast.IfExp):
+                if cur is parent.test:
+                    break
+                cur = parent
+                continue
+
+            if isinstance(parent, ast.Subscript):
+                if cur is parent.value and isinstance(parent.ctx, ast.Load):
+                    cur = parent
+                    continue
+                return False
+
+            if isinstance(parent, (ast.Tuple, ast.List, ast.Set, ast.Dict)):
+                if hasattr(parent, "ctx") and not isinstance(parent.ctx, ast.Load):
+                    return False
+                cur = parent
+                continue
+
+            if isinstance(parent, (ast.If, ast.While, ast.Assert, ast.Expr)):
+                break
+
+            if isinstance(parent, ast.NamedExpr):
+                if isinstance(parent.target, ast.Name) and not _queue_target(parent.target):
+                    return False
+                cur = parent
+                continue
+
+            if isinstance(parent, ast.Assign):
+                if cur is not parent.value:
+                    return False
+                for tgt in parent.targets:
+                    if not _queue_target(tgt):
+                        return False
+                break
+
+            if isinstance(parent, ast.AnnAssign):
+                if cur is not parent.value or not _queue_target(parent.target):
+                    return False
+                break
+
+            if isinstance(parent, ast.AugAssign):
+                if not isinstance(parent.op, ast.Add) or not _queue_target(parent.target):
+                    return False
+                break
+
+            if isinstance(parent, (ast.For, ast.AsyncFor)):
+                if cur is not parent.iter or not _queue_target(parent.target):
+                    return False
+                break
+
+            if isinstance(parent, ast.comprehension):
+                if cur is parent.iter:
+                    if not _queue_target(parent.target):
+                        return False
+                    break
+                if cur in parent.ifs:
+                    break
+                return False
+
+            if isinstance(parent, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+                cur = parent
+                continue
+
+            if isinstance(parent, ast.withitem):
+                if cur is not parent.context_expr:
+                    return False
+                if parent.optional_vars is not None and not _queue_target(parent.optional_vars):
+                    return False
+                break
+
+            return False
+
+    return True
