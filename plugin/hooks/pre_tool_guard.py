@@ -6,8 +6,11 @@ import sys
 from pathlib import Path
 
 HOOKS_DIR = Path(__file__).resolve().parent
-if str(HOOKS_DIR) not in sys.path:
-    sys.path.insert(0, str(HOOKS_DIR))
+PLUGIN_ROOT = HOOKS_DIR.parent
+OBS_DIR = PLUGIN_ROOT / "observability"
+for _p in (str(PLUGIN_ROOT), str(HOOKS_DIR), str(OBS_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 
 def _fallback_emit(decision: str, reason: str) -> None:
@@ -15,19 +18,49 @@ def _fallback_emit(decision: str, reason: str) -> None:
     sys.stdout.flush()
 
 
+def record_live_event(
+    decision: str,
+    tool_name: str,
+    reason: str | None,
+    workspace_root: Path,
+    conversation_id: str | None = None,
+) -> None:
+    """Enregistre les décisions bloquantes/escaladées dans live_state.json centralisé sans jamais échouer."""
+    if decision not in ("deny", "ask", "force_ask"):
+        return
+    try:
+        from state_writer import update_live_state  # type: ignore[import-not-found]
+
+        event_payload: dict[str, object] = {
+            "type": f"GUARD:{tool_name}",
+            "decision": decision,
+            "message": reason or "Action interceptée.",
+        }
+        if conversation_id:
+            event_payload["conversation_id"] = conversation_id
+
+        update_live_state(
+            guard_status="ON",
+            workspace_root=workspace_root,
+            event=event_payload,
+        )
+    except Exception:
+        # Ne jamais compromettre le contrat fail-closed exit 0
+        pass
+
+
 def main() -> int:
     tool_name = "unknown"
     ws_root = Path.cwd()
     try:
-        from hook_runtime import (
+        from _shared.hook_runtime import (  # type: ignore[import-not-found]
             configure_utf8_stdio,
             emit_json,
             first_not_none,
             read_stdin_text,
-            record_live_event,
             resolve_workspace_root,
         )
-        from safety_policy import evaluate_tool_call
+        from safety_policy import evaluate_tool_call  # type: ignore[import-not-found]
     except Exception as exc:
         _fallback_emit(
             "force_ask",
@@ -51,7 +84,12 @@ def main() -> int:
             emit_json({"decision": "force_ask", "reason": reason})
             return 0
 
-        ws_root = resolve_workspace_root(parsed, __file__)
+        ws_root = resolve_workspace_root(
+            parsed,
+            anchor_file=__file__,
+            fallback_cwd=True,
+            env_var="GRAVITY_WORKFLOW_WORKSPACE",
+        ) or Path.cwd()
         if isinstance(parsed.get("toolCall"), dict):
             tool_name = str(parsed["toolCall"].get("name", "unknown"))
         raw_cid = first_not_none(parsed.get("conversationId"), parsed.get("sessionId"))

@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import List, Optional
 
 HOOKS_DIR = Path(__file__).resolve().parent
-if str(HOOKS_DIR) not in sys.path:
-    sys.path.insert(0, str(HOOKS_DIR))
+PLUGIN_ROOT = HOOKS_DIR.parent
+for _p in (str(PLUGIN_ROOT), str(HOOKS_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 FORMATTERS = {
     ".py": [["ruff", "format"], ["black", "--quiet"]],
@@ -63,7 +65,7 @@ def _has_prettier_config(ws_root: Path) -> bool:
 
 def main() -> int:
     try:
-        from hook_runtime import (
+        from _shared.hook_runtime import (  # type: ignore[import-not-found]
             configure_utf8_stdio,
             emit_ok,
             first_str_arg,
@@ -98,7 +100,12 @@ def main() -> int:
             emit_ok()
             return 0
 
-        ws_root = resolve_workspace_root(data, __file__)
+        ws_root = resolve_workspace_root(
+            data,
+            anchor_file=__file__,
+            fallback_cwd=True,
+            env_var="GRAVITY_WORKFLOW_WORKSPACE",
+        ) or Path.cwd()
         target_path = Path(target_raw)
         if not target_path.is_absolute():
             target_path = ws_root / target_path

@@ -9,14 +9,14 @@ HOOKS_DIR = Path(__file__).resolve().parent
 PLUGIN_ROOT = HOOKS_DIR.parent
 OBS_DIR = PLUGIN_ROOT / "observability"
 
-for _p in (str(HOOKS_DIR), str(OBS_DIR)):
+for _p in (str(PLUGIN_ROOT), str(OBS_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 
 def main() -> int:
     try:
-        from hook_runtime import (
+        from _shared.hook_runtime import (  # type: ignore[import-not-found]
             configure_utf8_stdio,
             emit_json,
             emit_ok,
@@ -45,7 +45,12 @@ def main() -> int:
             emit_ok()
             return 0
 
-        ws_root = resolve_workspace_root(event, __file__)
+        ws_root = resolve_workspace_root(
+            event,
+            anchor_file=__file__,
+            fallback_cwd=True,
+            env_var="GRAVITY_WORKFLOW_WORKSPACE",
+        ) or Path.cwd()
         profile = load_profile(ws_root)
         level = str(profile.get("caveman", "lite")).strip().lower()
         locked = bool(profile.get("caveman_locked", False))

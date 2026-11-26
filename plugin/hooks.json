@@ -30,7 +30,7 @@
     ]
   },
   "harness-session-caveman": {
-    "enabled": true,
+    "enabled": false,
     "SessionStart": [
       {
         "type": "command",

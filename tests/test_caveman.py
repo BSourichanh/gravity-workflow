@@ -148,6 +148,40 @@ class TestCavemanIntegration(WorkflowEnvTestCase):
             self.assertEqual(get_data["caveman_badge"], "caveman:off[lock]")
             self.assertEqual(get_data["preset"]["caveman_evals"], "off")
 
+    def test_hooks_json_disables_session_start_caveman_while_direct_script_remains_functional(self) -> None:
+        hooks_data = json.loads((PLUGIN_ROOT / "hooks.json").read_text(encoding="utf-8"))
+        cav_group = hooks_data.get("harness-session-caveman")
+        self.assertIsInstance(cav_group, dict)
+        self.assertIs(cav_group.get("enabled"), False)
+        session_entries = cav_group.get("SessionStart")
+        self.assertIsInstance(session_entries, list)
+        self.assertTrue(
+            any("session_start_caveman.py" in str(e.get("command", "")) for e in session_entries if isinstance(e, dict))
+        )
+
+        for active_group in ("harness-pre-tool-guard", "harness-post-edit-format", "harness-session-metrics"):
+            self.assertIs(hooks_data[active_group].get("enabled"), True)
+
+        session_hook = PLUGIN_ROOT / "hooks/session_start_caveman.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ws = base / "ws_direct_cav"
+            ws.mkdir()
+            proc = subprocess.run(
+                [sys.executable, "-I", "-B", str(session_hook)],
+                input=json.dumps({"cwd": str(ws)}),
+                text=True,
+                encoding="utf-8",
+                capture_output=True,
+                cwd=str(base),
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            out = json.loads(proc.stdout.strip())
+            self.assertIn("niveau=lite", out["injectSteps"][0]["systemMessage"]["systemMessage"])
+            self.assertFalse((ws / ".agents").exists())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

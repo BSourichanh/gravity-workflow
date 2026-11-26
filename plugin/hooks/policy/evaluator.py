@@ -8,10 +8,36 @@ import sys
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 _HOOKS_DIR = Path(__file__).resolve().parent.parent
-if str(_HOOKS_DIR) not in sys.path:
-    sys.path.insert(0, str(_HOOKS_DIR))
+_PLUGIN_ROOT = _HOOKS_DIR.parent
+for _p in (str(_PLUGIN_ROOT), str(_HOOKS_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-from hook_runtime import first_str_arg, is_gravity_workspace, resolve_workspace_root  # noqa: E402
+from _shared.hook_runtime import (  # noqa: E402
+    first_str_arg,
+    resolve_workspace_root as _shared_resolve_workspace_root,
+)
+
+
+def resolve_workspace_root(
+    data: Optional[dict], anchor_file: Optional[str] = __file__
+) -> Path:
+    """Résout le workspace cible via `_shared.hook_runtime` (fallback CWD et `GRAVITY_WORKFLOW_WORKSPACE`)."""
+    resolved = _shared_resolve_workspace_root(
+        data,
+        anchor_file=anchor_file,
+        fallback_cwd=True,
+        env_var="GRAVITY_WORKFLOW_WORKSPACE",
+    )
+    return resolved if resolved is not None else Path.cwd()
+
+
+def is_gravity_workspace(ws_root: Path) -> bool:
+    """Retourne True uniquement si le workspace est initialisé avec le socle Gravity Workflow."""
+    return (
+        (ws_root / ".agents/gravity-workflow/profile.json").is_file()
+        or (ws_root / ".agents/gravity-workflow/PROGRESS.md").is_file()
+    )
 
 from .constants import (
     DB_CLIENT_HEADS,

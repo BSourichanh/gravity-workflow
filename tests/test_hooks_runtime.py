@@ -445,6 +445,75 @@ class TestHooksRuntime(WorkflowEnvTestCase):
                     asyncio.run(res_orphan)
             self.assertTrue(any("PLUGIN_ROOT introuvable" in m for m in logs_orphan))
 
+    def test_hooks_migrated_onto_shared_hook_runtime_with_zero_legacy_imports(self) -> None:
+        hooks_dir = PLUGIN_ROOT / "hooks"
+        for py_file in sorted(hooks_dir.rglob("*.py")):
+            if py_file.name == "hook_runtime.py":
+                continue
+            src = py_file.read_text(encoding="utf-8")
+            self.assertNotIn("from hook_runtime import", src, str(py_file))
+            self.assertNotIn("hooks.hook_runtime", src, str(py_file))
+            tree = ast.parse(src, filename=str(py_file))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        self.assertNotIn("hook_runtime", alias.name, str(py_file))
+                elif isinstance(node, ast.ImportFrom):
+                    mod = node.module or ""
+                    self.assertNotEqual(mod, "hook_runtime", str(py_file))
+                    self.assertNotEqual(mod, "hooks.hook_runtime", str(py_file))
+
+        post_hook = PLUGIN_ROOT / "hooks/post_tool_format.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ws = base / "ws_fmt"
+            ws.mkdir()
+            (ws / ".agents").mkdir()
+            agents_file = ws / ".agents/sample.py"
+            agents_file.write_text("x=1\n", encoding="utf-8")
+
+            for payload in (
+                "",
+                "{bad_json",
+                json.dumps({"cwd": str(ws), "toolCall": {"name": "write_file", "args": {"TargetFile": ".agents/sample.py"}}}),
+                json.dumps({"cwd": str(ws), "toolCall": {"name": "write_file", "args": {"TargetFile": "missing.py"}}}),
+            ):
+                proc = subprocess.run(
+                    [sys.executable, "-I", "-B", str(post_hook)],
+                    input=payload,
+                    text=True,
+                    encoding="utf-8",
+                    capture_output=True,
+                    cwd=str(base),
+                    timeout=5,
+                    check=False,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(proc.stdout.strip(), "{}")
+
+    def test_pre_tool_guard_fail_closed_ec2_and_live_event_recording(self) -> None:
+        guard = PLUGIN_ROOT / "hooks/pre_tool_guard.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ws = base / "ws_ec2"
+            ws.mkdir()
+            for raw_input in ("", "{malformed_json", "[]", json.dumps({"cwd": str(ws)})):
+                proc = subprocess.run(
+                    [sys.executable, "-I", "-B", str(guard)],
+                    input=raw_input,
+                    text=True,
+                    encoding="utf-8",
+                    capture_output=True,
+                    cwd=str(base),
+                    timeout=5,
+                    check=False,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                out = json.loads(proc.stdout.strip())
+                self.assertEqual(out["decision"], "force_ask")
+                self.assertTrue(out.get("reason"))
+                self.assertFalse((ws / ".agents").exists())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
