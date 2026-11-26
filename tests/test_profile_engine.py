@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests unitaires du moteur de profils (3 profils, A/B, evo consultatif, métriques)."""
+"""Tests unitaires du moteur de profils (3 profils, A/B, evo consultatif, métriques, execution_engine)."""
 
 import json
 import os
@@ -13,8 +13,12 @@ from unittest import mock
 from _unit_helpers import WorkflowEnvTestCase, ensure_plugin_paths
 
 PLUGIN_ROOT = ensure_plugin_paths()
+if str(PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT))
 
+from _shared import signal_bus  # noqa: E402
 import caveman_protocol  # noqa: E402
+import evo_engine  # noqa: E402
 import profile_engine  # noqa: E402
 import state_writer  # noqa: E402
 
@@ -29,14 +33,23 @@ class TestProfileEngine(WorkflowEnvTestCase):
             self.assertEqual(default_prof["mode"], "evo")
             self.assertEqual(default_prof["current_level"], "standard")
             self.assertEqual(default_prof["suggested_profile"], "standard")
+            self.assertEqual(default_prof["execution_engine"], "swarm")
             self.assertFalse(default_prof["locked"])
             self.assertEqual(profile_engine.format_mode_badge(default_prof), "evo:standard")
 
             locked_prof = profile_engine.set_mode(ws, "deep")
             self.assertEqual(locked_prof["mode"], "deep")
             self.assertEqual(locked_prof["current_level"], "deep")
+            self.assertEqual(locked_prof["workspace"], str(ws.resolve()))
             self.assertTrue(locked_prof["locked"])
             self.assertEqual(profile_engine.format_mode_badge(locked_prof), "deep[lock]")
+
+            # T3-P25 : profile.json persiste "workspace" et _sanitize_profile le préserve
+            persisted_raw = json.loads(
+                profile_engine.resolve_profile_path(ws).read_text(encoding="utf-8")
+            )
+            self.assertEqual(persisted_raw["workspace"], str(ws.resolve()))
+            self.assertEqual(profile_engine.load_profile(ws)["workspace"], str(ws.resolve()))
 
             # Zéro écriture dans le workspace cible : tout est centralisé
             self.assertFalse((ws / ".agents").exists())
@@ -46,6 +59,7 @@ class TestProfileEngine(WorkflowEnvTestCase):
             self.assertEqual(live["mode"], "deep")
             self.assertEqual(live["level"], "deep")
             self.assertEqual(live["preset_profile"], "deep")
+            self.assertEqual(live["progress"], "0/0")
 
             unlocked_evo = profile_engine.set_mode(ws, "evo")
             self.assertEqual(unlocked_evo["mode"], "evo")
@@ -83,6 +97,7 @@ class TestProfileEngine(WorkflowEnvTestCase):
                 "caveman",
                 "caveman_planner",
                 "caveman_evals",
+                "execution_engine",
             }
 
             p_quick = profile_engine.get_active_preset(ws, level_override="quick")
@@ -151,6 +166,7 @@ class TestProfileEngine(WorkflowEnvTestCase):
             self.assertEqual(ab_data["preset"]["plan_model"], "flash")
             self.assertEqual(ab_data["preset"]["build_model"], "pro")
             self.assertEqual(ab_data["preset"]["review_model"], "pro")
+            self.assertEqual(ab_data["profile"]["workspace"], str(ws.resolve()))
 
     def test_consultative_evo_behavioral_without_file_count_or_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -159,11 +175,12 @@ class TestProfileEngine(WorkflowEnvTestCase):
             (ws / "only_one.py").write_text("x = 1\n", encoding="utf-8")
 
             # Dépôt < 80 fichiers et sans init : evo s'exécute sans polluer ws et sans rétrograder en quick/flash_lite
-            r1 = profile_engine.evolve_on_stop(
+            r1 = evo_engine.evolve_on_stop(
                 ws, {"conversation_id": "s1", "fully_idle": True, "termination_reason": "NO_TOOL_CALL"}
             )
             self.assertEqual(r1["current_level"], "standard")
             self.assertEqual(r1["suggested_profile"], "standard")
+            self.assertEqual(r1["workspace"], str(ws.resolve()))
             self.assertFalse((ws / ".agents").exists())
 
             # Friction comportementale (rejet Reviewer + deny) -> suggested_profile='deep' sans muter current_level
@@ -192,6 +209,22 @@ class TestProfileEngine(WorkflowEnvTestCase):
             )
             self.assertEqual(r3["current_level"], "standard")
             self.assertEqual(r3["suggested_profile"], "standard")
+
+    def test_evo_engine_split_reexports_and_sanitize_preserves_workspace(self) -> None:
+        for symbol in (
+            "_read_recent_live_events",
+            "_read_recent_pipeline_failures",
+            "collect_signals",
+            "compute_metrics_delta",
+            "compute_score",
+            "evolve_on_stop",
+        ):
+            self.assertIs(getattr(profile_engine, symbol), getattr(evo_engine, symbol))
+
+        sanitized = profile_engine._sanitize_profile(
+            {"mode": "evo", "current_level": "standard", "workspace": "/tmp/example-ws"}
+        )
+        self.assertEqual(sanitized["workspace"], "/tmp/example-ws")
 
     def test_deprecated_pace_and_ephemeral_unsafe_never_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -224,68 +257,26 @@ class TestProfileEngine(WorkflowEnvTestCase):
             base = Path(tmp)
             ws = base / "metrics-proj"
             ws.mkdir()
-            metrics_home = base / "metrics_home"
-            hfile = metrics_home / "data" / "history.jsonl"
-            hfile.parent.mkdir(parents=True)
-            hfile.write_text(
-                "\n".join(
-                    [
-                        json.dumps(
-                            {
-                                "status": "active",
-                                "project": "metrics-proj",
-                                "ended_at": "2026-11-23T23:00:00Z",
-                                "error_rate_pct": 95.0,
-                            }
-                        ),
-                        json.dumps(
-                            {
-                                "status": "archived",
-                                "project": "metrics-proj",
-                                "ended_at": "2026-11-23T10:00:00Z",
-                                "error_rate_pct": 2.0,
-                                "cache_hit_rate_pct": 85.0,
-                                "max_context_tokens": 160_000,
-                                "duplicate_spawns": 0,
-                                "rewind_calls": 0,
-                                "cost_usd": 1.0,
-                                "cost_output_usd": 0.2,
-                            }
-                        ),
-                        json.dumps(
-                            {
-                                "status": "archived",
-                                "project": "metrics-proj",
-                                "ended_at": "2026-11-23T11:00:00Z",
-                                "error_rate_pct": 2.0,
-                                "cache_hit_rate_pct": 85.0,
-                                "max_context_tokens": 100_000,
-                                "duplicate_spawns": 0,
-                                "rewind_calls": 0,
-                                "cost_usd": 1.0,
-                                "cost_output_usd": 0.2,
-                            }
-                        ),
-                        json.dumps(
-                            {
-                                "status": "archived",
-                                "project": "metrics-proj",
-                                "ended_at": "2026-11-23T12:00:00Z",
-                                "error_rate_pct": 2.0,
-                                "cache_hit_rate_pct": 82.0,
-                                "max_context_tokens": 90_000,
-                                "duplicate_spawns": 0,
-                                "rewind_calls": 0,
-                                "cost_usd": 1.0,
-                                "cost_output_usd": 0.2,
-                            }
-                        ),
-                    ]
-                )
-                + "\n",
-                encoding="utf-8",
+            gravity_home = base / "gravity_home"
+            signal_bus.publish_signal(
+                "session-metrics",
+                "metrics-proj",
+                "metrics",
+                {
+                    "avg_error_rate_pct": 2.0,
+                    "avg_cache_hit_rate_pct": 84.0,
+                    "max_context_tokens": 160_000,
+                    "recent_duplicate_spawns": 0,
+                    "recent_rewind_calls": 0,
+                    "recent_interrupted_agents": 0,
+                    "recent_bridge_sessions": 0,
+                    "high_output_cost_ratio": 0.2,
+                },
+                sample_count=3,
+                window_size=5,
+                gravity_home=gravity_home,
             )
-            with mock.patch.dict(os.environ, {"GRAVITY_METRICS_HOME": str(metrics_home)}):
+            with mock.patch.dict(os.environ, {"GRAVITY_HOME": str(gravity_home)}):
                 sig = profile_engine.collect_signals(ws)
                 self.assertTrue(sig["metrics"]["available"])
                 self.assertEqual(sig["metrics"]["sample_count"], 3)
@@ -298,6 +289,74 @@ class TestProfileEngine(WorkflowEnvTestCase):
                 self.assertIn("metrics", reason)
                 prof = profile_engine.evolve_on_stop(ws, {"conversation_id": "m1", "fully_idle": True})
                 self.assertIn("Signaux Metrics (3 sess.)", profile_engine.format_status(prof))
+
+    def test_execution_engine_default_cli_override_and_backward_compat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "engine_ws"
+            ws.mkdir()
+
+            default_prof = profile_engine.default_profile()
+            self.assertEqual(default_prof["execution_engine"], "swarm")
+
+            preset_default = profile_engine.get_active_preset(ws)
+            self.assertEqual(preset_default["execution_engine"], "swarm")
+            self.assertEqual(
+                profile_engine.get_active_preset(ws, execution_engine_override="run_workflow")["execution_engine"],
+                "run_workflow",
+            )
+            self.assertEqual(
+                profile_engine.get_active_preset(ws, execution_engine_override="invalid")["execution_engine"],
+                "swarm",
+            )
+            self.assertIn("Engine: swarm", profile_engine.format_status(default_prof))
+
+            # Rétrocompatibilité : un profile.json sans execution_engine ou avec valeur invalide -> "swarm"
+            ro_prof = ws / ".agents/gravity-workflow/profile.json"
+            ro_prof.parent.mkdir(parents=True)
+            ro_prof.write_text(json.dumps({"mode": "evo", "current_level": "standard"}), encoding="utf-8")
+            self.assertEqual(profile_engine.load_profile(ws)["execution_engine"], "swarm")
+            ro_prof.write_text(
+                json.dumps({"mode": "evo", "current_level": "standard", "execution_engine": "legacy"}),
+                encoding="utf-8",
+            )
+            self.assertEqual(profile_engine.load_profile(ws)["execution_engine"], "swarm")
+
+            with self.assertRaises(ValueError):
+                profile_engine.update_profile_settings(ws, execution_engine="invalid")
+
+            cli_script = PLUGIN_ROOT / "observability/profile_engine.py"
+            proc_rw = subprocess.run(
+                [sys.executable, str(cli_script), "set", "--workspace", str(ws), "--engine", "run_workflow", "--json"],
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(proc_rw.returncode, 0, proc_rw.stderr)
+            rw_data = json.loads(proc_rw.stdout)
+            self.assertEqual(rw_data["profile"]["execution_engine"], "run_workflow")
+            self.assertEqual(rw_data["preset"]["execution_engine"], "run_workflow")
+            self.assertIn("Engine: run_workflow", profile_engine.format_status(rw_data["profile"]))
+
+            proc_sw = subprocess.run(
+                [sys.executable, str(cli_script), "set", "--workspace", str(ws), "--engine", "swarm", "--json"],
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(proc_sw.returncode, 0, proc_sw.stderr)
+            self.assertEqual(json.loads(proc_sw.stdout)["profile"]["execution_engine"], "swarm")
+
+            proc_bad = subprocess.run(
+                [sys.executable, str(cli_script), "set", "--workspace", str(ws), "--engine", "bogus"],
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            self.assertNotEqual(proc_bad.returncode, 0)
+            self.assertIn("Moteur d'exécution Gravity invalide", proc_bad.stderr)
 
 
 if __name__ == "__main__":

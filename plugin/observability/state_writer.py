@@ -7,20 +7,16 @@ import hashlib
 import json
 import os
 import re
-import tempfile
-import time
+import sys
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-try:
-    import fcntl
-except ImportError:  # Windows
-    fcntl = None  # type: ignore[assignment]
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+if str(PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT))
 
-try:
-    import msvcrt
-except ImportError:  # POSIX
-    msvcrt = None  # type: ignore[assignment]
+from _shared.atomic_io import append_jsonl_atomic, write_json_atomic  # noqa: E402
+from _shared.file_lock import exclusive_file_lock as _shared_exclusive_file_lock  # noqa: E402
 
 
 def resolve_workflow_home() -> Path:
@@ -58,47 +54,19 @@ def resolve_registry_path(registry_path: Optional[Path] = None) -> Path:
         return Path(env_reg).expanduser().resolve()
     return (resolve_workflow_home() / "live_workspaces.json").resolve()
 
-LOCK_RETRIES = 50
-LOCK_RETRY_DELAY_S = 0.05
-
-
 @contextlib.contextmanager
-def exclusive_file_lock(lock_path: Path) -> Iterator[None]:
-    """Verrou exclusif multi-plateforme (fcntl.flock sur POSIX, msvcrt.locking sur Windows)."""
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+", encoding="utf-8") as lock_fh:
-        if fcntl is not None:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
-        elif msvcrt is not None:
-            lock_fh.seek(0, os.SEEK_END)
-            if lock_fh.tell() == 0:
-                lock_fh.write("0")
-                lock_fh.flush()
-            acquired = False
-            for _ in range(LOCK_RETRIES):
-                try:
-                    lock_fh.seek(0)
-                    msvcrt.locking(lock_fh.fileno(), msvcrt.LK_NBLCK, 1)
-                    acquired = True
-                    break
-                except OSError:
-                    time.sleep(LOCK_RETRY_DELAY_S)
-            if not acquired:
-                raise TimeoutError(f"Impossible d'acquérir le verrou sur {lock_path}")
-            try:
-                yield
-            finally:
-                try:
-                    lock_fh.seek(0)
-                    msvcrt.locking(lock_fh.fileno(), msvcrt.LK_UNLCK, 1)
-                except OSError:
-                    pass
-        else:
-            yield
+def exclusive_file_lock(
+    lock_path: Path,
+    timeout_s: float = 5.0,
+    poll_interval_s: float = 0.02,
+) -> Iterator[None]:
+    """Verrou exclusif multi-plateforme fail-closed délégué à `_shared.file_lock`."""
+    with _shared_exclusive_file_lock(
+        lock_path,
+        timeout_s=timeout_s,
+        poll_interval_s=poll_interval_s,
+    ):
+        yield
 
 
 def _resolve_workspace_root(workspace_root: Optional[Path] = None) -> Path:
@@ -158,30 +126,14 @@ def resolve_state_path(
 
 
 def _atomic_write_json(target: Path, payload: Dict[str, Any]) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{target.stem}_", suffix=".tmp", dir=str(target.parent)
+    write_json_atomic(
+        target,
+        payload,
+        indent=2,
+        sort_keys=False,
+        ensure_ascii=False,
+        reject_symlink=True,
     )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as tmp_fh:
-            json.dump(payload, tmp_fh, indent=2, ensure_ascii=False)
-            tmp_fh.write("\n")
-            tmp_fh.flush()
-            os.fsync(tmp_fh.fileno())
-        for attempt in range(5):
-            try:
-                os.replace(tmp_name, target)
-                break
-            except PermissionError:
-                if attempt == 4:
-                    raise
-                time.sleep(0.02)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
 
 
 def _register_active_workspace(ws_root: Path, state_file: Path) -> None:
@@ -226,7 +178,7 @@ def _register_active_workspace(ws_root: Path, state_file: Path) -> None:
 def _default_state() -> Dict[str, Any]:
     return {
         "stage": "idle",
-        "progress": "0/8",
+        "progress": "0/0",
         "mode": "evo",
         "level": "standard",
         "preset_profile": "standard",
@@ -250,11 +202,13 @@ def append_run_log(
     """Ajoute de façon atomique et verrouillée une ligne JSON dans `runs.jsonl` centralisé."""
     ws_root = _resolve_workspace_root(workspace_root)
     target = Path(log_path) if log_path is not None else resolve_runs_log_path(ws_root)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with exclusive_file_lock(target.with_suffix(".lock")):
-        with target.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            fh.flush()
+    append_jsonl_atomic(
+        target,
+        entry,
+        lock_path=target.with_suffix(".lock"),
+        ensure_ascii=False,
+        reject_symlink=True,
+    )
     return target
 
 

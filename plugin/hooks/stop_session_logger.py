@@ -2,24 +2,24 @@
 """Hook Stop Gravity Workflow : journalisation centralisée `runs.jsonl` + adaptation consultative `evo`."""
 
 import datetime
-import json
 import sys
 from pathlib import Path
 
 HOOKS_DIR = Path(__file__).resolve().parent
-OBS_DIR = HOOKS_DIR.parent / "observability"
-for _p in (str(HOOKS_DIR), str(OBS_DIR)):
+PLUGIN_ROOT = HOOKS_DIR.parent
+OBS_DIR = PLUGIN_ROOT / "observability"
+for _p in (str(PLUGIN_ROOT), str(OBS_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 
 def main() -> int:
     try:
-        from hook_runtime import (
+        from _shared.hook_runtime import (  # type: ignore[import-not-found]
             configure_utf8_stdio,
             emit_ok,
             first_not_none,
-            read_stdin_text,
+            read_stdin_json,
             resolve_workspace_root,
         )
         from profile_engine import (  # type: ignore[import-not-found]
@@ -35,19 +35,16 @@ def main() -> int:
 
     configure_utf8_stdio()
     try:
-        raw = read_stdin_text()
-        if raw:
-            try:
-                event = json.loads(raw)
-            except Exception:
-                emit_ok()
-                return 0
-        else:
-            event = {}
-        if not isinstance(event, dict):
-            event = {"raw_payload": event}
+        event = read_stdin_json()
+        ws_root = resolve_workspace_root(
+            event,
+            anchor_file=__file__,
+            fallback_cwd=True,
+            env_var="GRAVITY_WORKFLOW_WORKSPACE",
+        )
+        if ws_root is None:
+            ws_root = Path.cwd()
 
-        ws_root = resolve_workspace_root(event, __file__)
         preset = get_active_preset(ws_root)
         entry = {
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),

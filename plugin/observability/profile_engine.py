@@ -9,9 +9,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 OBS_DIR = Path(__file__).resolve().parent
-if str(OBS_DIR) not in sys.path:
-    sys.path.insert(0, str(OBS_DIR))
+PLUGIN_ROOT = OBS_DIR.parent
+for _p in (str(PLUGIN_ROOT), str(OBS_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
+from _shared.hook_runtime import configure_utf8_stdio  # noqa: E402
 from caveman_protocol import (  # noqa: E402
     DEFAULT_CAVEMAN,
     VALID_CAVEMAN_LEVELS,
@@ -19,89 +22,60 @@ from caveman_protocol import (  # noqa: E402
     effective_planner_caveman,
     normalize_caveman,
 )
-from metrics_signals import collect_metrics_signals  # noqa: E402
+from evo_engine import (  # noqa: E402
+    EVAL_REPORT_REL_PATH,
+    LIVE_STATE_REL_PATH,
+    NORMAL_TERMINATION_REASONS,
+    _has_behavioral_friction,
+    _read_recent_live_events,
+    _read_recent_pipeline_failures,
+    collect_signals,
+    compute_metrics_delta,
+    compute_score,
+    evolve_on_stop,
+)
 from state_writer import (  # noqa: E402
     _atomic_write_json,
     exclusive_file_lock,
-    resolve_eval_dir,
     resolve_profile_storage_path,
-    resolve_runs_log_path,
-    resolve_state_path,
     update_live_state,
 )
 
 PROFILE_REL_PATH = Path(".agents/gravity-workflow/profile.json")
 PROGRESS_REL_PATH = Path(".agents/gravity-workflow/PROGRESS.md")
-LIVE_STATE_REL_PATH = Path(".agents/gravity-workflow/observability/live_state.json")
-EVAL_REPORT_REL_PATH = Path(".agents/gravity-workflow/evals/report.json")
 
 LEVELS: Tuple[str, ...] = ("quick", "standard", "deep")
 VALID_MODES: Tuple[str, ...] = ("evo", "quick", "standard", "deep")
 VALID_SUGGESTED_PROFILES: Tuple[str, ...] = ("standard", "deep")
-LEVEL_ALIASES: Dict[str, str] = {
-    "low": "quick",
-    "medium": "standard",
-    "high": "deep",
-    "ultra": "deep",
-}
-MODE_ALIASES: Dict[str, str] = {
-    "evolutive": "evo",
-    **LEVEL_ALIASES,
-}
+LEVEL_ALIASES: Dict[str, str] = {"low": "quick", "medium": "standard", "high": "deep", "ultra": "deep"}
+MODE_ALIASES: Dict[str, str] = {"evolutive": "evo", **LEVEL_ALIASES}
 DEPRECATED_PACES = {"slow", "fast"}
 VALID_VERIFICATIONS: Tuple[str, ...] = ("safe", "unsafe")
 
 DEFAULT_MODE = "evo"
 DEFAULT_LEVEL = "standard"
+VALID_EXECUTION_ENGINES: Tuple[str, ...] = ("swarm", "run_workflow")
+DEFAULT_EXECUTION_ENGINE = "swarm"
 MAX_HISTORY = 20
 
 VALID_MODEL_TIERS = {"inherit", "flash_lite", "flash", "pro"}
-MODEL_OVERRIDE_KEYS: Tuple[str, ...] = (
-    "plan_model",
-    "build_model",
-    "review_model",
-    "eval_candidate",
-    "eval_judge",
-)
-NORMAL_TERMINATION_REASONS = {
-    "NO_TOOL_CALL",
-    "STOP",
-    "END_TURN",
-    "COMPLETED",
-    "TERMINAL_CUSTOM_HOOK",
-    "INJECTED_RESPONSE",
-    "TERMINAL_STEP_TYPE",
-    "USER_CANCELED",
-    "",
-}
+MODEL_OVERRIDE_KEYS: Tuple[str, ...] = ("plan_model", "build_model", "review_model", "eval_candidate", "eval_judge")
 
 LEVEL_PRESETS: Dict[str, Dict[str, Any]] = {
     "quick": {
-        "plan_model": "flash",
-        "build_model": "flash",
-        "review_model": "flash",
-        "eval_candidate": "flash",
-        "eval_judge": "flash",
-        "max_remediation_rounds": 0,
-        "skip_separate_planner": True,
+        "plan_model": "flash", "build_model": "flash", "review_model": "flash",
+        "eval_candidate": "flash", "eval_judge": "flash",
+        "max_remediation_rounds": 0, "skip_separate_planner": True,
     },
     "standard": {
-        "plan_model": "flash",
-        "build_model": "flash",
-        "review_model": "pro",
-        "eval_candidate": "flash",
-        "eval_judge": "pro",
-        "max_remediation_rounds": 1,
-        "skip_separate_planner": False,
+        "plan_model": "flash", "build_model": "flash", "review_model": "pro",
+        "eval_candidate": "flash", "eval_judge": "pro",
+        "max_remediation_rounds": 1, "skip_separate_planner": False,
     },
     "deep": {
-        "plan_model": "pro",
-        "build_model": "flash",
-        "review_model": "pro",
-        "eval_candidate": "flash",
-        "eval_judge": "pro",
-        "max_remediation_rounds": 2,
-        "skip_separate_planner": False,
+        "plan_model": "pro", "build_model": "flash", "review_model": "pro",
+        "eval_candidate": "flash", "eval_judge": "pro",
+        "max_remediation_rounds": 2, "skip_separate_planner": False,
     },
 }
 
@@ -109,29 +83,16 @@ LEVEL_PRESETS: Dict[str, Dict[str, Any]] = {
 def default_profile() -> Dict[str, Any]:
     """Retourne un profil Gravity initialisé par défaut (`mode=evo`, `current_level=standard`, `caveman=lite`)."""
     return {
-        "schema_version": 2,
-        "mode": DEFAULT_MODE,
-        "current_level": DEFAULT_LEVEL,
-        "locked": False,
-        "caveman": DEFAULT_CAVEMAN,
-        "caveman_locked": False,
-        "suggested_profile": DEFAULT_LEVEL,
-        "allow_pro": True,
-        "model_overrides": {},
-        "sessions_analyzed": 0,
-        "clean_streak": 0,
-        "last_score": 50,
+        "schema_version": 2, "mode": DEFAULT_MODE, "current_level": DEFAULT_LEVEL, "locked": False,
+        "caveman": DEFAULT_CAVEMAN, "caveman_locked": False, "execution_engine": DEFAULT_EXECUTION_ENGINE,
+        "suggested_profile": DEFAULT_LEVEL, "allow_pro": True, "model_overrides": {},
+        "sessions_analyzed": 0, "clean_streak": 0, "last_score": 50,
         "last_reason": "Initialisation par défaut (mode evo consultatif, profil standard).",
-        "last_evaluated_conversation_id": None,
-        "last_evaluated_execution_num": None,
-        "last_updated": None,
+        "last_evaluated_conversation_id": None, "last_evaluated_execution_num": None, "last_updated": None,
         "signals": {
-            "reviewer_rejections_recent": 0,
-            "tool_or_test_errors_recent": 0,
-            "guard_deny_recent": 0,
-            "guard_ask_recent": 0,
-            "eval_pass_rate": None,
-            "session_error": False,
+            "reviewer_rejections_recent": 0, "tool_or_test_errors_recent": 0,
+            "guard_deny_recent": 0, "guard_ask_recent": 0,
+            "eval_pass_rate": None, "session_error": False,
             "metrics": {"available": False, "sample_count": 0},
         },
         "history": [],
@@ -140,23 +101,17 @@ def default_profile() -> Dict[str, Any]:
 
 def normalize_level(raw: str) -> str:
     """Valide et normalise un profil (`quick`, `standard`, `deep` ou alias `low`/`medium`/`high`/`ultra`)."""
-    cleaned = str(raw or "").strip().lower()
-    cleaned = LEVEL_ALIASES.get(cleaned, cleaned)
+    cleaned = LEVEL_ALIASES.get(str(raw or "").strip().lower(), str(raw or "").strip().lower())
     if cleaned not in LEVELS:
-        raise ValueError(
-            f"Profil Gravity invalide {raw!r} (attendu : {', '.join(LEVELS)})."
-        )
+        raise ValueError(f"Profil Gravity invalide {raw!r} (attendu : {', '.join(LEVELS)}).")
     return cleaned
 
 
 def normalize_mode(raw: str) -> str:
     """Valide et normalise un mode (`evo`, `evolutive`, `quick`, `standard`, `deep` + alias `low`/`medium`/`high`/`ultra`)."""
-    cleaned = str(raw or "").strip().lower()
-    cleaned = MODE_ALIASES.get(cleaned, cleaned)
+    cleaned = MODE_ALIASES.get(str(raw or "").strip().lower(), str(raw or "").strip().lower())
     if cleaned not in VALID_MODES:
-        raise ValueError(
-            f"Mode Gravity invalide {raw!r} (attendu : {', '.join(VALID_MODES)} ou 'evolutive')."
-        )
+        raise ValueError(f"Mode Gravity invalide {raw!r} (attendu : {', '.join(VALID_MODES)} ou 'evolutive').")
     return cleaned
 
 
@@ -180,6 +135,16 @@ def normalize_verification(raw: str) -> str:
     return cleaned
 
 
+def normalize_execution_engine(raw: str) -> str:
+    """Valide et normalise un moteur d'exécution (`swarm` ou `run_workflow`)."""
+    cleaned = str(raw or "").strip().lower()
+    if cleaned not in VALID_EXECUTION_ENGINES:
+        raise ValueError(
+            f"Moteur d'exécution Gravity invalide {raw!r} (attendu : {', '.join(VALID_EXECUTION_ENGINES)})."
+        )
+    return cleaned
+
+
 def resolve_profile_path(workspace_root: Optional[Path] = None) -> Path:
     """Retourne le chemin centralisé vers `profile.json` pour le workspace cible."""
     return resolve_profile_storage_path(workspace_root)
@@ -192,66 +157,55 @@ def _sanitize_profile(raw: Any) -> Dict[str, Any]:
 
     merged = dict(profile)
     for key in (
-        "schema_version",
-        "allow_pro",
-        "sessions_analyzed",
-        "clean_streak",
-        "last_score",
-        "last_reason",
-        "last_evaluated_conversation_id",
-        "last_evaluated_execution_num",
-        "last_updated",
+        "schema_version", "allow_pro", "sessions_analyzed", "clean_streak",
+        "last_score", "last_reason", "last_evaluated_conversation_id",
+        "last_evaluated_execution_num", "last_updated",
     ):
         if key in raw:
             merged[key] = raw[key]
+
+    raw_ws = raw.get("workspace")
+    if isinstance(raw_ws, str) and raw_ws.strip():
+        merged["workspace"] = raw_ws.strip()
 
     try:
         mode = normalize_mode(str(raw.get("mode", DEFAULT_MODE)))
     except ValueError:
         mode = DEFAULT_MODE
 
-    raw_level = str(raw.get("current_level", DEFAULT_LEVEL)).strip().lower()
     try:
-        current_level = normalize_level(raw_level)
+        current_level = normalize_level(str(raw.get("current_level", DEFAULT_LEVEL)).strip().lower())
     except ValueError:
         current_level = DEFAULT_LEVEL
 
-    if mode != "evo":
-        current_level = mode
-        locked = True
-    else:
-        locked = False
+    current_level, locked = (mode, True) if mode != "evo" else (current_level, False)
 
-    raw_suggested = str(
-        raw.get("suggested_profile", raw.get("suggested_level", DEFAULT_LEVEL))
-    ).strip().lower()
+    raw_suggested = str(raw.get("suggested_profile", raw.get("suggested_level", DEFAULT_LEVEL))).strip().lower()
     mapped_suggested = LEVEL_ALIASES.get(raw_suggested, raw_suggested)
-    suggested_profile = (
-        mapped_suggested if mapped_suggested in VALID_SUGGESTED_PROFILES else DEFAULT_LEVEL
-    )
+    suggested_profile = mapped_suggested if mapped_suggested in VALID_SUGGESTED_PROFILES else DEFAULT_LEVEL
 
     raw_caveman = str(raw.get("caveman", DEFAULT_CAVEMAN)).strip().lower()
     caveman = raw_caveman if raw_caveman in VALID_CAVEMAN_LEVELS else DEFAULT_CAVEMAN
-    caveman_locked = bool(raw.get("caveman_locked", False))
 
-    merged["schema_version"] = 2
-    merged["mode"] = mode
-    merged["current_level"] = current_level
-    merged["locked"] = locked
-    merged["caveman"] = caveman
-    merged["caveman_locked"] = caveman_locked
-    merged["suggested_profile"] = suggested_profile
-    merged["allow_pro"] = bool(merged.get("allow_pro", True))
+    raw_engine = raw.get("execution_engine", DEFAULT_EXECUTION_ENGINE)
+    try:
+        execution_engine = normalize_execution_engine("" if raw_engine is None else str(raw_engine))
+    except ValueError:
+        execution_engine = DEFAULT_EXECUTION_ENGINE
+
+    merged.update({
+        "schema_version": 2, "mode": mode, "current_level": current_level, "locked": locked,
+        "caveman": caveman, "caveman_locked": bool(raw.get("caveman_locked", False)),
+        "execution_engine": execution_engine, "suggested_profile": suggested_profile,
+        "allow_pro": bool(merged.get("allow_pro", True)),
+    })
 
     overrides = raw.get("model_overrides")
-    if isinstance(overrides, dict):
-        merged["model_overrides"] = {
-            k: v
-            for k, v in overrides.items()
-            if k in MODEL_OVERRIDE_KEYS and isinstance(v, str) and v in VALID_MODEL_TIERS
-        }
-    else:
-        merged["model_overrides"] = {}
+    merged["model_overrides"] = (
+        {k: v for k, v in overrides.items() if k in MODEL_OVERRIDE_KEYS and isinstance(v, str) and v in VALID_MODEL_TIERS}
+        if isinstance(overrides, dict)
+        else {}
+    )
 
     if isinstance(raw.get("signals"), dict):
         sig = dict(profile["signals"])
@@ -267,14 +221,11 @@ def _sanitize_profile(raw: Any) -> Dict[str, Any]:
     if isinstance(raw.get("history"), list):
         merged["history"] = [h for h in raw["history"] if isinstance(h, dict)][-MAX_HISTORY:]
 
-    try:
-        merged["sessions_analyzed"] = max(0, int(merged.get("sessions_analyzed") or 0))
-    except (TypeError, ValueError):
-        merged["sessions_analyzed"] = 0
-    try:
-        merged["clean_streak"] = max(0, int(merged.get("clean_streak") or 0))
-    except (TypeError, ValueError):
-        merged["clean_streak"] = 0
+    for int_key in ("sessions_analyzed", "clean_streak"):
+        try:
+            merged[int_key] = max(0, int(merged.get(int_key) or 0))
+        except (TypeError, ValueError):
+            merged[int_key] = 0
     try:
         merged["last_score"] = max(0, min(100, int(merged.get("last_score") or 50)))
     except (TypeError, ValueError):
@@ -286,7 +237,6 @@ def _sanitize_profile(raw: Any) -> Dict[str, Any]:
             merged["last_evaluated_execution_num"] = int(raw_exec)
         except (TypeError, ValueError):
             merged["last_evaluated_execution_num"] = None
-
     return merged
 
 
@@ -295,38 +245,29 @@ def load_profile(workspace_root: Optional[Path] = None) -> Dict[str, Any]:
     profile_path = resolve_profile_path(workspace_root)
     if profile_path.is_file():
         try:
-            loaded = json.loads(profile_path.read_text(encoding="utf-8"))
-            return _sanitize_profile(loaded)
+            return _sanitize_profile(json.loads(profile_path.read_text(encoding="utf-8")))
         except Exception:
             return default_profile()
-
     ws_root = Path(workspace_root).resolve() if workspace_root is not None else Path.cwd().resolve()
     legacy_ws_profile = ws_root / PROFILE_REL_PATH
     if legacy_ws_profile.is_file():
         try:
-            loaded = json.loads(legacy_ws_profile.read_text(encoding="utf-8"))
-            return _sanitize_profile(loaded)
+            return _sanitize_profile(json.loads(legacy_ws_profile.read_text(encoding="utf-8")))
         except Exception:
             return default_profile()
-
     return default_profile()
 
 
 def get_active_preset(
-    workspace_root: Optional[Path] = None,
-    *,
-    level_override: Optional[str] = None,
-    pace_override: Optional[str] = None,
-    verification_override: Optional[str] = None,
-    no_verify: bool = False,
-    caveman_override: Optional[str] = None,
-    plan_model_override: Optional[str] = None,
-    build_model_override: Optional[str] = None,
+    workspace_root: Optional[Path] = None, *,
+    level_override: Optional[str] = None, pace_override: Optional[str] = None,
+    verification_override: Optional[str] = None, no_verify: bool = False,
+    caveman_override: Optional[str] = None, execution_engine_override: Optional[str] = None,
+    plan_model_override: Optional[str] = None, build_model_override: Optional[str] = None,
     review_model_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Résout le preset actif sans clé morte (`quick`/`standard`/`deep`, surcharges A/B, `skip_verification` éphémère)."""
     profile = load_profile(workspace_root)
-
     if pace_override is not None and str(pace_override).strip():
         _ = str(pace_override).strip().lower()  # Toléré comme alias historique sans effet
 
@@ -338,42 +279,39 @@ def get_active_preset(
             pass
 
     preset: Dict[str, Any] = dict(LEVEL_PRESETS[level])
-
     overrides = profile.get("model_overrides") or {}
     for key in MODEL_OVERRIDE_KEYS:
         val = overrides.get(key)
         if isinstance(val, str) and val in VALID_MODEL_TIERS:
             preset[key] = val
-
-    for key, arg_val in (
-        ("plan_model", plan_model_override),
-        ("build_model", build_model_override),
-        ("review_model", review_model_override),
-    ):
+    for key, arg_val in (("plan_model", plan_model_override), ("build_model", build_model_override), ("review_model", review_model_override)):
         if isinstance(arg_val, str) and arg_val.strip() in VALID_MODEL_TIERS:
             preset[key] = arg_val.strip()
-
     if not profile.get("allow_pro", True):
         for key in MODEL_OVERRIDE_KEYS:
             if preset.get(key) == "pro":
                 preset[key] = "flash"
 
-    chosen_verif = str(verification_override or "").strip().lower()
-    skip_verification = bool(no_verify) or (chosen_verif == "unsafe")
+    skip_verification = bool(no_verify) or (str(verification_override or "").strip().lower() == "unsafe")
     preset["skip_verification"] = skip_verification
     if skip_verification:
         preset["max_remediation_rounds"] = 0
 
     chosen_caveman = str(caveman_override or "").strip().lower()
-    caveman = (
-        chosen_caveman
-        if chosen_caveman in VALID_CAVEMAN_LEVELS
-        else profile.get("caveman", DEFAULT_CAVEMAN)
-    )
+    caveman = chosen_caveman if chosen_caveman in VALID_CAVEMAN_LEVELS else profile.get("caveman", DEFAULT_CAVEMAN)
     preset["caveman"] = caveman
     preset["caveman_planner"] = effective_planner_caveman(caveman)
     preset["caveman_evals"] = "off"
 
+    execution_engine = profile.get("execution_engine", DEFAULT_EXECUTION_ENGINE)
+    if execution_engine not in VALID_EXECUTION_ENGINES:
+        execution_engine = DEFAULT_EXECUTION_ENGINE
+    if execution_engine_override is not None and str(execution_engine_override).strip():
+        try:
+            execution_engine = normalize_execution_engine(str(execution_engine_override))
+        except ValueError:
+            pass
+    preset["execution_engine"] = execution_engine
     preset["mode"] = profile["mode"]
     preset["level"] = level
     preset["locked"] = bool(profile["locked"])
@@ -383,10 +321,7 @@ def get_active_preset(
 
 
 def role_models_from_preset(
-    preset: Dict[str, Any],
-    *,
-    skip_planner: Optional[bool] = None,
-    skip_review: Optional[bool] = None,
+    preset: Dict[str, Any], *, skip_planner: Optional[bool] = None, skip_review: Optional[bool] = None,
 ) -> Dict[str, str]:
     """Construit la carte `role_models` effective pour `live_state.json` et `runs.jsonl` (essais A/B)."""
     plan_skipped = bool(preset.get("skip_separate_planner")) if skip_planner is None else skip_planner
@@ -402,9 +337,7 @@ def format_mode_badge(profile: Dict[str, Any]) -> str:
     """Formate le badge compact du profil actif (`evo:standard` ou `deep[lock]`)."""
     mode = str(profile.get("mode", DEFAULT_MODE))
     level = str(profile.get("current_level", DEFAULT_LEVEL))
-    if mode == "evo":
-        return f"evo:{level}"
-    return f"{level}[lock]"
+    return f"evo:{level}" if mode == "evo" else f"{level}[lock]"
 
 
 def format_caveman_badge(profile: Dict[str, Any]) -> str:
@@ -412,499 +345,7 @@ def format_caveman_badge(profile: Dict[str, Any]) -> str:
     caveman = str(profile.get("caveman", DEFAULT_CAVEMAN)).strip().lower()
     if caveman not in VALID_CAVEMAN_LEVELS:
         caveman = DEFAULT_CAVEMAN
-    if bool(profile.get("caveman_locked", False)):
-        return f"caveman:{caveman}[lock]"
-    return f"caveman:{caveman}"
-
-
-def _sync_live_state_safe(
-    workspace_root: Path,
-    profile: Dict[str, Any],
-    *,
-    event: Optional[Dict[str, Any]] = None,
-) -> None:
-    try:
-        preset = get_active_preset(workspace_root)
-        update_live_state(
-            mode=profile["mode"],
-            level=profile["current_level"],
-            preset_profile=profile["current_level"],
-            suggested_profile=profile.get("suggested_profile", DEFAULT_LEVEL),
-            suggested_reason=profile.get("last_reason", ""),
-            role_models=role_models_from_preset(preset),
-            caveman=profile.get("caveman", DEFAULT_CAVEMAN),
-            caveman_locked=bool(profile.get("caveman_locked", False)),
-            event=event,
-            workspace_root=workspace_root,
-        )
-    except Exception:
-        pass
-
-
-def _apply_model_override(
-    overrides: Dict[str, str],
-    key: str,
-    raw_value: Optional[str],
-) -> Tuple[bool, Optional[str]]:
-    if raw_value is None:
-        return False, None
-    cleaned = str(raw_value).strip().lower()
-    if cleaned in ("", "default", "reset", "none", "clear"):
-        removed = key in overrides
-        overrides.pop(key, None)
-        return removed, f"{key} réinitialisé" if removed else None
-    if cleaned not in VALID_MODEL_TIERS:
-        raise ValueError(
-            f"Modèle invalide pour {key} : {raw_value!r} (attendu : {', '.join(sorted(VALID_MODEL_TIERS))} ou 'reset')."
-        )
-    changed = overrides.get(key) != cleaned
-    overrides[key] = cleaned
-    return changed, f"{key}={cleaned}"
-
-
-def update_profile_settings(
-    workspace_root: Path,
-    *,
-    raw_mode: Optional[str] = None,
-    raw_pace: Optional[str] = None,
-    raw_verification: Optional[str] = None,
-    raw_caveman: Optional[str] = None,
-    plan_model: Optional[str] = None,
-    build_model: Optional[str] = None,
-    review_model: Optional[str] = None,
-    model_overrides: Optional[Dict[str, Optional[str]]] = None,
-    reason: Optional[str] = None,
-    allow_pro: Optional[bool] = None,
-    sync_live: bool = True,
-) -> Dict[str, Any]:
-    """Met à jour atomiquement le profil centralisé (`mode`, `caveman`, `allow_pro`, `model_overrides`)."""
-    ws_root = Path(workspace_root).resolve()
-    target_mode = normalize_mode(raw_mode) if raw_mode is not None else None
-    deprecated_pace: Optional[str] = None
-    if raw_pace is not None:
-        deprecated_pace = normalize_pace(raw_pace)
-
-    if raw_verification is not None:
-        verif_norm = normalize_verification(raw_verification)
-        if verif_norm == "unsafe":
-            raise ValueError(
-                "Le mode 'unsafe' / '--no-verify' est strictement éphémère (1 tâche ou 1 invocation run_workflow) et n'est jamais persisté dans profile.json."
-            )
-
-    target_caveman = normalize_caveman(raw_caveman) if raw_caveman is not None else None
-    has_model_update = (
-        plan_model is not None
-        or build_model is not None
-        or review_model is not None
-        or bool(model_overrides)
-    )
-    if (
-        target_mode is None
-        and deprecated_pace is None
-        and raw_verification is None
-        and target_caveman is None
-        and allow_pro is None
-        and not has_model_update
-    ):
-        raise ValueError(
-            "Au moins un paramètre (`mode`, `caveman`, `allow_pro` ou surcharge modèle) est requis."
-        )
-
-    profile_path = resolve_profile_path(ws_root)
-    lock_path = profile_path.with_suffix(".lock")
-    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-    with exclusive_file_lock(lock_path):
-        profile = load_profile(ws_root)
-        prev_mode = profile["mode"]
-        prev_level = profile["current_level"]
-        prev_caveman = profile["caveman"]
-        prev_caveman_locked = profile["caveman_locked"]
-        prev_overrides = dict(profile.get("model_overrides") or {})
-
-        if allow_pro is not None:
-            profile["allow_pro"] = bool(allow_pro)
-
-        if target_mode is not None:
-            if target_mode == "evo":
-                profile["mode"] = "evo"
-                profile["locked"] = False
-                if profile["current_level"] not in LEVELS:
-                    profile["current_level"] = DEFAULT_LEVEL
-            else:
-                profile["mode"] = target_mode
-                profile["current_level"] = target_mode
-                profile["locked"] = True
-
-        if target_caveman is not None:
-            if target_caveman == "auto":
-                profile["caveman_locked"] = False
-                next_cav, _ = choose_evo_caveman(
-                    profile["current_level"],
-                    profile.get("signals") or {},
-                    int(profile.get("clean_streak") or 0),
-                )
-                profile["caveman"] = next_cav
-            else:
-                profile["caveman"] = target_caveman
-                profile["caveman_locked"] = True
-
-        override_notes: List[str] = []
-        new_overrides = dict(prev_overrides)
-        for key, val in (
-            ("plan_model", plan_model),
-            ("build_model", build_model),
-            ("review_model", review_model),
-        ):
-            _, note = _apply_model_override(new_overrides, key, val)
-            if note:
-                override_notes.append(note)
-
-        if isinstance(model_overrides, dict):
-            for key, val in model_overrides.items():
-                if key not in MODEL_OVERRIDE_KEYS:
-                    raise ValueError(f"Clé model_overrides inconnue : {key!r}")
-                _, note = _apply_model_override(new_overrides, key, val)
-                if note:
-                    override_notes.append(note)
-
-        profile["model_overrides"] = new_overrides
-
-        if reason:
-            final_reason = reason
-        else:
-            fragments: List[str] = []
-            if target_mode is not None:
-                if target_mode == "evo":
-                    fragments.append(f"mode évolutif consultatif (actif : {profile['current_level']})")
-                else:
-                    fragments.append(f"verrouillé en {target_mode}")
-            if target_caveman is not None:
-                if target_caveman == "auto":
-                    fragments.append(f"caveman auto ({profile['caveman']})")
-                else:
-                    fragments.append(f"caveman verrouillé en {target_caveman}")
-            if override_notes:
-                fragments.append("modèles A/B : " + ", ".join(override_notes))
-            if deprecated_pace is not None:
-                fragments.append(f"alias historique '{deprecated_pace}' ignoré")
-            if raw_verification is not None:
-                fragments.append("vérifications actives (safe)")
-            if fragments:
-                joined = " · ".join(fragments)
-                final_reason = joined[0].upper() + joined[1:] + "."
-            else:
-                final_reason = f"Option allow_pro mise à jour ({profile['allow_pro']})."
-
-        profile["last_reason"] = final_reason
-        profile["last_updated"] = now_iso
-
-        changed = (
-            prev_mode != profile["mode"]
-            or prev_level != profile["current_level"]
-            or prev_caveman != profile["caveman"]
-            or prev_caveman_locked != profile["caveman_locked"]
-            or prev_overrides != profile["model_overrides"]
-            or not profile_path.is_file()
-        )
-        if changed:
-            history = list(profile.get("history") or [])
-            history.append(
-                {
-                    "timestamp": now_iso,
-                    "event": "manual_set",
-                    "from_mode": prev_mode,
-                    "to_mode": profile["mode"],
-                    "from_level": prev_level,
-                    "to_level": profile["current_level"],
-                    "from_caveman": prev_caveman,
-                    "to_caveman": profile["caveman"],
-                    "caveman_locked": profile["caveman_locked"],
-                    "model_overrides": dict(profile["model_overrides"]),
-                    "score": profile.get("last_score", 50),
-                    "reason": final_reason,
-                }
-            )
-            profile["history"] = history[-MAX_HISTORY:]
-
-        _atomic_write_json(profile_path, profile)
-
-    if sync_live:
-        _sync_live_state_safe(
-            ws_root,
-            profile,
-            event={
-                "type": "PROFILE",
-                "decision": "allow",
-                "message": final_reason,
-            },
-        )
-    return profile
-
-
-def set_mode(
-    workspace_root: Path,
-    raw_mode: str,
-    *,
-    raw_pace: Optional[str] = None,
-    raw_verification: Optional[str] = None,
-    reason: Optional[str] = None,
-    allow_pro: Optional[bool] = None,
-    sync_live: bool = True,
-) -> Dict[str, Any]:
-    """Met à jour et persiste le mode Gravity (`quick`/`standard`/`deep` verrouille, `evo` déverrouille)."""
-    return update_profile_settings(
-        workspace_root,
-        raw_mode=raw_mode,
-        raw_pace=raw_pace,
-        raw_verification=raw_verification,
-        reason=reason,
-        allow_pro=allow_pro,
-        sync_live=sync_live,
-    )
-
-
-def set_caveman(
-    workspace_root: Path,
-    raw_caveman: str,
-    *,
-    reason: Optional[str] = None,
-    sync_live: bool = True,
-) -> Dict[str, Any]:
-    """Met à jour et persiste le réglage Caveman (`off`/`lite`/`full`/`ultra` verrouille, `auto`/`evo` déverrouille)."""
-    return update_profile_settings(
-        workspace_root,
-        raw_caveman=raw_caveman,
-        reason=reason,
-        sync_live=sync_live,
-    )
-
-
-def _read_recent_live_events(ws_root: Path, since_iso: Optional[str]) -> Tuple[int, int, int, int]:
-    """Retourne `(reviewer_rejections, tool_or_test_errors, guard_deny, guard_ask)` depuis `live_state.json`."""
-    reviewer_rejections = 0
-    tool_or_test_errors = 0
-    guard_deny = 0
-    guard_ask = 0
-
-    central_live = resolve_state_path(workspace_root=ws_root)
-    fallback_live = ws_root / LIVE_STATE_REL_PATH
-    live_path = central_live if central_live.is_file() else fallback_live
-    if not live_path.is_file():
-        return 0, 0, 0, 0
-
-    try:
-        live_data = json.loads(live_path.read_text(encoding="utf-8"))
-        events = live_data.get("events", []) if isinstance(live_data, dict) else []
-        if isinstance(events, list):
-            for ev in events[-25:]:
-                if not isinstance(ev, dict):
-                    continue
-                ev_ts_iso = ev.get("ts_iso")
-                if since_iso and isinstance(ev_ts_iso, str) and ev_ts_iso <= since_iso:
-                    continue
-                ev_type = str(ev.get("type") or "").upper()
-                dec = str(ev.get("decision") or "").lower()
-                msg = str(ev.get("message") or "").upper()
-                if ev_type in ("REVIEWER", "REMEDIATION"):
-                    if dec in ("deny", "force_ask") or "FAIL" in msg or "ESCALADE" in msg:
-                        reviewer_rejections += 1
-                elif ev_type == "EVALS":
-                    if dec == "deny":
-                        tool_or_test_errors += 1
-                else:
-                    if dec == "deny":
-                        guard_deny += 1
-                    elif dec in ("ask", "force_ask"):
-                        guard_ask += 1
-    except Exception:
-        pass
-    return reviewer_rejections, tool_or_test_errors, guard_deny, guard_ask
-
-
-def _read_recent_pipeline_failures(ws_root: Path, since_iso: Optional[str]) -> int:
-    runs_path = resolve_runs_log_path(ws_root)
-    if not runs_path.is_file():
-        return 0
-    failures = 0
-    try:
-        for line in runs_path.read_text(encoding="utf-8", errors="replace").splitlines()[-30:]:
-            if not line.strip():
-                continue
-            entry = json.loads(line)
-            if not isinstance(entry, dict):
-                continue
-            ts = entry.get("timestamp")
-            if since_iso and isinstance(ts, str) and ts <= since_iso:
-                continue
-            if entry.get("event") == "review_pipeline" and str(entry.get("verdict", "")).upper() == "FAIL":
-                failures += 1
-    except Exception:
-        pass
-    return failures
-
-
-def collect_signals(
-    workspace_root: Path,
-    stop_entry: Optional[Dict[str, Any]] = None,
-    *,
-    since_iso: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Collecte uniquement les signaux comportementaux `evo` (zéro comptage de fichiers `< 80`)."""
-    ws_root = Path(workspace_root).resolve()
-
-    rev_ev, eval_err_ev, guard_deny_recent, guard_ask_recent = _read_recent_live_events(
-        ws_root, since_iso
-    )
-    rev_runs = _read_recent_pipeline_failures(ws_root, since_iso)
-    reviewer_rejections_recent = rev_ev + rev_runs
-
-    eval_pass_rate: Optional[float] = None
-    central_report = resolve_eval_dir(ws_root) / "report.json"
-    fallback_report = ws_root / EVAL_REPORT_REL_PATH
-    report_path = central_report if central_report.is_file() else fallback_report
-    if report_path.is_file():
-        try:
-            report_data = json.loads(report_path.read_text(encoding="utf-8"))
-            if isinstance(report_data, dict):
-                total = int(report_data.get("total") or 0)
-                passed = int(report_data.get("passed") or 0)
-                if total > 0:
-                    eval_pass_rate = round(max(0.0, min(1.0, passed / float(total))), 4)
-        except Exception:
-            pass
-
-    session_error = False
-    extra_errors = 0
-    if isinstance(stop_entry, dict):
-        term_reason = str(stop_entry.get("termination_reason") or "").strip().upper()
-        if stop_entry.get("error") or term_reason not in NORMAL_TERMINATION_REASONS:
-            session_error = True
-        for key in ("tool_errors", "test_errors"):
-            raw_val = stop_entry.get(key)
-            if raw_val is not None:
-                try:
-                    extra_errors += max(0, int(raw_val))
-                except (TypeError, ValueError):
-                    pass
-
-    tool_or_test_errors_recent = eval_err_ev + extra_errors + (1 if session_error else 0)
-
-    try:
-        metrics_signals = collect_metrics_signals(ws_root)
-    except Exception:
-        metrics_signals = {"available": False, "sample_count": 0}
-
-    return {
-        "reviewer_rejections_recent": reviewer_rejections_recent,
-        "tool_or_test_errors_recent": tool_or_test_errors_recent,
-        "guard_deny_recent": guard_deny_recent,
-        "guard_ask_recent": guard_ask_recent,
-        "eval_pass_rate": eval_pass_rate,
-        "session_error": session_error,
-        "metrics": metrics_signals,
-    }
-
-
-def _has_behavioral_friction(signals: Dict[str, Any]) -> bool:
-    rev_rej = int(signals.get("reviewer_rejections_recent") or 0)
-    tool_errs = int(signals.get("tool_or_test_errors_recent") or 0)
-    session_err = bool(signals.get("session_error"))
-    deny_cnt = int(signals.get("guard_deny_recent") or 0)
-    eval_rate = signals.get("eval_pass_rate")
-    eval_failing = eval_rate is not None and float(eval_rate) < 1.0
-    return bool(rev_rej > 0 or tool_errs > 0 or session_err or deny_cnt > 0 or eval_failing)
-
-
-def compute_metrics_delta(
-    signals: Dict[str, Any],
-    *,
-    has_friction: Optional[bool] = None,
-) -> Tuple[int, List[str]]:
-    """Calcule l'ajustement consultatif `metrics` strictement borné dans `[-5, +10]`."""
-    sig = signals if isinstance(signals, dict) else {}
-    metrics = sig.get("metrics")
-    if not isinstance(metrics, dict) or not metrics.get("available"):
-        return 0, []
-
-    if has_friction is None:
-        has_friction = _has_behavioral_friction(sig)
-
-    try:
-        sample_count = int(metrics.get("sample_count") or 0)
-        avg_err = float(metrics.get("avg_error_rate_pct") or 0.0)
-        avg_cache = float(metrics.get("avg_cache_hit_rate_pct") or 0.0)
-        max_ctx = int(metrics.get("max_context_tokens") or 0)
-        dup_spawns = int(metrics.get("recent_duplicate_spawns") or 0)
-        rewinds = int(metrics.get("recent_rewind_calls") or 0)
-    except (TypeError, ValueError):
-        return 0, []
-
-    delta = 0
-    m_factors: List[str] = []
-    if avg_err >= 15.0 or rewinds >= 3:
-        delta += 5
-        m_factors.append("metrics: erreurs/rewinds")
-    if dup_spawns >= 2 or max_ctx >= 180_000:
-        delta += 5
-        m_factors.append("metrics: bloat/spawns")
-
-    if (
-        delta == 0
-        and not has_friction
-        and sample_count >= 3
-        and avg_err <= 3.0
-        and avg_cache >= 75.0
-        and dup_spawns == 0
-        and rewinds == 0
-    ):
-        delta = -5
-        m_factors.append("metrics: cache/stabilité")
-
-    return max(-5, min(10, delta)), m_factors
-
-
-def compute_score(signals: Dict[str, Any], clean_streak: int) -> Tuple[int, str, List[str]]:
-    """Évalue la recommandation consultative `evo` (`standard` | `deep`) à partir des signaux comportementaux et Metrics."""
-    score = 50
-    factors: List[str] = []
-
-    rev_rej = int(signals.get("reviewer_rejections_recent") or 0)
-    if rev_rej > 0:
-        score += min(40, 25 * rev_rej)
-        factors.append(f"{rev_rej} rejet(s) Reviewer")
-
-    tool_errs = int(signals.get("tool_or_test_errors_recent") or 0)
-    session_err = bool(signals.get("session_error"))
-    if tool_errs > 0 or session_err:
-        score += 20
-        factors.append("erreur outil/test ou session")
-
-    deny_cnt = int(signals.get("guard_deny_recent") or 0)
-    if deny_cnt > 0:
-        score += 20
-        factors.append(f"{deny_cnt} alerte(s) deny")
-
-    eval_rate = signals.get("eval_pass_rate")
-    eval_failing = eval_rate is not None and float(eval_rate) < 1.0
-    if eval_failing:
-        score += 15
-        factors.append(f"évals {int(round(float(eval_rate) * 100))}%")
-
-    has_friction = bool(rev_rej > 0 or tool_errs > 0 or session_err or deny_cnt > 0 or eval_failing)
-    metrics_delta, metrics_factors = compute_metrics_delta(signals, has_friction=has_friction)
-    score += metrics_delta
-    factors.extend(metrics_factors)
-
-    if not has_friction and clean_streak >= 2:
-        score -= 10
-        factors.append(f"stabilité {clean_streak} sessions")
-    elif not has_friction and not factors:
-        factors.append("signaux sains")
-
-    clamped = max(0, min(100, score))
-    suggested = "deep" if (has_friction or clamped >= 65) else "standard"
-    return clamped, suggested, factors
+    return f"caveman:{caveman}[lock]" if bool(profile.get("caveman_locked", False)) else f"caveman:{caveman}"
 
 
 def format_metrics_line(profile: Dict[str, Any]) -> str:
@@ -928,149 +369,193 @@ def format_metrics_line(profile: Dict[str, Any]) -> str:
 
 def format_status(profile: Dict[str, Any]) -> str:
     """Formate le bilan statut lisible (incluant la ligne Metrics si disponible)."""
+    engine = profile.get("execution_engine", DEFAULT_EXECUTION_ENGINE)
     base = (
         f"Mode: {format_mode_badge(profile)} | {format_caveman_badge(profile)} | "
-        f"Suggestion: {profile.get('suggested_profile', DEFAULT_LEVEL)} | {profile.get('last_reason', '')}"
+        f"Engine: {engine} | Suggestion: {profile.get('suggested_profile', DEFAULT_LEVEL)} | "
+        f"{profile.get('last_reason', '')}"
     )
     metrics_line = format_metrics_line(profile)
-    if metrics_line:
-        return f"{base}\n{metrics_line}"
-    return base
+    return f"{base}\n{metrics_line}" if metrics_line else base
 
 
-def evolve_on_stop(
-    workspace_root: Path,
-    stop_entry: Optional[Dict[str, Any]] = None,
-    *,
-    sync_live: bool = True,
+def _sync_live_state_safe(workspace_root: Path, profile: Dict[str, Any], *, event: Optional[Dict[str, Any]] = None) -> None:
+    try:
+        preset = get_active_preset(workspace_root)
+        update_live_state(
+            mode=profile["mode"], level=profile["current_level"], preset_profile=profile["current_level"],
+            suggested_profile=profile.get("suggested_profile", DEFAULT_LEVEL),
+            suggested_reason=profile.get("last_reason", ""), role_models=role_models_from_preset(preset),
+            caveman=profile.get("caveman", DEFAULT_CAVEMAN), caveman_locked=bool(profile.get("caveman_locked", False)),
+            event=event, workspace_root=workspace_root,
+        )
+    except Exception:
+        pass
+
+
+def _apply_model_override(overrides: Dict[str, str], key: str, raw_value: Optional[str]) -> Tuple[bool, Optional[str]]:
+    if raw_value is None:
+        return False, None
+    cleaned = str(raw_value).strip().lower()
+    if cleaned in ("", "default", "reset", "none", "clear"):
+        removed = key in overrides
+        overrides.pop(key, None)
+        return removed, f"{key} réinitialisé" if removed else None
+    if cleaned not in VALID_MODEL_TIERS:
+        raise ValueError(
+            f"Modèle invalide pour {key} : {raw_value!r} (attendu : {', '.join(sorted(VALID_MODEL_TIERS))} ou 'reset')."
+        )
+    changed = overrides.get(key) != cleaned
+    overrides[key] = cleaned
+    return changed, f"{key}={cleaned}"
+
+
+def _build_update_reason(
+    profile: Dict[str, Any], *, target_mode: Optional[str], target_caveman: Optional[str],
+    target_engine: Optional[str], override_notes: List[str],
+    deprecated_pace: Optional[str], raw_verification: Optional[str],
+) -> str:
+    fragments: List[str] = []
+    if target_mode is not None:
+        fragments.append(
+            f"mode évolutif consultatif (actif : {profile['current_level']})"
+            if target_mode == "evo" else f"verrouillé en {target_mode}"
+        )
+    if target_caveman is not None:
+        fragments.append(
+            f"caveman auto ({profile['caveman']})" if target_caveman == "auto" else f"caveman verrouillé en {target_caveman}"
+        )
+    if target_engine is not None:
+        fragments.append(f"moteur {target_engine}")
+    if override_notes:
+        fragments.append("modèles A/B : " + ", ".join(override_notes))
+    if deprecated_pace is not None:
+        fragments.append(f"alias historique '{deprecated_pace}' ignoré")
+    if raw_verification is not None:
+        fragments.append("vérifications actives (safe)")
+    if fragments:
+        joined = " · ".join(fragments)
+        return joined[0].upper() + joined[1:] + "."
+    return f"Option allow_pro mise à jour ({profile['allow_pro']})."
+
+
+def update_profile_settings(
+    workspace_root: Path, *,
+    raw_mode: Optional[str] = None, raw_pace: Optional[str] = None,
+    raw_verification: Optional[str] = None, raw_caveman: Optional[str] = None,
+    execution_engine: Optional[str] = None, plan_model: Optional[str] = None,
+    build_model: Optional[str] = None, review_model: Optional[str] = None,
+    model_overrides: Optional[Dict[str, Optional[str]]] = None,
+    reason: Optional[str] = None, allow_pro: Optional[bool] = None, sync_live: bool = True,
 ) -> Dict[str, Any]:
-    """Réévalue `evo` en mode consultatif (`suggested_profile`: `standard`|`deep`) sans muter le profil actif."""
+    """Met à jour atomiquement le profil centralisé (`mode`, `caveman`, `execution_engine`, `allow_pro`, `model_overrides`)."""
     ws_root = Path(workspace_root).resolve()
+    target_mode = normalize_mode(raw_mode) if raw_mode is not None else None
+    deprecated_pace = normalize_pace(raw_pace) if raw_pace is not None else None
+    if raw_verification is not None and normalize_verification(raw_verification) == "unsafe":
+        raise ValueError(
+            "Le mode 'unsafe' / '--no-verify' est strictement éphémère (1 tâche ou 1 invocation run_workflow) et n'est jamais persisté dans profile.json."
+        )
+    target_caveman = normalize_caveman(raw_caveman) if raw_caveman is not None else None
+    target_engine = normalize_execution_engine(execution_engine) if execution_engine is not None else None
+    has_model_update = plan_model is not None or build_model is not None or review_model is not None or bool(model_overrides)
+    if all(x is None for x in (target_mode, deprecated_pace, raw_verification, target_caveman, target_engine, allow_pro)) and not has_model_update:
+        raise ValueError(
+            "Au moins un paramètre (`mode`, `caveman`, `execution_engine`, `allow_pro` ou surcharge modèle) est requis."
+        )
+
     profile_path = resolve_profile_path(ws_root)
-
-    if isinstance(stop_entry, dict) and stop_entry.get("fully_idle") is False:
-        return load_profile(ws_root)
-
-    conv_id = None
-    exec_num: Optional[int] = None
-    if isinstance(stop_entry, dict):
-        raw_cid = stop_entry.get("conversation_id") or stop_entry.get("conversationId")
-        if isinstance(raw_cid, str) and raw_cid.strip():
-            conv_id = raw_cid.strip()
-        raw_exec = (
-            stop_entry.get("execution_num")
-            if stop_entry.get("execution_num") is not None
-            else stop_entry.get("executionNum")
-        )
-        if raw_exec is not None:
-            try:
-                exec_num = int(raw_exec)
-            except (TypeError, ValueError):
-                exec_num = None
-
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    lock_path = profile_path.with_suffix(".lock")
-    suggestion_changed = False
-    caveman_changed = False
-
-    with exclusive_file_lock(lock_path):
+    with exclusive_file_lock(profile_path.with_suffix(".lock")):
         profile = load_profile(ws_root)
-        same_conv_next_turn = False
-        if conv_id and profile.get("last_evaluated_conversation_id") == conv_id:
-            if exec_num is None or exec_num == profile.get("last_evaluated_execution_num"):
-                return profile
-            same_conv_next_turn = True
+        prev_mode, prev_level = profile["mode"], profile["current_level"]
+        prev_caveman, prev_caveman_locked = profile["caveman"], profile["caveman_locked"]
+        prev_engine = profile.get("execution_engine", DEFAULT_EXECUTION_ENGINE)
+        prev_overrides = dict(profile.get("model_overrides") or {})
 
-        since_iso = (
-            str(profile["last_updated"])
-            if isinstance(profile.get("last_updated"), str) and profile.get("last_updated")
-            else None
+        if allow_pro is not None:
+            profile["allow_pro"] = bool(allow_pro)
+        if target_engine is not None:
+            profile["execution_engine"] = target_engine
+        if target_mode is not None:
+            if target_mode == "evo":
+                profile["mode"], profile["locked"] = "evo", False
+                if profile["current_level"] not in LEVELS:
+                    profile["current_level"] = DEFAULT_LEVEL
+            else:
+                profile["mode"], profile["current_level"], profile["locked"] = target_mode, target_mode, True
+        if target_caveman is not None:
+            if target_caveman == "auto":
+                profile["caveman_locked"] = False
+                profile["caveman"], _ = choose_evo_caveman(
+                    profile["current_level"], profile.get("signals") or {}, int(profile.get("clean_streak") or 0)
+                )
+            else:
+                profile["caveman"], profile["caveman_locked"] = target_caveman, True
+
+        override_notes: List[str] = []
+        new_overrides = dict(prev_overrides)
+        for key, val in (("plan_model", plan_model), ("build_model", build_model), ("review_model", review_model)):
+            _, note = _apply_model_override(new_overrides, key, val)
+            if note:
+                override_notes.append(note)
+        if isinstance(model_overrides, dict):
+            for key, val in model_overrides.items():
+                if key not in MODEL_OVERRIDE_KEYS:
+                    raise ValueError(f"Clé model_overrides inconnue : {key!r}")
+                _, note = _apply_model_override(new_overrides, key, val)
+                if note:
+                    override_notes.append(note)
+
+        profile["model_overrides"] = new_overrides
+        final_reason = reason or _build_update_reason(
+            profile, target_mode=target_mode, target_caveman=target_caveman, target_engine=target_engine,
+            override_notes=override_notes, deprecated_pace=deprecated_pace, raw_verification=raw_verification,
         )
-        signals = collect_signals(ws_root, stop_entry, since_iso=since_iso)
-        eval_rate = signals.get("eval_pass_rate")
-        is_clean = (
-            not signals["session_error"]
-            and signals["reviewer_rejections_recent"] == 0
-            and signals["tool_or_test_errors_recent"] == 0
-            and signals["guard_deny_recent"] == 0
-            and (eval_rate is None or float(eval_rate) >= 1.0)
-        )
-        prev_streak = int(profile.get("clean_streak") or 0)
-        if same_conv_next_turn:
-            clean_streak = prev_streak if is_clean else 0
-        else:
-            profile["sessions_analyzed"] = int(profile.get("sessions_analyzed") or 0) + 1
-            clean_streak = (prev_streak + 1) if is_clean else 0
-
-        score, suggested_profile, factors = compute_score(signals, clean_streak)
-        factors_str = ", ".join(factors[:4]) if factors else "signaux sains"
-
-        prev_suggested = str(profile.get("suggested_profile") or DEFAULT_LEVEL)
-        prev_caveman = profile["caveman"]
-
-        profile["clean_streak"] = clean_streak
-        profile["last_score"] = score
-        profile["suggested_profile"] = suggested_profile
-        profile["signals"] = signals
+        profile["workspace"] = str(ws_root)
+        profile["last_reason"] = final_reason
         profile["last_updated"] = now_iso
-        if conv_id:
-            profile["last_evaluated_conversation_id"] = conv_id
-            profile["last_evaluated_execution_num"] = exec_num
 
-        if suggested_profile != prev_suggested:
-            suggestion_changed = True
-            reason_text = (
-                f"Suggestion evo : {prev_suggested} → {suggested_profile} ({factors_str})."
-            )
+        changed = (
+            prev_mode != profile["mode"] or prev_level != profile["current_level"]
+            or prev_caveman != profile["caveman"] or prev_caveman_locked != profile["caveman_locked"]
+            or prev_engine != profile.get("execution_engine", DEFAULT_EXECUTION_ENGINE)
+            or prev_overrides != profile["model_overrides"] or not profile_path.is_file()
+        )
+        if changed:
             history = list(profile.get("history") or [])
-            history.append(
-                {
-                    "timestamp": now_iso,
-                    "event": "evo_suggest",
-                    "conversation_id": conv_id,
-                    "from_suggested": prev_suggested,
-                    "to_suggested": suggested_profile,
-                    "score": score,
-                    "reason": reason_text,
-                }
-            )
+            history.append({
+                "timestamp": now_iso, "event": "manual_set", "from_mode": prev_mode, "to_mode": profile["mode"],
+                "from_level": prev_level, "to_level": profile["current_level"], "from_caveman": prev_caveman,
+                "to_caveman": profile["caveman"], "caveman_locked": profile["caveman_locked"],
+                "model_overrides": dict(profile["model_overrides"]), "score": profile.get("last_score", 50),
+                "reason": final_reason,
+            })
             profile["history"] = history[-MAX_HISTORY:]
-        else:
-            reason_text = f"Suggestion evo : {suggested_profile} ({factors_str})."
-
-        if profile["locked"]:
-            profile["last_reason"] = (
-                f"Profil verrouillé : {profile['current_level']} · {reason_text}"
-            )
-        else:
-            profile["last_reason"] = (
-                f"Profil actif : {profile['current_level']} · {reason_text}"
-            )
-
-        if not profile["caveman_locked"]:
-            next_caveman, caveman_reason = choose_evo_caveman(
-                profile["current_level"], signals, clean_streak
-            )
-            profile["caveman"] = next_caveman
-            if next_caveman != prev_caveman:
-                caveman_changed = True
-                profile["last_reason"] = f"{profile['last_reason'].rstrip('.')} · {caveman_reason}."
-
         _atomic_write_json(profile_path, profile)
 
     if sync_live:
-        ev = (
-            {
-                "type": "EVO",
-                "decision": "allow",
-                "message": profile["last_reason"],
-            }
-            if (suggestion_changed or caveman_changed)
-            else None
-        )
-        _sync_live_state_safe(ws_root, profile, event=ev)
-
+        _sync_live_state_safe(ws_root, profile, event={"type": "PROFILE", "decision": "allow", "message": final_reason})
     return profile
+
+
+def set_mode(
+    workspace_root: Path, raw_mode: str, *, raw_pace: Optional[str] = None,
+    raw_verification: Optional[str] = None, reason: Optional[str] = None,
+    allow_pro: Optional[bool] = None, sync_live: bool = True,
+) -> Dict[str, Any]:
+    """Met à jour et persiste le mode Gravity (`quick`/`standard`/`deep` verrouille, `evo` déverrouille)."""
+    return update_profile_settings(
+        workspace_root, raw_mode=raw_mode, raw_pace=raw_pace, raw_verification=raw_verification,
+        reason=reason, allow_pro=allow_pro, sync_live=sync_live,
+    )
+
+
+def set_caveman(
+    workspace_root: Path, raw_caveman: str, *, reason: Optional[str] = None, sync_live: bool = True,
+) -> Dict[str, Any]:
+    """Met à jour et persiste le réglage Caveman (`off`/`lite`/`full`/`ultra` verrouille, `auto`/`evo` déverrouille)."""
+    return update_profile_settings(workspace_root, raw_caveman=raw_caveman, reason=reason, sync_live=sync_live)
 
 
 def _parse_bool(raw: str) -> bool:
@@ -1083,17 +568,11 @@ def _parse_bool(raw: str) -> bool:
 
 
 def _configure_utf8_stdio() -> None:
-    for stream in (sys.stdin, sys.stdout, sys.stderr):
-        reconf = getattr(stream, "reconfigure", None)
-        if callable(reconf):
-            try:
-                reconf(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
+    configure_utf8_stdio()
 
 
 def main() -> int:
-    _configure_utf8_stdio()
+    configure_utf8_stdio()
     parser = argparse.ArgumentParser(description="Gestionnaire de profil et mode Gravity")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1101,19 +580,13 @@ def main() -> int:
     p_get.add_argument("--workspace", type=Path, default=Path("."))
     p_get.add_argument("--json", action="store_true")
 
-    p_set = sub.add_parser(
-        "set",
-        help="Définit le mode (`quick`/`standard`/`deep`/`evo`), `caveman` et/ou les surcharges modèles A/B.",
-    )
+    p_set = sub.add_parser("set", help="Définit le mode, `caveman`, `--engine` et/ou les surcharges modèles A/B.")
     p_set.add_argument("--workspace", type=Path, default=Path("."))
     p_set.add_argument("--mode", default=None)
     p_set.add_argument("--pace", default=None, help="Alias historique toléré (`slow`/`fast`, sans effet).")
     p_set.add_argument("--verify", "--verification", dest="verification", default=None)
-    p_set.add_argument(
-        "--caveman",
-        default=None,
-        help="Niveau Caveman : auto|evo|off|lite|full|ultra.",
-    )
+    p_set.add_argument("--caveman", default=None, help="Niveau Caveman : auto|evo|off|lite|full|ultra.")
+    p_set.add_argument("--engine", default=None, help="Moteur d'exécution par défaut : swarm|run_workflow.")
     p_set.add_argument("--plan-model", default=None, help="Surcharge A/B : inherit|flash_lite|flash|pro|reset.")
     p_set.add_argument("--build-model", default=None, help="Surcharge A/B : inherit|flash_lite|flash|pro|reset.")
     p_set.add_argument("--review-model", default=None, help="Surcharge A/B : inherit|flash_lite|flash|pro|reset.")
@@ -1131,90 +604,37 @@ def main() -> int:
 
     if args.command == "get":
         profile = load_profile(ws)
-        preset = get_active_preset(ws)
-        metrics_status = format_metrics_line(profile)
         payload = {
-            "profile": profile,
-            "preset": preset,
-            "badge": format_mode_badge(profile),
-            "caveman_badge": format_caveman_badge(profile),
-            "metrics_status": metrics_status,
-            "storage_path": str(resolve_profile_path(ws)),
+            "profile": profile, "preset": get_active_preset(ws),
+            "badge": format_mode_badge(profile), "caveman_badge": format_caveman_badge(profile),
+            "metrics_status": format_metrics_line(profile), "storage_path": str(resolve_profile_path(ws)),
         }
-        if args.json:
-            print(json.dumps(payload, indent=2, ensure_ascii=False))
-        else:
-            print(format_status(profile))
+        print(json.dumps(payload, indent=2, ensure_ascii=False) if args.json else format_status(profile))
         return 0
 
     if args.command == "set":
-        if (
-            args.mode is None
-            and args.pace is None
-            and args.verification is None
-            and args.caveman is None
-            and args.plan_model is None
-            and args.build_model is None
-            and args.review_model is None
-            and args.allow_pro is None
-        ):
-            print(
-                "[ERROR] Précisez au moins --mode, --caveman, --plan-model, --build-model, --review-model ou --allow-pro.",
-                file=sys.stderr,
-            )
+        set_attrs = ("mode", "pace", "verification", "caveman", "engine", "plan_model", "build_model", "review_model", "allow_pro")
+        if all(getattr(args, attr) is None for attr in set_attrs):
+            print("[ERROR] Précisez au moins --mode, --caveman, --engine, --plan-model, --build-model, --review-model ou --allow-pro.", file=sys.stderr)
             return 1
         try:
             profile = update_profile_settings(
-                ws,
-                raw_mode=args.mode,
-                raw_pace=args.pace,
-                raw_verification=args.verification,
-                raw_caveman=args.caveman,
-                plan_model=args.plan_model,
-                build_model=args.build_model,
-                review_model=args.review_model,
-                reason=args.reason,
-                allow_pro=args.allow_pro,
+                ws, raw_mode=args.mode, raw_pace=args.pace, raw_verification=args.verification,
+                raw_caveman=args.caveman, execution_engine=args.engine, plan_model=args.plan_model,
+                build_model=args.build_model, review_model=args.review_model, reason=args.reason, allow_pro=args.allow_pro,
             )
         except ValueError as exc:
             print(f"[ERROR] {exc}", file=sys.stderr)
             return 1
-        preset = get_active_preset(ws)
-        payload = {
-            "profile": profile,
-            "preset": preset,
-            "badge": format_mode_badge(profile),
-            "caveman_badge": format_caveman_badge(profile),
-        }
-        if args.json:
-            print(json.dumps(payload, indent=2, ensure_ascii=False))
-        else:
-            print(
-                f"{format_mode_badge(profile)} · {format_caveman_badge(profile)} — {profile['last_reason']}"
-            )
+        payload = {"profile": profile, "preset": get_active_preset(ws), "badge": format_mode_badge(profile), "caveman_badge": format_caveman_badge(profile)}
+        print(json.dumps(payload, indent=2, ensure_ascii=False) if args.json else f"{format_mode_badge(profile)} · {format_caveman_badge(profile)} — {profile['last_reason']}")
         return 0
 
     if args.command == "evolve":
-        stop_entry: Dict[str, Any] = {"fully_idle": True}
-        if args.conversation_id:
-            stop_entry["conversation_id"] = args.conversation_id
+        stop_entry: Dict[str, Any] = {"fully_idle": True, **({"conversation_id": args.conversation_id} if args.conversation_id else {})}
         profile = evolve_on_stop(ws, stop_entry)
-        if args.json:
-            print(
-                json.dumps(
-                    {
-                        "profile": profile,
-                        "badge": format_mode_badge(profile),
-                        "caveman_badge": format_caveman_badge(profile),
-                    },
-                    indent=2,
-                    ensure_ascii=False,
-                )
-            )
-        else:
-            print(
-                f"{format_mode_badge(profile)} · {format_caveman_badge(profile)} — {profile['last_reason']}"
-            )
+        payload = {"profile": profile, "badge": format_mode_badge(profile), "caveman_badge": format_caveman_badge(profile)}
+        print(json.dumps(payload, indent=2, ensure_ascii=False) if args.json else f"{format_mode_badge(profile)} · {format_caveman_badge(profile)} — {profile['last_reason']}")
         return 0
 
     return 1

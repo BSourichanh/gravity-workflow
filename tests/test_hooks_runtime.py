@@ -149,6 +149,69 @@ class TestHooksRuntime(WorkflowEnvTestCase):
             self.assertEqual(r1_t2["signals"]["guard_deny_recent"], 0)
             self.assertEqual(r1_t2["suggested_profile"], "standard")
 
+    def test_stop_session_logger_shared_runtime_arbitrary_cwd_and_state_progress(self) -> None:
+        stop_hook = PLUGIN_ROOT / "hooks/stop_session_logger.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ws = base / "ws_shared_stop"
+            ws.mkdir()
+
+            # Invocation directe depuis un cwd arbitraire (bootstrap sys.path vers plugin/_shared)
+            proc_ws_paths = subprocess.run(
+                [sys.executable, str(stop_hook)],
+                input=json.dumps(
+                    {
+                        "workspacePaths": [str(ws)],
+                        "conversationId": "conv-shared-1",
+                        "terminationReason": "NO_TOOL_CALL",
+                        "fullyIdle": True,
+                    }
+                ),
+                text=True,
+                encoding="utf-8",
+                capture_output=True,
+                cwd=str(ws),
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(proc_ws_paths.returncode, 0)
+            self.assertEqual(proc_ws_paths.stdout.strip(), "{}")
+            self.assertFalse((ws / ".agents").exists())
+
+            prof = json.loads(
+                state_writer.resolve_profile_storage_path(ws).read_text(encoding="utf-8")
+            )
+            self.assertEqual(prof["workspace"], str(ws.resolve()))
+            self.assertEqual(prof["last_evaluated_conversation_id"], "conv-shared-1")
+
+            # Résolution via GRAVITY_WORKFLOW_WORKSPACE quand stdin est malformé
+            ws_env = base / "ws_env_stop"
+            ws_env.mkdir()
+            env = dict(os.environ)
+            env["GRAVITY_WORKFLOW_WORKSPACE"] = str(ws_env)
+            proc_bad = subprocess.run(
+                [sys.executable, str(stop_hook)],
+                input="{not_json",
+                text=True,
+                encoding="utf-8",
+                capture_output=True,
+                cwd=str(base),
+                env=env,
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(proc_bad.returncode, 0)
+            self.assertEqual(proc_bad.stdout.strip(), "{}")
+            self.assertTrue(state_writer.resolve_runs_log_path(ws_env).is_file())
+
+            # state_writer._default_state()["progress"] vaut "0/0"
+            self.assertEqual(state_writer._default_state()["progress"], "0/0")
+            state_writer.update_live_state(workspace_root=ws_env, stage="idle")
+            live_data = json.loads(
+                state_writer.resolve_state_path(workspace_root=ws_env).read_text(encoding="utf-8")
+            )
+            self.assertEqual(live_data["progress"], "0/0")
+
     def test_session_start_hook_and_statusline_subprocesses(self) -> None:
         session_hook = PLUGIN_ROOT / "hooks/session_start_caveman.py"
         statusline_script = PLUGIN_ROOT / "observability/statusline.py"
