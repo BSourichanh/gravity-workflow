@@ -5,8 +5,9 @@ import ast
 import base64
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 import string
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 
 from .constants import (
     OS_EXEC_LIST_FUNCS,
@@ -62,6 +63,7 @@ class _PyImports:
     partial_func_names: Set[str] = field(default_factory=set)
     operator_mod_names: Set[str] = field(default_factory=lambda: {"operator"})
     attrgetter_func_names: Set[str] = field(default_factory=set)
+    methodcaller_func_names: Set[str] = field(default_factory=set)
     builtins_mod_names: Set[str] = field(default_factory=lambda: {"builtins", "__builtins__"})
     eval_exec_fns: Dict[str, str] = field(
         default_factory=lambda: {"eval": "eval", "exec": "exec", "compile": "compile"}
@@ -106,8 +108,10 @@ class _ScopeState:
     partial_fns: Set[str] = field(default_factory=set)
     operator_mods: Set[str] = field(default_factory=lambda: {"operator"})
     attrgetter_fns: Set[str] = field(default_factory=set)
+    methodcaller_fns: Set[str] = field(default_factory=set)
     builtins_mods: Set[str] = field(default_factory=lambda: {"builtins", "__builtins__"})
     builtins_dicts: Set[str] = field(default_factory=set)
+    os_dicts: Set[str] = field(default_factory=set)
     eval_exec_fns: Dict[str, str] = field(
         default_factory=lambda: {"eval": "eval", "exec": "exec", "compile": "compile"}
     )
@@ -116,6 +120,7 @@ class _ScopeState:
     class_methods: Dict[str, Dict[str, List[ast.AST]]] = field(default_factory=dict)
     var_class_inst: Dict[str, str] = field(default_factory=dict)
     cur_bytes: Dict[str, bytes] = field(default_factory=dict)
+    bytes_alias_peers: Dict[str, Set[str]] = field(default_factory=dict)
     cur_ints: Dict[str, int] = field(default_factory=dict)
     var_nodes: Dict[str, ast.AST] = field(default_factory=dict)
     incomplete_vars: Set[str] = field(default_factory=set)
@@ -132,13 +137,17 @@ class _ScopeState:
             codecs_fns=dict(self.codecs_fns), sys_mods=set(self.sys_mods),
             functools_mods=set(self.functools_mods), partial_fns=set(self.partial_fns),
             operator_mods=set(self.operator_mods), attrgetter_fns=set(self.attrgetter_fns),
+            methodcaller_fns=set(self.methodcaller_fns),
             builtins_mods=set(self.builtins_mods), builtins_dicts=set(self.builtins_dicts),
+            os_dicts=set(self.os_dicts),
             eval_exec_fns=dict(self.eval_exec_fns),
             func_defs={k: list(v) for k, v in self.func_defs.items()},
             class_attrs={k: dict(v) for k, v in self.class_attrs.items()},
             class_methods={k: {mk: list(mv) for mk, mv in v.items()} for k, v in self.class_methods.items()},
             var_class_inst=dict(self.var_class_inst),
-            cur_bytes=dict(self.cur_bytes), cur_ints=dict(self.cur_ints), var_nodes=dict(self.var_nodes),
+            cur_bytes=dict(self.cur_bytes),
+            bytes_alias_peers={k: set(v) for k, v in self.bytes_alias_peers.items()},
+            cur_ints=dict(self.cur_ints), var_nodes=dict(self.var_nodes),
             incomplete_vars=set(self.incomplete_vars), obf_tainted=set(self.obf_tainted),
             shadowed_alts=set(self.shadowed_alts),
         )
@@ -164,8 +173,10 @@ class _PyAstState:
     benign_cmd_name_nodes: Set[ast.Name] = field(default_factory=set)
     mutator_receiver_names: Set[ast.Name] = field(default_factory=set)
     dynamic_tainted_vars: Set[str] = field(default_factory=set)
+    env_dict_vars: Set[str] = field(default_factory=set)
     call_depth: int = 0
     active_call_fns: Set[int] = field(default_factory=set)
+    fn_call_cb: Optional[Callable[..., Tuple[List[str], bool]]] = None
 
     def record_alt_str(self, name: str, val: str) -> None:
         bucket = self.alt_str.setdefault(name, [])
@@ -355,9 +366,12 @@ def _collect_python_imports(tree: ast.Module, context_label: str) -> Tuple[Optio
                     mod_fn_sets = {
                         "shutil": ({"rmtree"}, imp.rmtree_func_names), "subprocess": (SUBPROCESS_CALL_FUNCS, imp.subprocess_func_names),
                         "shlex": ({"split"}, imp.shlex_split_names), "importlib": ({"import_module"}, imp.import_module_fns),
-                        "functools": ({"partial"}, imp.partial_func_names), "operator": ({"attrgetter"}, imp.attrgetter_func_names),
+                        "functools": ({"partial"}, imp.partial_func_names),
+                        "operator": ({"attrgetter"}, imp.attrgetter_func_names),
                     }
-                    mod_fn_dicts = {"base64": (_BASE64_DECODE_FUNCS, imp.base64_decode_fns), "codecs": ({"decode", "encode", "getdecoder"}, imp.codecs_decode_fns), "builtins": ({"eval", "exec", "compile"}, imp.eval_exec_fns)}
+                    if node.module == "operator" and alias.name == "methodcaller":
+                        imp.methodcaller_func_names.add(bound)
+                    mod_fn_dicts = {"base64": (_BASE64_DECODE_FUNCS, imp.base64_decode_fns), "codecs": ({"decode", "encode", "getdecoder", "lookup"}, imp.codecs_decode_fns), "builtins": ({"eval", "exec", "compile"}, imp.eval_exec_fns)}
                     if node.module in mod_fn_sets and alias.name in mod_fn_sets[node.module][0]: mod_fn_sets[node.module][1].add(bound)
                     elif node.module in mod_fn_dicts and alias.name in mod_fn_dicts[node.module][0]: mod_fn_dicts[node.module][1][bound] = alias.name
                     imp.shadowed_names.add(bound)
@@ -381,3 +395,238 @@ def _collect_python_imports(tree: ast.Module, context_label: str) -> Tuple[Optio
                 rets = [s.value for s in ast.walk(node) if isinstance(s, ast.Return) and s.value is not None]
                 if rets: imp.func_returns.setdefault(node.name, []).extend(rets[:4])
     return None, imp
+
+
+def _expr_has_tainted_name(
+    node: ast.AST, state: Optional[_PyAstState], scope: Optional[_ScopeState], _bound_comp: Optional[Set[str]] = None
+) -> bool:
+    """Retourne True si `node` référence une variable dynamique/incomplète non liée par une compréhension locale."""
+    if state is None and scope is None:
+        return False
+    bound = _bound_comp or set()
+    if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+        inner_bound = set(bound)
+        for gen in node.generators:
+            if _expr_has_tainted_name(gen.iter, state, scope, inner_bound):
+                return True
+            for sub in ast.walk(gen.target):
+                if isinstance(sub, ast.Name):
+                    inner_bound.add(sub.id)
+            for if_e in gen.ifs:
+                if _expr_has_tainted_name(if_e, state, scope, inner_bound):
+                    return True
+        for field_n in ("elt", "key", "value"):
+            sub_e = getattr(node, field_n, None)
+            if isinstance(sub_e, ast.AST) and _expr_has_tainted_name(sub_e, state, scope, inner_bound):
+                return True
+        return False
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+        if node.id in bound:
+            return False
+        if scope and (node.id in scope.incomplete_vars or node.id in scope.obf_tainted):
+            return True
+        if state and node.id in state.dynamic_tainted_vars and not (scope and node.id in scope.shadowed_alts):
+            return True
+        return False
+    return any(_expr_has_tainted_name(ch, state, scope, bound) for ch in ast.iter_child_nodes(node))
+
+
+def _merge_scope_branch(dst: _ScopeState, src: _ScopeState, state: Optional[_PyAstState] = None) -> None:
+    """Fusionne l'état d'une branche `if`/`try` dans `dst` (et `state.alt_*` si top-level)."""
+    for attr in (
+        "subproc_mods", "os_mods", "rmtree_fns", "os_shell_fns", "subproc_fns",
+        "base64_mods", "codecs_mods", "sys_mods", "functools_mods", "partial_fns",
+        "operator_mods", "attrgetter_fns", "methodcaller_fns", "builtins_mods", "builtins_dicts",
+        "os_dicts", "incomplete_vars", "obf_tainted", "shadowed_alts",
+    ):
+        getattr(dst, attr).update(getattr(src, attr))
+    for d_attr in ("base64_fns", "codecs_fns", "eval_exec_fns", "func_defs", "var_nodes", "var_class_inst", "cur_ints"):
+        getattr(dst, d_attr).update(getattr(src, d_attr))
+    for cls_n, attrs_d in src.class_attrs.items():
+        dst.class_attrs.setdefault(cls_n, {}).update(attrs_d)
+    for cls_n, meths_d in src.class_methods.items():
+        dst.class_methods.setdefault(cls_n, {}).update(meths_d)
+    for m_var, peers in src.bytes_alias_peers.items():
+        merged = dst.bytes_alias_peers.get(m_var, set()) | peers
+        for p_v in merged:
+            dst.bytes_alias_peers[p_v] = set(merged)
+    for k in dst.incomplete_vars:
+        dst.cur_str.pop(k, None); dst.cur_bytes.pop(k, None); dst.cur_ints.pop(k, None); dst.cur_seq.pop(k, None); dst.var_nodes.pop(k, None)
+    for k, v in src.cur_str.items():
+        if k not in dst.incomplete_vars: dst.cur_str[k] = v
+        if state: state.record_alt_str(k, v)
+    for k, vb in src.cur_bytes.items():
+        if k not in dst.incomplete_vars: dst.cur_bytes[k] = vb
+        if state: state.record_alt_bytes(k, vb)
+    for k, vs in src.cur_seq.items():
+        dst.cur_seq[k] = list(vs)
+        if state: state.record_alt_seq(k, vs)
+
+
+_BUILTIN_CTORS = frozenset({"bytes", "bytearray", "memoryview", "chr"})
+_PCT_WIDTH_RE = re.compile(r"%(?:\([^)]+\))?[#0\- +]*(\d+)")
+
+
+def _resolve_builtin_ctor_name(
+    fn: ast.AST,
+    scope: Optional[_ScopeState] = None,
+    var_nodes: Optional[Dict[str, ast.AST]] = None,
+    _depth: int = 0,
+    _seen: Optional[Set[str]] = None,
+) -> Optional[str]:
+    """Résout un constructeur builtin (`bytes`, `bytearray`, `memoryview`, `chr`) via alias `var_nodes` ou `builtins`."""
+    if _depth > 6:
+        return None
+    vmap = var_nodes if var_nodes is not None else (scope.var_nodes if scope is not None else None)
+    seen = set(_seen or ())
+    if isinstance(fn, ast.NamedExpr):
+        return _resolve_builtin_ctor_name(fn.value, scope, vmap, _depth + 1, seen)
+    if isinstance(fn, ast.Name):
+        if vmap and fn.id in vmap and fn.id not in seen:
+            seen.add(fn.id)
+            res = _resolve_builtin_ctor_name(vmap[fn.id], scope, vmap, _depth + 1, seen)
+            if res is not None:
+                return res
+        if fn.id in _BUILTIN_CTORS and (not vmap or fn.id not in vmap):
+            return fn.id
+        return None
+    if isinstance(fn, ast.Attribute) and fn.attr in _BUILTIN_CTORS:
+        bi_mods = scope.builtins_mods if scope else {"builtins", "__builtins__"}
+        bi_dicts = scope.builtins_dicts if scope else set()
+        if isinstance(fn.value, ast.Name) and (fn.value.id in bi_mods or fn.value.id in bi_dicts):
+            return fn.attr
+    if isinstance(fn, ast.Subscript):
+        sl = _ast_subscript_slice(fn)
+        if isinstance(sl, ast.Constant) and isinstance(sl.value, str) and sl.value in _BUILTIN_CTORS:
+            if isinstance(fn.value, ast.Name) and (
+                fn.value.id in (scope.builtins_dicts if scope else set())
+                or fn.value.id in (scope.builtins_mods if scope else {"__builtins__"})
+            ):
+                return sl.value
+    return None
+
+
+def _eval_str_percent_format(
+    tpl: str,
+    right_node: ast.AST,
+    eval_scalar_fn: Callable[[ast.AST], Tuple[bool, Union[str, int, float, bool, None]]],
+    eval_str_fn: Callable[[ast.AST], Optional[str]],
+    var_nodes: Optional[Dict[str, ast.AST]] = None,
+) -> Optional[str]:
+    """Évalue statiquement le formatage `%` sûr (`'...' % (...)` ou `'...' % {...}` ou `'...' % val)."""
+    if len(tpl) > 8192 or any(int(m.group(1)) > 4096 for m in _PCT_WIDTH_RE.finditer(tpl)):
+        return None
+    r_node = var_nodes.get(right_node.id, right_node) if (isinstance(right_node, ast.Name) and var_nodes) else right_node
+    arg_obj: object
+    if isinstance(r_node, ast.Tuple):
+        if any(isinstance(e, ast.Starred) for e in r_node.elts):
+            return None
+        vals: List[object] = []
+        for e in r_node.elts:
+            ok, v = eval_scalar_fn(e)
+            if not ok or v is None:
+                return None
+            vals.append(v)
+        arg_obj = tuple(vals)
+    elif isinstance(r_node, ast.Dict):
+        if any(k is None for k in r_node.keys):
+            return None
+        d_obj: Dict[str, object] = {}
+        for k_n, v_n in zip(r_node.keys, r_node.values):
+            ks = eval_str_fn(k_n) if k_n is not None else None
+            ok, kv = eval_scalar_fn(v_n)
+            if ks is None or not ok or kv is None:
+                return None
+            d_obj[ks] = kv
+        arg_obj = d_obj
+    elif isinstance(r_node, ast.Call) and isinstance(r_node.func, ast.Name) and r_node.func.id == "dict" and not r_node.args and not any(k.arg is None for k in r_node.keywords):
+        d_obj = {}
+        for kw in r_node.keywords:
+            if kw.arg is None:
+                return None
+            ok, kv = eval_scalar_fn(kw.value)
+            if not ok or kv is None:
+                return None
+            d_obj[kw.arg] = kv
+        arg_obj = d_obj
+    else:
+        ok, v = eval_scalar_fn(right_node)
+        if not ok or v is None:
+            return None
+        arg_obj = v
+    try:
+        res = tpl % arg_obj
+    except (ValueError, TypeError, KeyError, OverflowError):
+        return None
+    return res if isinstance(res, str) and len(res) <= 16384 else None
+
+
+def _eval_str_translate(
+    base: str,
+    arg_node: ast.AST,
+    eval_str_fn: Callable[[ast.AST], Optional[str]],
+    eval_int_fn: Callable[[ast.AST], Optional[int]],
+    var_nodes: Optional[Dict[str, ast.AST]] = None,
+) -> Optional[str]:
+    """Évalue statiquement `.translate(table)` pour dictionnaires et `str.maketrans(...)`."""
+    t_node = var_nodes.get(arg_node.id, arg_node) if (isinstance(arg_node, ast.Name) and var_nodes) else arg_node
+    table: Optional[Dict[int, Union[int, str, None]]] = None
+    if isinstance(t_node, ast.Call) and isinstance(t_node.func, ast.Attribute) and t_node.func.attr == "maketrans" and not t_node.keywords:
+        recv = t_node.func.value
+        is_str_mt = (isinstance(recv, ast.Name) and recv.id == "str") or isinstance(recv, ast.Constant)
+        if is_str_mt and len(t_node.args) in (2, 3):
+            s_args = [eval_str_fn(a) for a in t_node.args]
+            if all(isinstance(s, str) for s in s_args):
+                try:
+                    table = str.maketrans(*[s for s in s_args if s is not None])  # type: ignore[arg-type]
+                except ValueError:
+                    return None
+        elif is_str_mt and len(t_node.args) == 1:
+            t_node = var_nodes.get(t_node.args[0].id, t_node.args[0]) if (isinstance(t_node.args[0], ast.Name) and var_nodes) else t_node.args[0]
+    if table is None and isinstance(t_node, ast.Dict) and not any(k is None for k in t_node.keys):
+        tbl: Dict[int, Union[int, str, None]] = {}
+        for k_n, v_n in zip(t_node.keys, t_node.values):
+            if k_n is None:
+                return None
+            k_int = eval_int_fn(k_n)
+            if k_int is None:
+                k_str = eval_str_fn(k_n)
+                if k_str is not None and len(k_str) == 1:
+                    k_int = ord(k_str)
+            if k_int is None:
+                return None
+            if isinstance(v_n, ast.Constant) and v_n.value is None:
+                tbl[k_int] = None
+            else:
+                v_int = eval_int_fn(v_n)
+                if v_int is not None and 0 <= v_int <= 0x10FFFF:
+                    tbl[k_int] = v_int
+                else:
+                    v_str = eval_str_fn(v_n)
+                    if v_str is None:
+                        return None
+                    tbl[k_int] = v_str
+        table = tbl
+    if table is None:
+        return None
+    try:
+        return base.translate(table)
+    except (ValueError, TypeError):
+        return None
+
+
+def _eval_str_method_transform(
+    base: str, attr: str, args: List[ast.AST], eval_str_fn: Callable[[ast.AST], Optional[str]]
+) -> Optional[str]:
+    """Évalue statiquement `.strip`/`.lstrip`/`.rstrip`/`.removeprefix`/`.removesuffix`/casse."""
+    if attr in ("lower", "upper", "swapcase", "casefold", "title", "capitalize") and not args:
+        return str(getattr(base, attr)())
+    if attr in ("strip", "lstrip", "rstrip") and len(args) <= 1:
+        if not args or (isinstance(args[0], ast.Constant) and args[0].value is None):
+            return str(getattr(base, attr)())
+        chars = eval_str_fn(args[0])
+        return str(getattr(base, attr)(chars)) if chars is not None else None
+    if attr in ("removeprefix", "removesuffix") and len(args) == 1:
+        aff = eval_str_fn(args[0])
+        return str(getattr(base, attr)(aff)) if aff is not None else None
+    return None

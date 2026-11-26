@@ -281,13 +281,18 @@ class TestSafetyPythonAst(unittest.TestCase):
     def test_srp_split_modules_and_reexports(self) -> None:
         import ast
         import policy
-        from policy import python_ast, python_ast_eval, python_ast_flow, python_ast_imports, python_ast_readonly, python_ast_state
+        from policy import (
+            python_ast, python_ast_calls, python_ast_cands, python_ast_eval,
+            python_ast_flow, python_ast_imports, python_ast_readonly, python_ast_state,
+        )
 
         for mod_obj, expected in (
             (python_ast_state, ("_PyImports", "_ScopeState", "_PyAstState", "_collect_python_imports", "_eval_static_int")),
             (python_ast_eval, ("_eval_static_str", "_eval_static_seq", "_eval_static_bytes", "_collect_static_bindings", "_PyAstState")),
+            (python_ast_cands, ("_eval_scope_str_cands", "_eval_code_arg_cands", "_expr_has_obfuscated_decode", "_match_dict_lookup_key")),
             (python_ast_imports, ("_PyImports", "_resolve_dynamic_import_module", "_collect_python_imports", "_bind_var")),
             (python_ast_flow, ("_unwrap_call_target", "_inspect_user_callable", "_mutate_bytes_method", "_mutate_bytes_subscript")),
+            (python_ast_calls, ("_inspect_python_call", "_inspect_rmtree_call", "_inspect_os_shell_call", "_inspect_subprocess_call")),
             (python_ast_readonly, ("_raw_code_hard_deny_check", "_is_readonly_harness_usage", "_is_open_call_readonly")),
             (python_ast, ("_walk_python_stmts", "_inspect_pass2_ast_nodes", "_inspect_python_ast", "inspect_inline_python_code")),
         ):
@@ -751,6 +756,109 @@ class TestSafetyPythonAst(unittest.TestCase):
                 f"exec(''.join(chr(c) for c in [{ok_ints}]))",
                 f"ints = [{ok_ints}]\nexec(bytes(ints))",
                 "(lambda f: f('hello'))(print)",
+            )
+            for wf_good in benign_scripts:
+                cmd_good = f"python3 -c {shlex.quote(wf_good)}"
+                dec_wf, reason_wf = safety_policy.evaluate_tool_call(
+                    {"toolCall": {"name": "run_workflow", "args": {"Script": wf_good}}},
+                    gravity_ws,
+                )
+                self.assertEqual(dec_wf, "allow", f"Faux positif workflow sur {wf_good!r}: {dec_wf} ({reason_wf})")
+                dec_cmd, reason_cmd = safety_policy.evaluate_tool_call(
+                    {"toolCall": {"name": "run_command", "args": {"CommandLine": cmd_good}}},
+                    gravity_ws,
+                )
+                self.assertEqual(dec_cmd, "allow", f"Faux positif cmd sur {cmd_good!r}: {dec_cmd} ({reason_cmd})")
+
+    def test_bytearray_aliases_str_transforms_ctor_aliases_indirect_calls_and_environ_dict_closed(self) -> None:
+        import base64
+        import shlex
+
+        rm_b64 = "aW1wb3J0IG9zOyBvcy5zeXN0ZW0oInJtIC1yZiAvIik="
+        benign_b64 = base64.b64encode(b"print(1)").decode("ascii")
+        rm_bytes = b'import os; os.system("rm -rf /")'
+        rm_xor_ints = ",".join(str(b ^ 1) for b in rm_bytes)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            gravity_ws = make_gravity_workspace(base, "gravity_adv_ast5")
+            plain_ws = base / "plain_adv_ast5"
+            plain_ws.mkdir()
+
+            wf_deny_scripts = (
+                # Class 1 + N10: bytearray alias staleness, non-Expr calls, unbound bytearray.extend
+                'b = bytearray(b"print(1); ")\nb2 = b\nb.extend(b\'import os; os.system("rm -rf /")\')\nexec(b2)',
+                'b = bytearray(b"print(1); ")\na = b\na.extend(b\'import os; os.system("rm -rf /")\')\nexec(b)',
+                'b = bytearray(b"print(1); ")\n(b.extend(b\'import os; os.system("rm -rf /")\'), exec(b))',
+                'b = bytearray(b"print(1); ")\n_ = b.extend(b\'import os; os.system("rm -rf /")\')\nexec(b)',
+                'b = bytearray(b"print(1); ")\nbytearray.extend(b, b\'import os; os.system("rm -rf /")\')\nexec(b)',
+                # Class 2 + N1, N7, N9: %, *, format_map, strip/lstrip, lower, removeprefix, translate, codecs.lookup
+                "exec('import %s; %s.system(\"rm -rf /\")' % ('os', 'os'))",
+                "print(open('.%s' % 'env').read())",
+                "exec('ximport os; os.system(\"rm -rf /\")'.lstrip('x'))",
+                "exec('IMPORT OS; OS.SYSTEM(\"rm -rf /\")'.lower())",
+                "exec('import {a}; {a}.system(\"rm -rf /\")'.format_map({'a': 'os'}))",
+                "exec('__import os; os.system(\"rm -rf /\")'.removeprefix('__'))",
+                "exec('imporX os; os.sysXem(\"rm -rf /\")'.translate({88: 116}))",
+                "exec('import os; os.system(\"rm -rf /\")' * 1)",
+                f"import codecs\nexec(codecs.lookup('base64').decode(b'{rm_b64}')[0])",
+                "x = input()\nexec('import %s' % x)",
+                # Class 3: aliased bytes/bytearray constructors
+                f"B = bytes\nexec(B(c ^ 1 for c in [{rm_xor_ints}]))",
+                f"BA = bytearray\nexec(BA(c ^ 1 for c in [{rm_xor_ints}]))",
+                # Class 4 + N4, N6, N12: methodcaller, __call__, *args/**kwargs, lambda/def attrs, curried, setattr, map, *args exec
+                "import operator, os\noperator.methodcaller('system', 'rm -rf /')(os)",
+                "import operator, subprocess\noperator.methodcaller('run', ['rm', '-rf', '/'])(subprocess)",
+                f"import base64\nclass R:\n    def __call__(self, c):\n        exec(c)\nR()(base64.b64decode('{rm_b64}'))",
+                f"import base64\ndef run(*a):\n    a[0](a[1])\nrun(exec, base64.b64decode('{rm_b64}'))",
+                f"import base64\ndef run(fn, *a):\n    fn(*a)\nrun(exec, base64.b64decode('{rm_b64}'))",
+                f"import base64\ndef run(**kw):\n    exec(kw['c'])\nrun(c=base64.b64decode('{rm_b64}'))",
+                "import os\n(lambda: os.system)()('rm -rf /')",
+                "import os\n(lambda m: m.system)(os)('rm -rf /')",
+                f"import base64\nlist(map(exec, [base64.b64decode('{rm_b64}')]))",
+                "import os\nlist(map(os.system, ['rm -rf /']))",
+                "args = ['import os; os.system(\"rm -rf /\")']\nexec(*args)",
+                "import os\ndef id_fn(x):\n    return x\nid_fn(os.system)('rm -rf /')",
+                f"import base64\nclass X:\n    pass\nsetattr(X, 'f', exec)\nX.f(base64.b64decode('{rm_b64}'))",
+                f"import base64\n(lambda a: (lambda b: a(b)))(exec)(base64.b64decode('{rm_b64}'))",
+                # Class 5: indirect os.__dict__.get / vars(os).get / aliases
+                "import os\nprint(os.__dict__.get('environ'))",
+                "import os\nprint(vars(os).get('environ'))",
+                "import os\nd = vars(os)\nprint(d['environ'])",
+                "import os\nd = os.__dict__\nprint(d['environ'])",
+            )
+            for wf_bad in wf_deny_scripts:
+                cmd_bad = f"python3 -c {shlex.quote(wf_bad)}"
+                for ws in (gravity_ws, plain_ws):
+                    dec_wf, reason_wf = safety_policy.evaluate_tool_call(
+                        {"toolCall": {"name": "run_workflow", "args": {"Script": wf_bad}}},
+                        ws,
+                    )
+                    self.assertEqual(dec_wf, "deny", f"Attendu deny workflow sur {wf_bad!r}, obtenu {dec_wf} ({reason_wf})")
+                    dec_cmd, reason_cmd = safety_policy.evaluate_tool_call(
+                        {"toolCall": {"name": "run_command", "args": {"CommandLine": cmd_bad}}},
+                        ws,
+                    )
+                    self.assertEqual(dec_cmd, "deny", f"Attendu deny cmd sur {cmd_bad!r}, obtenu {dec_cmd} ({reason_cmd})")
+
+            benign_scripts = (
+                "exec('print(%d)' % (1,))",
+                "print('hello %s' % 'world')",
+                "exec('xprint(1)'.lstrip('x'))",
+                "exec('PRINT(1)'.lower())",
+                "exec('print({a})'.format_map({'a': 1}))",
+                "exec('__print(1)'.removeprefix('__'))",
+                "exec('prinX(1)'.translate({88: 116}))",
+                "exec('print(1); ' * 1)",
+                "import operator\noperator.methodcaller('upper')('abc')",
+                "list(map(str, [1, 2, 3]))",
+                "b = bytearray(b'print(1); ')\nb2 = b\nb.extend(b'print(2)')\nexec(b2)",
+                "b = bytearray(b'print(1); ')\nb2 = b\nb = bytearray(b'print(2)')\nb.extend(b'; import os; os.system(\"rm -rf /\")')\nexec(b2)",
+                "import os\nprint(os.__dict__.get('path'))",
+                "import os\nd = vars(os)\nprint(d.get('name'))",
+                "args = ['print(1)']\nexec(*args)",
+                f"import base64\nclass R:\n    def __call__(self, c):\n        exec(c)\nR()(base64.b64decode('{benign_b64}'))",
+                f"import base64\n(lambda a: (lambda b: a(b)))(exec)(base64.b64decode('{benign_b64}'))",
             )
             for wf_good in benign_scripts:
                 cmd_good = f"python3 -c {shlex.quote(wf_good)}"

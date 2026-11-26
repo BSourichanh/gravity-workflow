@@ -21,9 +21,13 @@ from .python_ast_state import (
     _decode_bytes_text,
     _eval_slice_bounds,
     _eval_static_int,
+    _eval_str_method_transform,
+    _eval_str_percent_format,
+    _eval_str_translate,
     _is_named_mod_expr,
     _is_safe_format_template,
     _match_base64_decode_call,
+    _resolve_builtin_ctor_name,
 )
 
 _MAX_EVAL_ITER = 4096
@@ -219,7 +223,7 @@ def _eval_static_seq(
         if isinstance(fn, ast.Name) and fn.id == "reversed" and len(node.args) == 1 and not node.keywords:
             seq = rec(node.args[0])
             return list(reversed(seq)) if seq is not None else None
-        if isinstance(fn, ast.Name) and fn.id == "map" and len(node.args) == 2 and not node.keywords and isinstance(node.args[0], ast.Name) and node.args[0].id == "chr":
+        if isinstance(fn, ast.Name) and fn.id == "map" and len(node.args) == 2 and not node.keywords and _resolve_builtin_ctor_name(node.args[0], var_nodes=var_nodes) == "chr":
             src_ints = _eval_static_int_list(node.args[1], const_vars, var_nodes, cur_bytes, env_ints, _depth=_depth + 1)
             if src_ints is not None and all(0 <= iv <= 0x10FFFF for iv in src_ints):
                 return [chr(iv) for iv in src_ints]
@@ -274,6 +278,13 @@ def _eval_static_bytes(
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         left, right = rec_b(node.left), rec_b(node.right)
         return (left + right) if (left is not None and right is not None) else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+        lb, rn = rec_b(node.left), _eval_static_int(node.right, env_ints, const_vars, _depth + 1)
+        if lb is not None and rn is not None:
+            return b"" if rn <= 0 else (lb * rn if len(lb) * rn <= 16384 else None)
+        ln, rb = _eval_static_int(node.left, env_ints, const_vars, _depth + 1), rec_b(node.right)
+        if ln is not None and rb is not None:
+            return b"" if ln <= 0 else (rb * ln if len(rb) * ln <= 16384 else None)
     if isinstance(node, ast.Call):
         b64_match = _match_base64_decode_call(node, base64_mod_names, base64_decode_fns)
         if b64_match is not None:
@@ -282,8 +293,9 @@ def _eval_static_bytes(
             if raw is None: raw = rec_s(arg0)
             return _decode_base64_payload(raw, fn_canon) if raw is not None else None
         fn = node.func
+        ctor = _resolve_builtin_ctor_name(fn, var_nodes=var_nodes)
         if isinstance(fn, ast.Attribute) and fn.attr == "tobytes" and not node.args and not node.keywords: return rec_b(fn.value)
-        if isinstance(fn, ast.Name) and fn.id == "memoryview" and len(node.args) == 1 and not node.keywords: return rec_b(node.args[0])
+        if ctor == "memoryview" and len(node.args) == 1 and not node.keywords: return rec_b(node.args[0])
         if isinstance(fn, ast.Attribute) and fn.attr == "encode" and len(node.args) <= 1 and not node.keywords:
             s_val, enc = rec_s(fn.value), (rec_s(node.args[0]) if node.args else "utf-8")
             if s_val is not None and enc:
@@ -295,7 +307,7 @@ def _eval_static_bytes(
             if sep is not None and isinstance(arg0, (ast.List, ast.Tuple)):
                 parts = [rec_b(e) for e in arg0.elts]
                 if all(p is not None for p in parts): return sep.join(p for p in parts if p is not None)
-        if isinstance(fn, ast.Name) and fn.id in ("bytes", "bytearray"):
+        if ctor in ("bytes", "bytearray"):
             if not node.args and not node.keywords: return b""
             if len(node.args) == 1 and not node.keywords:
                 int_list = _eval_static_int_list(node.args[0], const_vars, var_nodes, cur_bytes, env_ints=env_ints, _depth=_depth + 1)
@@ -310,7 +322,7 @@ def _eval_static_bytes(
                 if s_val is not None and enc:
                     try: return s_val.encode(enc)
                     except (LookupError, UnicodeEncodeError): return None
-        if isinstance(fn, ast.Attribute) and fn.attr == "fromhex" and isinstance(fn.value, ast.Name) and fn.value.id in ("bytes", "bytearray") and len(node.args) == 1 and not node.keywords:
+        if isinstance(fn, ast.Attribute) and fn.attr == "fromhex" and _resolve_builtin_ctor_name(fn.value, var_nodes=var_nodes) in ("bytes", "bytearray") and len(node.args) == 1 and not node.keywords:
             hex_s = rec_s(node.args[0])
             if hex_s is not None:
                 try: return bytes.fromhex(hex_s)
@@ -358,6 +370,21 @@ def _eval_static_str(
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         left, right = rec(node.left), rec(node.right)
         return f"{left.rstrip('/\\')}/{right}" if (left is not None and right is not None) else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+        ls, rn = rec(node.left), _eval_static_int(node.right, env_ints, const_vars, _depth + 1)
+        if ls is not None and rn is not None:
+            return "" if rn <= 0 else (ls * rn if len(ls) * rn <= 16384 else None)
+        ln, rs = _eval_static_int(node.left, env_ints, const_vars, _depth + 1), rec(node.right)
+        if ln is not None and rs is not None:
+            return "" if ln <= 0 else (rs * ln if len(rs) * ln <= 16384 else None)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        tpl = rec(node.left)
+        if tpl is not None:
+            return _eval_str_percent_format(
+                tpl, node.right,
+                lambda n: _eval_static_scalar(n, const_vars, const_seq_vars, _depth + 1, func_returns, base64_mod_names, base64_decode_fns, cur_bytes, var_nodes, env_ints),
+                rec, var_nodes,
+            )
     if isinstance(node, ast.JoinedStr):
         parts: List[str] = []
         for val in node.values:
@@ -414,17 +441,49 @@ def _eval_static_str(
                 if ok:
                     try: return tpl.format(*pos_vals, **kw_vals)
                     except (ValueError, KeyError, IndexError, TypeError): return None
+        if isinstance(fn, ast.Attribute) and fn.attr == "format_map" and len(node.args) == 1 and not node.keywords:
+            tpl = rec(fn.value)
+            m_node = var_nodes[node.args[0].id] if (isinstance(node.args[0], ast.Name) and var_nodes and node.args[0].id in var_nodes) else node.args[0]
+            if tpl is not None and _is_safe_format_template(tpl):
+                map_vals: Dict[str, object] = {}; ok = False
+                if isinstance(m_node, ast.Dict) and not any(k is None for k in m_node.keys):
+                    ok = True
+                    for k_n, v_n in zip(m_node.keys, m_node.values):
+                        ks = rec(k_n) if k_n is not None else None
+                        ok_v, kv = _eval_static_scalar(v_n, const_vars, const_seq_vars, _depth + 1, func_returns, base64_mod_names, base64_decode_fns, cur_bytes, var_nodes, env_ints)
+                        if ks is None or not ok_v: ok = False; break
+                        map_vals[ks] = kv
+                elif isinstance(m_node, ast.Call) and isinstance(m_node.func, ast.Name) and m_node.func.id == "dict" and not m_node.args and not any(k.arg is None for k in m_node.keywords):
+                    ok = True
+                    for kw in m_node.keywords:
+                        if kw.arg is None: ok = False; break
+                        ok_v, kv = _eval_static_scalar(kw.value, const_vars, const_seq_vars, _depth + 1, func_returns, base64_mod_names, base64_decode_fns, cur_bytes, var_nodes, env_ints)
+                        if not ok_v: ok = False; break
+                        map_vals[kw.arg] = kv
+                if ok:
+                    try: return tpl.format_map(map_vals)
+                    except (ValueError, KeyError, IndexError, TypeError): return None
         if isinstance(fn, ast.Attribute) and fn.attr == "replace" and len(node.args) in (2, 3) and not node.keywords:
             base, old_s, new_s = rec(fn.value), rec(node.args[0]), rec(node.args[1])
             if base is not None and old_s is not None and new_s is not None:
                 if len(node.args) == 2: return base.replace(old_s, new_s)
                 cnt = _eval_static_int(node.args[2], env_ints, const_vars, _depth + 1)
                 if cnt is not None: return base.replace(old_s, new_s, cnt)
+        if isinstance(fn, ast.Attribute) and fn.attr in ("strip", "lstrip", "rstrip", "removeprefix", "removesuffix", "lower", "upper", "swapcase", "casefold", "title", "capitalize") and not node.keywords:
+            base = rec(fn.value)
+            if base is not None:
+                res = _eval_str_method_transform(base, fn.attr, node.args, rec)
+                if res is not None: return res
+        if isinstance(fn, ast.Attribute) and fn.attr == "translate" and len(node.args) == 1 and not node.keywords:
+            base = rec(fn.value)
+            if base is not None:
+                res = _eval_str_translate(base, node.args[0], rec, lambda n: _eval_static_int(n, env_ints, const_vars, _depth + 1), var_nodes)
+                if res is not None: return res
         if isinstance(fn, ast.Name) and func_returns and fn.id in func_returns and not node.args and not node.keywords:
             for ret_expr in func_returns[fn.id]:
                 val = rec(ret_expr)
                 if val is not None: return val
-        if isinstance(fn, ast.Name) and fn.id == "chr" and len(node.args) == 1 and not node.keywords:
+        if _resolve_builtin_ctor_name(fn, var_nodes=var_nodes) == "chr" and len(node.args) == 1 and not node.keywords:
             c_val = _eval_static_int(node.args[0], env_ints, const_vars, _depth + 1)
             return chr(c_val) if (c_val is not None and 0 <= c_val <= 0x10FFFF) else None
         if isinstance(fn, ast.Attribute) and fn.attr == "join" and len(node.args) == 1 and not node.keywords:
