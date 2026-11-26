@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **`TASK-WF-01b` — Modular Split of `plugin/hooks/policy/inline_scripts.py` (`plugin/hooks/policy/`, `tests/test_safety_inline_scripts.py`):**
+  - Decomposed `plugin/hooks/policy/inline_scripts.py` (`1 379` L) into 3 SRP stdlib-only modules strictly `< 600` lines each: `js_eval.py` (JS comment/template/string scanning, variable/array binding collection, static JS expression evaluation), `stdin_inspect.py` (`_extract_inline_spec`, stdin interpreter detection, PowerShell here-string assignments, and piped/stdin payload inspection), and `inline_scripts.py` (`_expand_ruby_interpolations`, `_tokenize_script_literals`, `_fold_inline_concat`, `_inspect_inline_script_code`, plus backward-compatible re-exports for `evaluator.py`, `git_and_fs.py`, and `safety_policy.py`).
+  - Added SRP module boundary, acyclic module-import, and backward-compatible re-export unit tests in `tests/test_safety_inline_scripts.py`.
 - **`TASK-WF-01a` — Modular Split of `plugin/hooks/policy/python_ast.py` & Readonly Harness AST Extensions (`plugin/hooks/policy/`, `tests/test_safety_python_ast.py`):**
   - Synced shared Python 3.10+ stdlib foundation into `plugin/_shared/` + `plugin/.shared_manifest.json` (`[TASK-WF-PREP]`) and restored `0755` executable bits on scripts and hooks.
   - Decomposed `plugin/hooks/policy/python_ast.py` into 4 SRP stdlib-only modules strictly `< 650` lines each: `python_ast_eval.py` (static string/sequence/int/binding evaluation and state), `python_ast_imports.py` (import/shadowing tracking, dynamic import resolution, variable binding), `python_ast_readonly.py` (non-AST fallback and fail-closed readonly harness AST verification ported from `dev`), and `python_ast.py` (call inspectors, Pass 1/2 walkers, `inspect_inline_python_code`, backward-compatible re-exports).
