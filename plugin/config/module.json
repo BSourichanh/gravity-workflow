@@ -21,6 +21,13 @@
     "mode": "none",
     "target": "gravity"
   },
+  "dashboard": {
+    "provider_script": "scripts/dashboard_provider.py",
+    "views": [
+      "workflow"
+    ],
+    "actions": []
+  },
   "signals": {
     "produces": [
       "workflow-state",

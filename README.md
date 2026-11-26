@@ -2,11 +2,11 @@
 
 > **Ground your Antigravity agents** — A zero-dependency multi-agent harness, fail-closed safety guard, and parallel evaluation suite built natively for Google Antigravity (App `v2.34.0+`, `agy` CLI, and IDE extensions).
 
-> **Démarrage 2 min & Place dans l'écosystème**
+> **2-Minute Quickstart & Ecosystem Role**
 >
-> - **Palier 1 — Essentiel** *(avec [`gravity` Core](https://github.com/BSourichanh/gravity))* : harnais multi-agents, garde-fous `PreToolUse` fail-closed, routage adaptatif (`quick`/`standard`/`deep`/`evo`), evals et `/caveman`.
-> - **Première commande :** `/gravity-workflow` *(et cockpit unifié `/gravity dashboard` dans `gravity` Core)*.
-> - **Guides `gravity/docs/` :** [Getting Started](https://github.com/BSourichanh/gravity/blob/main/docs/getting-started.md) · [User Journey](https://github.com/BSourichanh/gravity/blob/main/docs/user-journey.md) · [Command Cheatsheet](https://github.com/BSourichanh/gravity/blob/main/docs/command-cheatsheet.md) · [Troubleshooting & Lifecycle](https://github.com/BSourichanh/gravity/blob/main/docs/troubleshooting-and-lifecycle.md)
+> - **Tier 1 — Core Harness** *(with [`gravity` Core](https://github.com/BSourichanh/gravity))*: multi-agent harness, fail-closed `PreToolUse` guards, adaptive routing (`quick`/`standard`/`deep`/`evo`), evals, and `/caveman`.
+> - **First command:** `/gravity-workflow` *(plus unified `/gravity dashboard` cockpit in `gravity` Core)*.
+> - **Guides (`gravity/docs/`):** [Getting Started](https://github.com/BSourichanh/gravity/blob/main/docs/getting-started.md) · [User Journey](https://github.com/BSourichanh/gravity/blob/main/docs/user-journey.md) · [Command Cheatsheet](https://github.com/BSourichanh/gravity/blob/main/docs/command-cheatsheet.md) · [Troubleshooting & Lifecycle](https://github.com/BSourichanh/gravity/blob/main/docs/troubleshooting-and-lifecycle.md)
 
 Gravity Workflow is implemented using **100% Python 3 standard library** across the plugin engine, workspace template, and cross-platform installer—with zero external packages or Node.js build steps required.
 
@@ -17,7 +17,7 @@ Gravity Workflow is implemented using **100% Python 3 standard library** across 
 ### 1. Plugin-First Architecture ([`plugin/`](plugin/))
 All runtime machinery lives in [`plugin/`](plugin/) and stays decoupled from target projects:
 
-- **Module Contract ([`plugin/config/module.json`](plugin/config/module.json)):** Declares schema v1 metadata (`id: "workflow"`, `storage.subdir: "workflow"`, `env_override: "GRAVITY_WORKFLOW_HOME"`, `ui.mode: "none"`, `ui.target: "gravity"`, `signals`) for discovery and live dashboard rendering by [`gravity`](https://github.com/BSourichanh/gravity) Core (`../gravity`).
+- **Module Contract ([`plugin/config/module.json`](plugin/config/module.json)):** Declares schema v1 metadata (`id: "workflow"`, `storage.subdir: "workflow"`, `env_override: "GRAVITY_WORKFLOW_HOME"`, `ui.mode: "none"`, `ui.target: "gravity"`, `dashboard` `SPI-1` provider `scripts/dashboard_provider.py`, `signals` `SPI-3`) for discovery and live dashboard rendering by [`gravity`](https://github.com/BSourichanh/gravity) Core (`../gravity`).
 - **Unified Interactive Skills (`/gravity-workflow` & `/caveman`)**:
   - [`/gravity-workflow`](plugin/skills/gravity-workflow/SKILL.md) — Unified entry point with 3 executed profiles (`quick`, `standard` default, `deep`, plus backward-compatible aliases `low`/`medium`/`high`/`ultra` and consultative `evo` exposing `suggested_profile` without silent mutation), ephemeral `--no-verify` / `unsafe` (single task/run only, never persisted), A/B model overrides (`--plan-model`, `--build-model`, `--review-model`), pre-execution `/grill-me` scoping, `/gravity-workflow status`, `/gravity-workflow evals`, `/gravity-workflow init`, and 10 progressive reference guides in [`plugin/skills/gravity-workflow/references/`](plugin/skills/gravity-workflow/references/).
   - [`/caveman`](plugin/skills/caveman/SKILL.md) — Companion conciseness skill (`/caveman [lite|full|ultra|off|auto]`, `commit`, `compress`, `status`) backed by [`plugin/observability/caveman_protocol.py`](plugin/observability/caveman_protocol.py) (`lite` default across all 3 profiles, propagated by ROI to `planner` [capped at `full`], `reviewer` [1-line independent], `builder` and `swarm`, with `evals/` strictly excluded and mandatory clear prose for security alerts, confirmations, and `/grill-me`).
@@ -27,7 +27,7 @@ All runtime machinery lives in [`plugin/`](plugin/) and stays decoupled from tar
   - [`reviewer`](plugin/agents/reviewer.md) — Independent cold-audit reviewer (`pro` tier, read-only, `inheritMcp: false`) enforcing a strict "proof or silence" protocol (`BLOCKER` / `MAJOR` / `UNCERTAIN` / `NIT`).
 - **Fail-Closed Safety Hooks** ([`plugin/hooks.json`](plugin/hooks.json)):
   - [`plugin/hooks/pre_tool_guard.py`](plugin/hooks/pre_tool_guard.py) (`PreToolUse`) — Evaluates shell commands (via quote-aware pipe-chain segmentation, PowerShell here-string support, argument-role awareness for search/Git literals, and recursive `deny`-focused inspection of `python -c`, `node`/`perl`/`ruby`, `sh`/`pwsh`/`cmd`, `xargs`, and `find -exec`), file reads/writes, MCP calls, and `run_workflow` scripts via [`plugin/hooks/safety_policy.py`](plugin/hooks/safety_policy.py), enforcing hard `deny` rules globally while scoping heuristic `force_ask` prompts strictly to Gravity Workflow-initialized workspaces and protecting the active installed plugin without self-locking the source tree.
-  - [`plugin/hooks/session_start_caveman.py`](plugin/hooks/session_start_caveman.py) (`SessionStart`), [`plugin/hooks/post_tool_format.py`](plugin/hooks/post_tool_format.py) (`PostToolUse`), and [`plugin/hooks/stop_session_logger.py`](plugin/hooks/stop_session_logger.py) (`Stop`) — One-time `SessionStart` Caveman injection in Gravity Workflow workspaces (preserving Gemini Context Caching), post-edit formatting checks, and session telemetry / `evo` adaptation logging, dynamically resolving the target workspace from `stdin`.
+  - [`plugin/hooks/session_start_caveman.py`](plugin/hooks/session_start_caveman.py) (`SessionStart`, disabled by default with `"enabled": false` in `plugin/hooks.json` while remaining functional on direct invocation), [`plugin/hooks/post_tool_format.py`](plugin/hooks/post_tool_format.py) (`PostToolUse`), and [`plugin/hooks/stop_session_logger.py`](plugin/hooks/stop_session_logger.py) (`Stop`) — All hooks run on [`plugin/_shared/hook_runtime.py`](plugin/_shared/hook_runtime.py), handling post-edit formatting checks and session telemetry / `evo` adaptation logging while dynamically resolving the target workspace from `stdin`.
 - **Automated Review & Parallel Evals**:
   - [`plugin/workflows/review_pipeline.py`](plugin/workflows/review_pipeline.py) — Resolves `PLUGIN_ROOT` without `__file__` or `os.environ`, pre-collects a bounded repository file tree for `Planner`/`Reviewer`, skips `Planner` when `plan` is provided, captures `validation_summary` in `BUILD_SCHEMA`, handles safe diff fallback if external worktree access is restricted, and logs `preset_profile` + `role_models` for A/B experiments.
   - [`plugin/evals/run_suite.py`](plugin/evals/run_suite.py) and [`plugin/evals/eval_checks.py`](plugin/evals/eval_checks.py) — Runs the 12-case starter suite in [`plugin/evals/cases.json`](plugin/evals/cases.json) using deterministic assertions followed by an independent judge, writing reports to centralized storage.
@@ -55,7 +55,7 @@ Architecture, modes, workflows, safety contracts, evals, observability, and cont
 - [`docs/validation-and-development.md`](docs/validation-and-development.md) — Strict validators, test suites, portability, and contributor checklist.
 
 ### 4. Companion Ecosystem ([`gravity`](https://github.com/BSourichanh/gravity))
-Session token, cache, and reliability metrics live in [`BSourichanh/gravity-metrics`](https://github.com/BSourichanh/gravity-metrics) (`../gravity-metrics`), coordinated alongside `gravity-architect` and `gravity-bridge` from the ecosystem hub [`BSourichanh/gravity`](https://github.com/BSourichanh/gravity) (`../gravity`).
+Session token, cache, and reliability metrics live in [`BSourichanh/gravity-metrics`](https://github.com/BSourichanh/gravity-metrics) (`../gravity-metrics`), coordinated alongside `gravity-architect` from the ecosystem hub [`BSourichanh/gravity`](https://github.com/BSourichanh/gravity) (`../gravity`).
 
 ---
 
@@ -118,7 +118,7 @@ python plugin/scripts/validate.py --plugin-root ~/.gemini/config/plugins/gravity
 1. Open any project in Antigravity and invoke `/gravity-workflow` (default `evo` at `standard`, `safe`), `/gravity-workflow quick|standard|deep|evo [--no-verify] <task>`, `/caveman [lite|full|ultra|off|auto]` (defaults to `lite`), `/gravity-workflow status`, or `/gravity-workflow evals` to start a session (or bootstrap project files via CLI with `init_workspace.py`).
 2. **Unified Cockpit (`/gravity dashboard` in `gravity` Core):** Invoke `/gravity dashboard` (provided by [`gravity`](https://github.com/BSourichanh/gravity) Core) to inspect live workflow state across workspaces. *Migration note: the transitional HTTP sidecar on port `4789` is retired; if an older `"gravity-workflow/live-widget"` entry remains in `~/.gemini/config/config.json`, remove it manually.*
 
-See [`plugin/README.md`](plugin/README.md) for the plugin's full French documentation.
+See [`plugin/README.md`](plugin/README.md) for the standalone plugin documentation.
 
 ### Migrating from `v0.1.x` (`gravity`) to `v0.2.0` (`gravity-workflow`)
 

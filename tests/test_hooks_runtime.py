@@ -447,9 +447,8 @@ class TestHooksRuntime(WorkflowEnvTestCase):
 
     def test_hooks_migrated_onto_shared_hook_runtime_with_zero_legacy_imports(self) -> None:
         hooks_dir = PLUGIN_ROOT / "hooks"
+        self.assertFalse((hooks_dir / "hook_runtime.py").exists())
         for py_file in sorted(hooks_dir.rglob("*.py")):
-            if py_file.name == "hook_runtime.py":
-                continue
             src = py_file.read_text(encoding="utf-8")
             self.assertNotIn("from hook_runtime import", src, str(py_file))
             self.assertNotIn("hooks.hook_runtime", src, str(py_file))

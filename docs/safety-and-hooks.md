@@ -6,7 +6,7 @@ Antigravity exécute les commandes de `hooks.json` depuis **la racine du plugin*
 
 - **Structure obligatoire :** `PreToolUse` et `PostToolUse` sont des **tableaux groupés** (`matcher` + `hooks[]`) ; `SessionStart`, `PreInvocation`, `PostInvocation` et `Stop` sont des **tableaux plats**.
 - **Règle absolue `exit 0` :** tout code retour non nul ou exception non capturée bascule silencieusement en **fail-open**. Tous les scripts capturent les exceptions (y compris d'import), configurent `stdin`/`stdout`/`stderr` en UTF-8 (`configure_utf8_stdio()`), émettent du JSON valide (`ensure_ascii=True` dans `emit_json()` pour prévenir toute erreur `protojson` sous Windows `cp1252`) et sortent en `0`.
-- **Utilitaire partagé [`hook_runtime.py`](../plugin/hooks/hook_runtime.py) :** lecture `stdin` threadée avec timeout (`1.0 s`), `configure_utf8_stdio()`, `emit_json()` (ASCII-safe), `emit_ok()` (`{}`), `is_gravity_workspace()`, résolution de workspace, chargement dynamique du verrou portable et journalisation non bloquante des événements `deny`/`force_ask` (uniquement dans les workspaces initialisés Gravity Workflow ou sur surcharge `GRAVITY_WORKFLOW_STATE_PATH`) avec `conversation_id` dans `live_state.json`.
+- **Utilitaire partagé [`_shared/hook_runtime.py`](../plugin/_shared/hook_runtime.py) :** lecture `stdin` threadée avec timeout (`1.0 s`), `configure_utf8_stdio()`, `emit_json()` (ASCII-safe), `emit_ok()` (`{}`), résolution de workspace (`anchor_file`, `fallback_cwd=True`, `env_var="GRAVITY_WORKFLOW_WORKSPACE"`), complété par `is_gravity_workspace()` (`policy/evaluator.py` / `safety_policy.py`) et journalisation non bloquante `record_live_event()` (`pre_tool_guard.py`) des événements `deny`/`force_ask` avec `conversation_id` dans `live_state.json`.
 
 ---
 
@@ -30,8 +30,8 @@ Pour l'analyse des commandes shell sans faux positifs inter-commandes ni contour
 
 ## Hooks `SessionStart`, `PostToolUse` & `Stop`
 
-- **[`session_start_caveman.py`](../plugin/hooks/session_start_caveman.py) (`SessionStart`, groupe `harness-session-caveman`) :**
-  - Charge `.agents/gravity-workflow/profile.json` (uniquement si le workspace est initialisé Gravity Workflow) et vérifie le niveau `caveman` (`lite` par défaut).
+- **[`session_start_caveman.py`](../plugin/hooks/session_start_caveman.py) (`SessionStart`, groupe `harness-session-caveman`, `"enabled": false` dans `plugin/hooks.json`) :**
+  - Désactivé par défaut dans `plugin/hooks.json` (`"enabled": false`) tout en restant fonctionnel en invocation directe : charge `.agents/gravity-workflow/profile.json` (repli centralisé) et vérifie le niveau `caveman` (`lite` par défaut).
   - Si hors projet Gravity Workflow, si `caveman == "off"`, ou si `stdin` est malformé : émet `{}` et sort en `0`.
   - Sinon, injecte une seule fois au démarrage (`injectSteps[0].systemMessage.systemMessage`) la directive compacte produite par `caveman_protocol.build_session_start_prompt()`, préservant le Context Caching Gemini et imposant l'**auto-clarté** (prose complète obligatoire sur alertes/refus `PreToolUse`, confirmations irréversibles et `/grill-me`).
 - **[`post_tool_format.py`](../plugin/hooks/post_tool_format.py) (`PostToolUse`) :**

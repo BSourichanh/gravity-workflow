@@ -63,7 +63,7 @@ class TestSafetyPaths(unittest.TestCase):
 
     def test_scoped_hooks_protection_and_hardening(self) -> None:
         for allowed_target in (
-            "gravity-metrics/plugin/hooks/hook_runtime.py",
+            "gravity-metrics/plugin/hooks/session_start_metrics.py",
             "gravity-metrics/plugin/hooks/pre_invocation_metrics.py",
             "gravity-metrics/plugin/hooks.json",
             "src/hooks/useAuth.ts",

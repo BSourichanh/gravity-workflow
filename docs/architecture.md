@@ -31,23 +31,27 @@ plugin/
 │   │   └── references/                 # 10 fiches chargées à la demande (00 à 09)
 │   └── caveman/
 │       └── SKILL.md                    # Skill compagnon /caveman (intensités, commit, compress)
+├── _shared/                            # Socle Python 3.10+ stdlib synchronisé (atomic_io, file_lock, hook_runtime, installer_core, path_safety, signal_bus, transcript_reader, validator_core)
 ├── hooks/
-│   ├── hook_runtime.py                 # Stdin threadé, emit_ok/emit_json, résolution workspace, verrous
 │   ├── safety_policy.py                # Façade rétrocompatible (<= 220 L) vers policy/
-│   ├── policy/                         # 7 sous-modules SRP deny / force_ask / allow
+│   ├── policy/                         # Sous-modules SRP deny / force_ask / allow
 │   │   ├── __init__.py
 │   │   ├── constants.py                # Tables statiques, regex, secrets, destructeurs
 │   │   ├── paths.py                    # Normalisation chemins, protections plugin/harnais/secrets
 │   │   ├── shell_parser.py             # Tokenisation PowerShell/POSIX, sous-expressions, redirections
 │   │   ├── git_and_fs.py               # Règles Git (force-push/config -c) et rm/secrets/DB
-│   │   ├── python_ast.py               # Inspection AST Python découpée en helpers par famille
-│   │   ├── inline_scripts.py           # Extraction/inspection python -c, node -e, perl/ruby, stdin
+│   │   ├── python_ast*.py              # Inspection AST Python découpée (eval, imports, readonly, principal)
+│   │   ├── inline_scripts.py           # Extraction/inspection (+ js_eval.py, stdin_inspect.py)
 │   │   └── evaluator.py                # Orchestration _evaluate_shell_command et décisions fail-closed
 │   ├── pre_tool_guard.py               # Hook PreToolUse fail-closed (chmod 0755)
 │   ├── post_tool_format.py             # Hook PostToolUse auto-formatage (chmod 0755)
-│   ├── session_start_caveman.py        # Hook SessionStart injection Caveman (chmod 0755)
+│   ├── session_start_caveman.py        # Hook SessionStart Caveman (chmod 0755, "enabled": false dans hooks.json)
 │   └── stop_session_logger.py          # Hook Stop runs.jsonl + evolve_on_stop (chmod 0755)
 ├── workflows/
+│   ├── worktree_ops.py                 # Isolation worktree + repli Snap ~/gravity-worktrees (EC-6)
+│   ├── patch_apply.py                  # Application vérifiée de patchs (chmod 0755)
+│   ├── swarm_wave.py                   # Préparation déterministe 0-token /swarm (chmod 0755)
+│   ├── wave_runner.py                  # Exécuteur parallèle de vagues wave_plan_v1
 │   └── review_pipeline.py              # Pipeline Planner -> Builder (branch) -> Reviewer indépendant
 ├── evals/
 │   ├── cases.json                      # Catalogue starter de 12 cas
@@ -55,8 +59,10 @@ plugin/
 │   └── run_suite.py                    # Runner parallèle isolé pour run_workflow
 ├── observability/
 │   ├── caveman_protocol.py             # Règles Caveman, adaptation evo et directives sous-agents
-│   ├── profile_engine.py               # Moteur 3 axes + adaptation evo + Caveman (chmod 0755)
-│   ├── state_writer.py                 # Écrivain atomique + default_workflow_home() + registre global
+│   ├── evo_engine.py                   # Moteur d'adaptation consultative evo
+│   ├── metrics_signals.py              # Consommateur SPI-3 (_shared.signal_bus)
+│   ├── profile_engine.py               # Moteur 3 axes + overrides A/B + Caveman (chmod 0755)
+│   ├── state_writer.py                 # Écrivain atomique (_shared.{atomic_io,file_lock}) + registre global
 │   └── statusline.py                   # Barre /statusline CLI (chmod 0755)
 ├── templates/                          # Source de vérité unique des templates statiques (UTF-8 sans BOM, LF)
 │   ├── AGENTS.md
@@ -71,6 +77,7 @@ plugin/
 │       │   └── 06-engineering-principles.md
 │       └── gravity-workflow/{.gitignore,BACKLOG.md,profile.json}
 └── scripts/
+    ├── dashboard_provider.py           # Fournisseur SPI-1 read-only pour /gravity dashboard (chmod 0755)
     ├── init_workspace.py               # Bootstrapper projet full/quickstart + --with-stack (chmod 0755)
     ├── validate.py                     # CLI validation --strict (chmod 0755)
     ├── test_unit.py                    # Lanceur rétrocompatible vers tests/test_*.py (<= 50 L, 100 % stdlib)
@@ -130,7 +137,7 @@ workspace-template/
 - **Méthodes :** `--method copy` *(défaut — copie mise en zone de staging, swap atomique par `os.rename` avec sauvegarde et rollback automatique en cas d'échec, et repli de synchronisation in-place avec rollback en cas de fichier modifié verrouillé puis purge des fichiers obsolètes si un sous-dossier comme `hooks/` est verrouillé sous Windows par un processus actif)* ou `--method agy` *(délègue à `agy plugin validate|install|uninstall`)*.
 - **Nettoyage de migration (`v0.1.x` → `v0.2.0`) :** lors d'une installation `--scope global --method copy` (ou `--scope workspace`), supprime l'ancien plugin workflow `plugins/gravity` **uniquement** s'il ne possède pas `config/module.json` avec `"id": "core"` ET présente des marqueurs workflow hérités (`hooks/pre_tool_guard.py`, `hooks/safety_policy.py` ou `skills/gravity/`). Le plugin **Gravity Core (`gravity`)** n'est **jamais** supprimé (`--keep-legacy` désactive aussi le nettoyage des vrais legacies).
 - **Adaptation Windows :** sans `--no-fix-python` et en l'absence d'un binaire `python3` réel (l'alias WindowsApps est ignoré), réécrit `python3` vers `python` ou `py -3` uniquement dans la **copie installée** via `validate.py --fix-python-cmd`, laissant le dépôt source portable.
-- **Permissions POSIX :** applique les bits d'exécution équivalents à `0755` sur les 8 scripts déclarés dans `EXEC_SCRIPTS`.
+- **Permissions POSIX :** applique les bits d'exécution équivalents à `0755` sur les scripts déclarés dans `EXEC_SCRIPTS` (incluant `scripts/dashboard_provider.py`, `workflows/patch_apply.py` et `workflows/swarm_wave.py`).
 - **Installation & diagnostic :** `--check`, `--dry-run`, `--force` (mise à jour), `--strict` (validation stricte active par défaut, vérifie aussi la source sous `--check`), `--keep-legacy`, `--init-workspace <dir> [--mode quickstart|full]`.
 - **Désinstallation & nettoyage unifiés (`--uninstall` / `--workspace-only`) :**
   - **Suppression du plugin (`--uninstall`) :** `--scope global|workspace`, `--target <dir>` ou `--method agy` (`agy plugin uninstall gravity-workflow`), avec refus sur toute cible non-Gravity Workflow, `$HOME`, racine disque ou répertoire du dépôt source (`plugin/`, `workspace-template/`).

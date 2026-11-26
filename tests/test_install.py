@@ -289,7 +289,7 @@ class TestGravityInstaller(unittest.TestCase):
             (target / "README.md").write_text("DIFFERENT", encoding="utf-8")
             stale_keep = target / "stale_preserve_on_fail.txt"
             stale_keep.write_text("keep-me", encoding="utf-8")
-            (target / "hooks" / "hook_runtime.py").unlink()
+            (target / "hooks" / "stop_session_logger.py").unlink()
             with mock.patch("install.os.rename", side_effect=deny_first_rename), mock.patch(
                 "install.shutil.copy2", side_effect=locked_readme_copy2
             ):
@@ -298,7 +298,7 @@ class TestGravityInstaller(unittest.TestCase):
             self.assertEqual((target / "plugin.json").read_text(encoding="utf-8"), old_manifest)
             self.assertEqual((target / "README.md").read_text(encoding="utf-8"), "DIFFERENT")
             self.assertTrue(stale_keep.is_file())
-            self.assertFalse((target / "hooks" / "hook_runtime.py").exists())
+            self.assertFalse((target / "hooks" / "stop_session_logger.py").exists())
             leftovers = [
                 p.name
                 for p in parent.iterdir()
