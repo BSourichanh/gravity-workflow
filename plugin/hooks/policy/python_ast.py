@@ -27,25 +27,28 @@ from .python_ast_eval import (
     _eval_static_int,
     _eval_static_seq,
     _eval_static_str,
+    _is_named_mod_expr,
 )
 from .python_ast_imports import (
     _bind_var,
     _collect_python_imports,
+    _eval_code_arg_cands,
+    _eval_scope_seq_cands,
     _eval_scope_str_cands,
-    _eval_static_seq_candidates,
     _eval_static_str_candidates,
     _expr_has_obfuscated_decode,
-    _iter_stmt_expr_nodes,
-    _mark_benign_cmd_node,
-    _mark_subtree,
     _resolve_dynamic_import_module,
 )
 from .python_ast_readonly import (
     _build_parent_map,
     _classify_readonly_call,
     _collect_target_var_names,
+    _eval_static_seq_candidates,
     _is_open_call_readonly,
     _is_readonly_harness_usage,
+    _iter_stmt_expr_nodes,
+    _mark_benign_cmd_node,
+    _mark_subtree,
     _raw_code_hard_deny_check,
     _raw_code_has_harness_mutation_risk,
     _resolve_unambiguous_open_modes,
@@ -140,15 +143,7 @@ def _inspect_subprocess_call(
     if cmd_node is None:
         return None
     str_cands = _eval_scope_str_cands(cmd_node, state, scope)
-    seq_cands = _eval_static_seq_candidates(
-        cmd_node,
-        scope.cur_str,
-        scope.cur_seq,
-        state.alt_seq,
-        state.imp.shlex_mod_names,
-        state.imp.shlex_split_names,
-        state.imp.func_returns,
-    )
+    seq_cands = _eval_scope_seq_cands(cmd_node, state, scope)
     for cmd_str in str_cands:
         deny_reason, _ = _evaluate_shell_command(cmd_str, state.ws_root, _depth=state.depth + 1)
         if deny_reason:
@@ -197,32 +192,16 @@ def _inspect_exec_spawn_call(
         (isinstance(fn.value, ast.Name) and fn.value.id in scope.os_mods)
         or dyn_recv_mod in ("os", "posix", "nt")
     )
-    exec_list_hit = (is_os_attr and fn.attr in OS_EXEC_LIST_FUNCS) or (
-        isinstance(fn, ast.Name) and fn.id in state.imp.os_exec_list_names
-    )
-    spawn_list_hit = (is_os_attr and fn.attr in OS_SPAWN_LIST_FUNCS) or (
-        isinstance(fn, ast.Name) and fn.id in state.imp.os_spawn_list_names
-    )
-    exec_var_hit = (is_os_attr and fn.attr in OS_EXEC_VAR_FUNCS) or (
-        isinstance(fn, ast.Name) and fn.id in state.imp.os_exec_var_names
-    )
-    spawn_var_hit = (is_os_attr and fn.attr in OS_SPAWN_VAR_FUNCS) or (
-        isinstance(fn, ast.Name) and fn.id in state.imp.os_spawn_var_names
-    )
+    exec_list_hit = (is_os_attr and fn.attr in OS_EXEC_LIST_FUNCS) or (isinstance(fn, ast.Name) and fn.id in state.imp.os_exec_list_names)
+    spawn_list_hit = (is_os_attr and fn.attr in OS_SPAWN_LIST_FUNCS) or (isinstance(fn, ast.Name) and fn.id in state.imp.os_spawn_list_names)
+    exec_var_hit = (is_os_attr and fn.attr in OS_EXEC_VAR_FUNCS) or (isinstance(fn, ast.Name) and fn.id in state.imp.os_exec_var_names)
+    spawn_var_hit = (is_os_attr and fn.attr in OS_SPAWN_VAR_FUNCS) or (isinstance(fn, ast.Name) and fn.id in state.imp.os_spawn_var_names)
 
     argv_candidates: List[List[str]] = []
     if (exec_list_hit and len(node.args) >= 2) or (spawn_list_hit and len(node.args) >= 3):
         exe_idx, seq_idx = (0, 1) if exec_list_hit else (1, 2)
         exe_cands = _eval_scope_str_cands(node.args[exe_idx], state, scope)
-        for seq_vals in _eval_static_seq_candidates(
-            node.args[seq_idx],
-            scope.cur_str,
-            scope.cur_seq,
-            state.alt_seq,
-            state.imp.shlex_mod_names,
-            state.imp.shlex_split_names,
-            state.imp.func_returns,
-        ):
+        for seq_vals in _eval_scope_seq_cands(node.args[seq_idx], state, scope):
             if seq_vals:
                 argv = [v if v is not None else "__dynamic__" for v in seq_vals]
                 argv_candidates.append(argv)
@@ -243,6 +222,28 @@ def _inspect_exec_spawn_call(
         deny_reason, _ = _evaluate_shell_command(_argv_to_shell_cmd(argv), state.ws_root, _depth=state.depth + 1)
         if deny_reason:
             return "deny", deny_reason
+    return None
+
+
+def _resolve_eval_exec_call_kind(
+    fn: ast.AST, state: _PyAstState, scope: _ScopeState, resolved_dyn_attrs: List[str], is_re_call: bool
+) -> Optional[str]:
+    """Résout si `fn` correspond à `eval`/`exec`/`compile` (direct, alias, `builtins`, `getattr`, subscript)."""
+    if isinstance(fn, ast.Name) and fn.id in scope.eval_exec_fns and not (fn.id == "compile" and is_re_call):
+        return scope.eval_exec_fns[fn.id]
+    if isinstance(fn, ast.Attribute) and fn.attr in ("eval", "exec", "compile") and _is_named_mod_expr(fn.value, "builtins", scope.builtins_mods):
+        return fn.attr
+    if isinstance(fn, ast.Call) and isinstance(fn.func, ast.Name) and fn.func.id == "getattr" and len(fn.args) >= 2 and _is_named_mod_expr(fn.args[0], "builtins", scope.builtins_mods):
+        return next((a for a in resolved_dyn_attrs if a in ("eval", "exec", "compile")), None)
+    if isinstance(fn, ast.Subscript):
+        val = fn.value
+        is_bi = _is_named_mod_expr(val, "builtins", scope.builtins_mods) or (
+            isinstance(val, ast.Attribute) and val.attr == "__dict__" and _is_named_mod_expr(val.value, "builtins", scope.builtins_mods)
+        ) or (
+            isinstance(val, ast.Call) and isinstance(val.func, ast.Name) and val.func.id == "vars" and bool(val.args) and _is_named_mod_expr(val.args[0], "builtins", scope.builtins_mods)
+        )
+        if is_bi:
+            return next((k for k in _eval_scope_str_cands(_ast_subscript_slice(fn), state, scope) if k in ("eval", "exec", "compile")), None)
     return None
 
 
@@ -298,29 +299,29 @@ def _inspect_python_call(
         if verdict is not None:
             return verdict
 
-    if isinstance(fn, ast.Name) and fn.id in ("eval", "exec", "compile") and not (fn.id == "compile" and is_re_call):
+    eval_kind = _resolve_eval_exec_call_kind(fn, state, scope, resolved_dyn_attrs, is_re_call)
+    if eval_kind is not None:
         code_arg = node.args[0] if node.args else kw_map.get("source")
         if code_arg is not None:
-            code_cands = _eval_scope_str_cands(code_arg, state, scope)
+            code_cands, is_complete = _eval_code_arg_cands(code_arg, state, scope)
             obf_hint = _expr_has_obfuscated_decode(code_arg, state, scope)
             if code_cands:
                 if state.depth >= MAX_SUBSHELL_DEPTH:
                     if obf_hint:
-                        return "deny", f"Profondeur maximale atteinte avec décodage `{obf_hint}` dans `{fn.id}`."
+                        return "deny", f"Profondeur maximale atteinte avec décodage `{obf_hint}` dans `{eval_kind}`."
                 else:
                     for inner_code in code_cands:
                         sub_dec, sub_reason = _inspect_python_ast(
-                            inner_code,
-                            state.ws_root,
-                            context_label=state.context_label,
-                            allow_top_level_await=state.allow_top_level_await,
-                            _depth=state.depth + 1,
+                            inner_code, state.ws_root, context_label=state.context_label,
+                            allow_top_level_await=state.allow_top_level_await, _depth=state.depth + 1,
                         )
                         if sub_dec != "allow":
-                            return "deny", sub_reason or f"Code dynamique `{fn.id}` bloqué."
+                            return "deny", sub_reason or f"Code dynamique `{eval_kind}` bloqué."
+                    if obf_hint and not is_complete:
+                        return "deny", f"Exécution dynamique `{eval_kind}` avec décodage non résolvable (`{obf_hint}`) bloquée."
                     _mark_benign_cmd_node(state, code_arg)
             elif obf_hint:
-                return "deny", f"Exécution dynamique `{fn.id}` avec décodage non résolvable (`{obf_hint}`) bloquée."
+                return "deny", f"Exécution dynamique `{eval_kind}` avec décodage non résolvable (`{obf_hint}`) bloquée."
 
     return None
 
@@ -383,61 +384,41 @@ def _walk_python_stmts(
                     state.record_alt_str(var_name, scope.cur_str[var_name])
                 else:
                     scope.cur_str.pop(var_name, None)
-                    state.alt_str.pop(var_name, None)
+                    scope.incomplete_vars.add(var_name)
+                    if _expr_has_obfuscated_decode(stmt.value, state, scope) is not None:
+                        scope.obf_tainted.add(var_name)
                     state.dynamic_tainted_vars.add(var_name)
             elif var_name in scope.cur_seq:
                 rhs_seq = _eval_static_seq(
-                    stmt.value,
-                    scope.cur_str,
-                    scope.cur_seq,
-                    0,
-                    state.imp.shlex_mod_names,
-                    state.imp.shlex_split_names,
-                    state.imp.func_returns,
+                    stmt.value, scope.cur_str, scope.cur_seq, 0,
+                    state.imp.shlex_mod_names, state.imp.shlex_split_names, state.imp.func_returns,
                 )
                 scope.cur_seq[var_name] = scope.cur_seq[var_name] + (rhs_seq if rhs_seq is not None else [None])
                 state.record_alt_seq(var_name, scope.cur_seq[var_name])
         elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
             call = stmt.value
-            if (
-                isinstance(call.func, ast.Attribute)
-                and isinstance(call.func.value, ast.Name)
-                and call.func.value.id in scope.cur_seq
-            ):
+            if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name) and call.func.value.id in scope.cur_seq:
                 target_var = call.func.value.id
                 if call.func.attr == "append" and len(call.args) == 1:
                     state.mutator_receiver_names.add(call.func.value)
                     state.var_contributors.setdefault(target_var, []).append(call.args[0])
-                    scope.cur_seq[target_var].append(
-                        _eval_static_str(call.args[0], scope.cur_str, scope.cur_seq, 0, state.imp.func_returns)
-                    )
+                    scope.cur_seq[target_var].append(_eval_static_str(call.args[0], scope.cur_str, scope.cur_seq, 0, state.imp.func_returns))
                     state.record_alt_seq(target_var, scope.cur_seq[target_var])
                 elif call.func.attr == "extend" and len(call.args) == 1:
                     state.mutator_receiver_names.add(call.func.value)
                     state.var_contributors.setdefault(target_var, []).append(call.args[0])
                     ext_vals = _eval_static_seq(
-                        call.args[0],
-                        scope.cur_str,
-                        scope.cur_seq,
-                        0,
-                        state.imp.shlex_mod_names,
-                        state.imp.shlex_split_names,
-                        state.imp.func_returns,
+                        call.args[0], scope.cur_str, scope.cur_seq, 0,
+                        state.imp.shlex_mod_names, state.imp.shlex_split_names, state.imp.func_returns,
                     )
-                    if ext_vals is not None:
-                        scope.cur_seq[target_var].extend(ext_vals)
-                    else:
-                        scope.cur_seq[target_var].append(None)
+                    scope.cur_seq[target_var].extend(ext_vals) if ext_vals is not None else scope.cur_seq[target_var].append(None)
                     state.record_alt_seq(target_var, scope.cur_seq[target_var])
                 elif call.func.attr == "insert" and len(call.args) == 2:
                     idx_val = _eval_static_int(call.args[0])
                     if idx_val is not None:
                         state.mutator_receiver_names.add(call.func.value)
                         state.var_contributors.setdefault(target_var, []).append(call.args[1])
-                        scope.cur_seq[target_var].insert(
-                            idx_val,
-                            _eval_static_str(call.args[1], scope.cur_str, scope.cur_seq, 0, state.imp.func_returns),
-                        )
+                        scope.cur_seq[target_var].insert(idx_val, _eval_static_str(call.args[1], scope.cur_str, scope.cur_seq, 0, state.imp.func_returns))
                         state.record_alt_seq(target_var, scope.cur_seq[target_var])
 
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -459,20 +440,28 @@ def _walk_python_stmts(
                 verdict = _walk_python_stmts(state, b_scope, b_stmts)
                 if verdict is not None:
                     return verdict
-                scope.subproc_mods.update(b_scope.subproc_mods)
-                scope.os_mods.update(b_scope.os_mods)
-                scope.rmtree_fns.update(b_scope.rmtree_fns)
-                scope.os_shell_fns.update(b_scope.os_shell_fns)
-                scope.subproc_fns.update(b_scope.subproc_fns)
-                scope.base64_mods.update(b_scope.base64_mods)
+                for s_attr in (
+                    "subproc_mods", "os_mods", "rmtree_fns", "os_shell_fns", "subproc_fns",
+                    "base64_mods", "codecs_mods", "codecs_fns", "builtins_mods", "incomplete_vars", "obf_tainted",
+                ):
+                    getattr(scope, s_attr).update(getattr(b_scope, s_attr))
                 scope.base64_fns.update(b_scope.base64_fns)
-                scope.cur_bytes.update(b_scope.cur_bytes)
+                scope.eval_exec_fns.update(b_scope.eval_exec_fns)
+                for k in b_scope.incomplete_vars:
+                    scope.cur_str.pop(k, None)
+                    scope.cur_bytes.pop(k, None)
+                    scope.cur_seq.pop(k, None)
                 for k, v in b_scope.cur_str.items():
-                    scope.cur_str[k] = v
+                    if k not in scope.incomplete_vars:
+                        scope.cur_str[k] = v
                     state.record_alt_str(k, v)
-                for k, v in b_scope.cur_seq.items():
-                    scope.cur_seq[k] = list(v)
-                    state.record_alt_seq(k, v)
+                for k, vb in b_scope.cur_bytes.items():
+                    if k not in scope.incomplete_vars:
+                        scope.cur_bytes[k] = vb
+                    state.record_alt_bytes(k, vb)
+                for k, vs in b_scope.cur_seq.items():
+                    scope.cur_seq[k] = list(vs)
+                    state.record_alt_seq(k, vs)
             final_stmts = getattr(stmt, "finalbody", None)
             if isinstance(final_stmts, list) and final_stmts:
                 verdict = _walk_python_stmts(state, scope, final_stmts)
@@ -620,6 +609,10 @@ def _inspect_python_ast(
         subproc_fns=set(imp.subprocess_func_names),
         base64_mods=set(imp.base64_mod_names),
         base64_fns=dict(imp.base64_decode_fns),
+        codecs_mods=set(imp.codecs_mod_names),
+        codecs_fns=set(imp.codecs_decode_fns),
+        builtins_mods=set(imp.builtins_mod_names),
+        eval_exec_fns=dict(imp.eval_exec_fns),
     )
     pass1_verdict = _walk_python_stmts(state, scope, list(tree.body))
     if pass1_verdict is not None:

@@ -2,14 +2,27 @@
 """Vérification lecture seule du harnais actif et repli hard-deny sur code Python non analysable par AST."""
 
 import ast
+import codecs
 from pathlib import Path
 import re
 from typing import Dict, List, Optional, Set, Tuple
 
 from .constants import QUOTED_LITERAL_RE, RE_PATTERN_FUNCS, SENSITIVE_PATH_PATTERNS
 from .paths import is_harness_protected, matches_any
-from .python_ast_eval import _PyAstState, _eval_static_str
-from .python_ast_imports import _OS_PATH_PROPAGATING_FUNCS, _OS_PATH_TERMINAL_FUNCS
+from .python_ast_eval import (
+    _OS_PATH_PROPAGATING_FUNCS,
+    _OS_PATH_TERMINAL_FUNCS,
+    _PyAstState,
+    _ScopeState,
+    _decode_bytes_text,
+    _eval_static_seq,
+    _eval_static_str,
+    _is_named_mod_expr,
+)
+
+_SAFE_CODECS_ENCODINGS = frozenset(
+    {"base64", "base64_codec", "hex", "hex_codec", "rot_13", "rot-13", "utf-8", "utf8", "ascii", "latin-1", "latin1"}
+)
 
 _RAW_OS_MUTATION_NAMES = (
     r"remove|unlink|rmdir|rename|replace|chmod|lchmod|chown|open|system|popen|"
@@ -496,3 +509,129 @@ def _is_readonly_harness_usage(
             return False
 
     return True
+
+
+def _mark_subtree(node: ast.AST, target_set: Set[ast.AST]) -> None:
+    """Marque tous les descendants AST de `node` dans `target_set`."""
+    for child in ast.walk(node):
+        target_set.add(child)
+
+
+def _iter_stmt_expr_nodes(stmt: ast.AST) -> List[ast.AST]:
+    """Retourne les nœuds d'expressions appartenant directement à `stmt` (sans descendre dans les blocs imbriqués)."""
+    out: List[ast.AST] = []
+    skip_types = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+    def _visit(node: ast.AST) -> None:
+        out.append(node)
+        for field_name, field_val in ast.iter_fields(node):
+            if node is stmt and field_name in ("body", "orelse", "handlers", "finalbody"):
+                continue
+            if isinstance(field_val, ast.AST) and not isinstance(field_val, skip_types):
+                _visit(field_val)
+            elif isinstance(field_val, list):
+                for item in field_val:
+                    if isinstance(item, ast.AST) and not isinstance(item, skip_types):
+                        _visit(item)
+
+    _visit(stmt)
+    return out
+
+
+def _mark_benign_cmd_node(state: _PyAstState, arg_node: ast.AST) -> None:
+    """Marque un nœud d'argument déjà validé afin d'éviter un faux positif en passe 2."""
+    _mark_subtree(arg_node, state.checked_cmd_nodes)
+    if isinstance(arg_node, ast.Name):
+        state.benign_cmd_name_nodes.add(arg_node)
+        if arg_node.id in state.single_use_defs:
+            _mark_subtree(state.single_use_defs[arg_node.id], state.checked_cmd_nodes)
+
+
+def _eval_static_seq_candidates(
+    node: ast.AST,
+    cur_str: Dict[str, str],
+    cur_seq: Dict[str, List[Optional[str]]],
+    alt_seq: Dict[str, List[List[Optional[str]]]],
+    shlex_mod_names: Set[str],
+    shlex_split_names: Set[str],
+    func_returns: Dict[str, List[ast.AST]],
+    _depth: int = 0,
+) -> List[List[Optional[str]]]:
+    """Retourne les séquences statiques candidates d'une expression AST (y compris `IfExp`, branches, helpers)."""
+    if _depth > 6:
+        return []
+    out: List[List[Optional[str]]] = []
+
+    def _add(val: Optional[List[Optional[str]]]) -> None:
+        if val is not None and val not in out and len(out) < 8:
+            out.append(list(val))
+
+    if isinstance(node, ast.IfExp):
+        for branch in (node.body, node.orelse):
+            for c in _eval_static_seq_candidates(branch, cur_str, cur_seq, alt_seq, shlex_mod_names, shlex_split_names, func_returns, _depth + 1):
+                _add(c)
+        return out
+    if isinstance(node, ast.NamedExpr):
+        return _eval_static_seq_candidates(node.value, cur_str, cur_seq, alt_seq, shlex_mod_names, shlex_split_names, func_returns, _depth + 1)
+    if isinstance(node, ast.Name):
+        if node.id in cur_seq:
+            _add(cur_seq[node.id])
+        for alt in alt_seq.get(node.id, ()):
+            _add(alt)
+        return out
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in func_returns and not node.args and not node.keywords:
+        for ret_expr in func_returns[node.func.id]:
+            for c in _eval_static_seq_candidates(ret_expr, cur_str, cur_seq, alt_seq, shlex_mod_names, shlex_split_names, func_returns, _depth + 1):
+                _add(c)
+        if out:
+            return out
+    _add(_eval_static_seq(node, cur_str, cur_seq, 0, shlex_mod_names, shlex_split_names, func_returns))
+    return out
+
+
+def _match_codecs_decode_call(
+    node: ast.Call, codecs_mod_names: Optional[Set[str]] = None, codecs_decode_fns: Optional[Set[str]] = None
+) -> Optional[Tuple[ast.AST, Optional[ast.AST]]]:
+    """Retourne `(obj_arg, encoding_arg)` si `node` appelle `codecs.decode` (ou alias / `getattr`)."""
+    mods, fns, fn = codecs_mod_names or {"codecs"}, codecs_decode_fns or set(), node.func
+    matched = (
+        (isinstance(fn, ast.Name) and fn.id in fns)
+        or (isinstance(fn, ast.Attribute) and fn.attr == "decode" and _is_named_mod_expr(fn.value, "codecs", mods))
+        or (
+            isinstance(fn, ast.Call) and isinstance(fn.func, ast.Name) and fn.func.id == "getattr"
+            and len(fn.args) >= 2 and isinstance(fn.args[1], ast.Constant) and fn.args[1].value == "decode"
+            and _is_named_mod_expr(fn.args[0], "codecs", mods)
+        )
+    )
+    if not matched:
+        return None
+    kw = {k.arg: k.value for k in node.keywords if k.arg is not None}
+    obj_arg = node.args[0] if node.args else kw.get("obj")
+    enc_arg = node.args[1] if len(node.args) > 1 else kw.get("encoding")
+    if obj_arg is None or len(node.args) > 3 or any(k not in ("obj", "encoding", "errors") for k in kw):
+        return None
+    return obj_arg, enc_arg
+
+
+def _decode_codecs_payload(raw: object, enc: Optional[str]) -> Optional[str]:
+    """Décode statiquement un payload `codecs.decode` pour les encodages texte/bytes sûrs."""
+    enc_norm = (enc or "utf-8").lower()
+    if enc_norm not in _SAFE_CODECS_ENCODINGS or not isinstance(raw, (str, bytes)):
+        return None
+    try:
+        res = codecs.decode(raw, enc_norm)  # type: ignore[arg-type]
+    except (ValueError, TypeError, LookupError):
+        return None
+    return _decode_bytes_text(res) if isinstance(res, bytes) else (res if isinstance(res, str) else None)
+
+
+def _has_tainted_name(node: ast.AST, state: Optional[_PyAstState], scope: Optional[_ScopeState]) -> bool:
+    if state is None and scope is None:
+        return False
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+            if scope and (sub.id in scope.incomplete_vars or sub.id in scope.obf_tainted):
+                return True
+            if state and sub.id in state.dynamic_tainted_vars and not (scope and sub.id in scope.shadowed_alts):
+                return True
+    return False

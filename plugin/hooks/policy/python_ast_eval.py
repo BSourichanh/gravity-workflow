@@ -15,6 +15,12 @@ _OBFUSCATED_DECODE_ATTRS = _BASE64_DECODE_FUNCS | frozenset(
     {"b32decode", "b16decode", "b85decode", "a85decode", "fromhex", "decompress", "a2b_base64", "a2b_hex", "unhexlify"}
 )
 _OBFUSCATED_DECODE_MODS = frozenset({"base64", "codecs", "binascii", "zlib", "bz2", "lzma", "gzip"})
+_OS_PATH_TERMINAL_FUNCS = frozenset(
+    {"exists", "lexists", "isfile", "isdir", "islink", "ismount", "getsize", "getmtime", "getctime", "getatime", "samefile", "sameopenfile"}
+)
+_OS_PATH_PROPAGATING_FUNCS = frozenset(
+    {"join", "abspath", "realpath", "normpath", "normcase", "dirname", "basename", "split", "splitdrive", "splitext", "expanduser", "expandvars", "relpath", "commonpath", "commonprefix"}
+)
 
 
 @dataclass
@@ -29,6 +35,11 @@ class _PyImports:
     base64_mod_names: Set[str] = field(default_factory=lambda: {"base64"})
     base64_decode_fns: Dict[str, str] = field(default_factory=dict)
     codecs_mod_names: Set[str] = field(default_factory=lambda: {"codecs"})
+    codecs_decode_fns: Set[str] = field(default_factory=set)
+    builtins_mod_names: Set[str] = field(default_factory=lambda: {"builtins", "__builtins__"})
+    eval_exec_fns: Dict[str, str] = field(
+        default_factory=lambda: {"eval": "eval", "exec": "exec", "compile": "compile"}
+    )
     import_module_fns: Set[str] = field(default_factory=set)
     shlex_split_names: Set[str] = field(default_factory=set)
     rmtree_func_names: Set[str] = field(default_factory=set)
@@ -48,6 +59,7 @@ class _PyImports:
     shadowed_names: Set[str] = field(default_factory=set)
     has_wildcard_import: bool = False
     func_returns: Dict[str, List[ast.AST]] = field(default_factory=dict)
+    func_defs: Dict[str, List[ast.AST]] = field(default_factory=dict)
 
 
 @dataclass
@@ -61,7 +73,16 @@ class _ScopeState:
     subproc_fns: Set[str]
     base64_mods: Set[str] = field(default_factory=lambda: {"base64"})
     base64_fns: Dict[str, str] = field(default_factory=dict)
+    codecs_mods: Set[str] = field(default_factory=lambda: {"codecs"})
+    codecs_fns: Set[str] = field(default_factory=set)
+    builtins_mods: Set[str] = field(default_factory=lambda: {"builtins", "__builtins__"})
+    eval_exec_fns: Dict[str, str] = field(
+        default_factory=lambda: {"eval": "eval", "exec": "exec", "compile": "compile"}
+    )
     cur_bytes: Dict[str, bytes] = field(default_factory=dict)
+    incomplete_vars: Set[str] = field(default_factory=set)
+    obf_tainted: Set[str] = field(default_factory=set)
+    shadowed_alts: Set[str] = field(default_factory=set)
 
     def clone(self) -> "_ScopeState":
         return _ScopeState(
@@ -74,7 +95,14 @@ class _ScopeState:
             subproc_fns=set(self.subproc_fns),
             base64_mods=set(self.base64_mods),
             base64_fns=dict(self.base64_fns),
+            codecs_mods=set(self.codecs_mods),
+            codecs_fns=set(self.codecs_fns),
+            builtins_mods=set(self.builtins_mods),
+            eval_exec_fns=dict(self.eval_exec_fns),
             cur_bytes=dict(self.cur_bytes),
+            incomplete_vars=set(self.incomplete_vars),
+            obf_tainted=set(self.obf_tainted),
+            shadowed_alts=set(self.shadowed_alts),
         )
 
 
@@ -92,6 +120,7 @@ class _PyAstState:
     exempt_regex_nodes: Set[ast.AST] = field(default_factory=set)
     resolved_expr_strs: Dict[ast.AST, List[str]] = field(default_factory=dict)
     alt_str: Dict[str, List[str]] = field(default_factory=dict)
+    alt_bytes: Dict[str, List[bytes]] = field(default_factory=dict)
     alt_seq: Dict[str, List[List[Optional[str]]]] = field(default_factory=dict)
     var_contributors: Dict[str, List[ast.AST]] = field(default_factory=dict)
     benign_cmd_name_nodes: Set[ast.Name] = field(default_factory=set)
@@ -100,6 +129,11 @@ class _PyAstState:
 
     def record_alt_str(self, name: str, val: str) -> None:
         bucket = self.alt_str.setdefault(name, [])
+        if val not in bucket and len(bucket) < 8:
+            bucket.append(val)
+
+    def record_alt_bytes(self, name: str, val: bytes) -> None:
+        bucket = self.alt_bytes.setdefault(name, [])
         if val not in bucket and len(bucket) < 8:
             bucket.append(val)
 
@@ -140,6 +174,20 @@ def _eval_static_int(node: Optional[ast.AST]) -> Optional[int]:
     return None
 
 
+def _eval_slice_bounds(slice_node: ast.Slice) -> Optional[slice]:
+    """Évalue statiquement les bornes d'un `ast.Slice` si toutes sont littérales."""
+    lo = _eval_static_int(slice_node.lower) if slice_node.lower is not None else None
+    hi = _eval_static_int(slice_node.upper) if slice_node.upper is not None else None
+    st = _eval_static_int(slice_node.step) if slice_node.step is not None else None
+    if (
+        (slice_node.lower is None or lo is not None)
+        and (slice_node.upper is None or hi is not None)
+        and (slice_node.step is None or (st is not None and st != 0))
+    ):
+        return slice(lo, hi, st)
+    return None
+
+
 def _eval_static_seq(
     node: ast.AST,
     const_vars: Dict[str, str],
@@ -171,17 +219,9 @@ def _eval_static_seq(
     if isinstance(node, ast.Subscript):
         slice_node = _ast_subscript_slice(node)
         if isinstance(slice_node, ast.Slice):
-            seq = rec(node.value)
-            if seq is not None:
-                lo = _eval_static_int(slice_node.lower) if slice_node.lower is not None else None
-                hi = _eval_static_int(slice_node.upper) if slice_node.upper is not None else None
-                st = _eval_static_int(slice_node.step) if slice_node.step is not None else None
-                if (
-                    (slice_node.lower is None or lo is not None)
-                    and (slice_node.upper is None or hi is not None)
-                    and (slice_node.step is None or (st is not None and st != 0))
-                ):
-                    return list(seq[slice(lo, hi, st)])
+            seq, sl = rec(node.value), _eval_slice_bounds(slice_node)
+            if seq is not None and sl is not None:
+                return list(seq[sl])
     if isinstance(node, ast.ListComp) and len(node.generators) == 1:
         gen = node.generators[0]
         if not gen.ifs and isinstance(gen.target, ast.Name):
@@ -239,10 +279,18 @@ def _eval_static_seq(
     return None
 
 
-def _is_base64_mod_expr(node: ast.AST, base64_mod_names: Set[str]) -> bool:
+def _decode_bytes_text(raw_b: bytes) -> str:
+    """Décode `bytes` en texte UTF-8 avec repli Latin-1 sans perte."""
+    try:
+        return raw_b.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw_b.decode("latin-1")
+
+
+def _is_named_mod_expr(node: ast.AST, target_mod: str, mod_aliases: Set[str]) -> bool:
     if isinstance(node, ast.Name):
-        return node.id in base64_mod_names
-    if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "base64":
+        return node.id in mod_aliases
+    if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == target_mod:
         fn = node.func
         return (isinstance(fn, ast.Name) and fn.id == "__import__") or (
             isinstance(fn, ast.Attribute) and fn.attr == "import_module"
@@ -260,7 +308,7 @@ def _match_base64_decode_call(
     fn_canon: Optional[str] = None
     if isinstance(fn, ast.Name) and fn.id in fns:
         fn_canon = fns[fn.id]
-    elif isinstance(fn, ast.Attribute) and fn.attr in _BASE64_DECODE_FUNCS and _is_base64_mod_expr(fn.value, mods):
+    elif isinstance(fn, ast.Attribute) and fn.attr in _BASE64_DECODE_FUNCS and _is_named_mod_expr(fn.value, "base64", mods):
         fn_canon = fn.attr
     elif (
         isinstance(fn, ast.Call)
@@ -269,7 +317,7 @@ def _match_base64_decode_call(
         and len(fn.args) >= 2
         and isinstance(fn.args[1], ast.Constant)
         and fn.args[1].value in _BASE64_DECODE_FUNCS
-        and _is_base64_mod_expr(fn.args[0], mods)
+        and _is_named_mod_expr(fn.args[0], "base64", mods)
     ):
         fn_canon = str(fn.args[1].value)
     if fn_canon is None:
@@ -386,17 +434,9 @@ def _eval_static_str(
     if isinstance(node, ast.Subscript):
         idx_node = _ast_subscript_slice(node)
         if isinstance(idx_node, ast.Slice):
-            base_s = rec(node.value)
-            if base_s is not None:
-                lo = _eval_static_int(idx_node.lower) if idx_node.lower is not None else None
-                hi = _eval_static_int(idx_node.upper) if idx_node.upper is not None else None
-                st = _eval_static_int(idx_node.step) if idx_node.step is not None else None
-                if (
-                    (idx_node.lower is None or lo is not None)
-                    and (idx_node.upper is None or hi is not None)
-                    and (idx_node.step is None or (st is not None and st != 0))
-                ):
-                    return base_s[slice(lo, hi, st)]
+            base_s, sl = rec(node.value), _eval_slice_bounds(idx_node)
+            if base_s is not None and sl is not None:
+                return base_s[sl]
         idx_val = _eval_static_int(idx_node)
         if idx_val is not None:
             seq = _eval_static_seq(node.value, const_vars, const_seq_vars, _depth + 1, func_returns=func_returns)
