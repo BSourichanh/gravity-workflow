@@ -605,7 +605,7 @@ def _match_codecs_decode_call(
         and fn.args[1].value in ("decode", "encode") and _is_named_mod_expr(fn.args[0], "codecs", mods)
     ):
         mode = str(fn.args[1].value)
-    if mode is None:
+    if mode not in ("decode", "encode"):
         return None
     kw = {k.arg: k.value for k in node.keywords if k.arg is not None}
     obj_arg = node.args[0] if node.args else kw.get("obj")

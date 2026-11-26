@@ -37,6 +37,7 @@ from .python_ast_imports import (
     _eval_scope_str_cands,
     _eval_static_str_candidates,
     _expr_has_obfuscated_decode,
+    _merge_scope_branch,
     _resolve_builtins_lookup,
     _resolve_dynamic_import_module,
 )
@@ -363,6 +364,7 @@ def _walk_python_stmts(
             _bind_var(state, scope, stmt.target.id, stmt.value)
         elif isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name) and isinstance(stmt.op, ast.Add):
             var_name = stmt.target.id
+            scope.var_nodes.pop(var_name, None)
             state.var_contributors.setdefault(var_name, []).append(stmt.value)
             if var_name in scope.cur_str:
                 rhs_s = _eval_static_str(stmt.value, scope.cur_str, scope.cur_seq, 0, state.imp.func_returns)
@@ -427,30 +429,7 @@ def _walk_python_stmts(
                 verdict = _walk_python_stmts(state, b_scope, b_stmts)
                 if verdict is not None:
                     return verdict
-                for s_attr in (
-                    "subproc_mods", "os_mods", "rmtree_fns", "os_shell_fns", "subproc_fns",
-                    "base64_mods", "codecs_mods", "builtins_mods", "builtins_dicts", "incomplete_vars", "obf_tainted",
-                ):
-                    getattr(scope, s_attr).update(getattr(b_scope, s_attr))
-                scope.base64_fns.update(b_scope.base64_fns)
-                scope.codecs_fns.update(b_scope.codecs_fns)
-                scope.eval_exec_fns.update(b_scope.eval_exec_fns)
-                scope.func_defs.update(b_scope.func_defs)
-                for k in b_scope.incomplete_vars:
-                    scope.cur_str.pop(k, None)
-                    scope.cur_bytes.pop(k, None)
-                    scope.cur_seq.pop(k, None)
-                for k, v in b_scope.cur_str.items():
-                    if k not in scope.incomplete_vars:
-                        scope.cur_str[k] = v
-                    state.record_alt_str(k, v)
-                for k, vb in b_scope.cur_bytes.items():
-                    if k not in scope.incomplete_vars:
-                        scope.cur_bytes[k] = vb
-                    state.record_alt_bytes(k, vb)
-                for k, vs in b_scope.cur_seq.items():
-                    scope.cur_seq[k] = list(vs)
-                    state.record_alt_seq(k, vs)
+                _merge_scope_branch(scope, b_scope, state)
             final_stmts = getattr(stmt, "finalbody", None)
             if isinstance(final_stmts, list) and final_stmts:
                 verdict = _walk_python_stmts(state, scope, final_stmts)

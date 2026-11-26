@@ -569,6 +569,90 @@ class TestSafetyPythonAst(unittest.TestCase):
                 )
                 self.assertEqual(dec, "allow", f"Faux positif sur {wf_good!r}: {dec} ({reason})")
 
+    def test_helper_local_decode_indirect_exec_builtins_and_bytes_list_join_slice_closed(self) -> None:
+        import base64
+
+        rm_b64 = "aW1wb3J0IG9zOyBvcy5zeXN0ZW0oInJtIC1yZiAvIik="
+        benign_b64 = base64.b64encode(b"print(1)").decode("ascii")
+        rm_ints = ",".join(str(b) for b in b'import os; os.system("rm -rf /")')
+        ok_ints = ",".join(str(b) for b in b"print(1)")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            gravity_ws = make_gravity_workspace(base, "gravity_adv_ast3")
+            plain_ws = base / "plain_adv_ast3"
+            plain_ws.mkdir()
+
+            cmd_deny = (
+                f'python3 -c "import base64\ndef f():\n    d = base64.b64decode\n    return d(\'{rm_b64}\')\nexec(f())"',
+                f'python3 -c "import base64; exec.__call__(base64.b64decode(\'{rm_b64}\'))"',
+                f'python3 -c "import base64; globals()[\'__builtins__\'].exec(base64.b64decode(\'{rm_b64}\'))"',
+                f'python3 -c "import base64; globals()[\'__builtins__\'][\'exec\'](base64.b64decode(\'{rm_b64}\'))"',
+                f'python3 -c "exec(bytes([{rm_ints}]))"',
+            )
+            assert_run_commands_decision(
+                self, safety_policy, (gravity_ws, plain_ws), cmd_deny, "deny", "adv_ast3_cmd_deny"
+            )
+
+            cmd_allow = (
+                f'python3 -c "exec(bytes([{ok_ints}]))"',
+                'python3 -c "exec(b\'\'.join([b\'print(\', b\'1)\']))"',
+                'python3 -c "exec(bytes(b\'xxprint(1)\')[2:])"',
+                'python3 -c "exec.__call__(\'print(1)\')"',
+                f'python3 -c "import base64\ndef f():\n    d = base64.b64decode\n    return d(\'{benign_b64}\')\nexec(f())"',
+            )
+            assert_run_commands_decision(
+                self, safety_policy, (gravity_ws, plain_ws), cmd_allow, "allow", "adv_ast3_cmd_allow"
+            )
+
+            wf_deny_scripts = (
+                # Class 1: helper-local base64/codecs alias & if-branch taint
+                f"import base64\ndef f():\n    d = base64.b64decode\n    return d('{rm_b64}')\nexec(f())",
+                "import base64\ndef f(flag):\n    x = 'print(1)'\n    d = base64.b64decode\n    if flag:\n        x = d(input()).decode()\n    return x\nexec(f(True))",
+                "import codecs\ndef f():\n    e = codecs.encode\n    return e('vzcbeg bf; bf.flfgrz(\"ez -es /\")', 'rot_13')\nexec(f())",
+                # Class 2: __call__, sys.modules, globals/locals __builtins__, getattr(__dict__), container & lambda exec
+                f"import base64; exec.__call__(base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; builtins.exec.__call__(base64.b64decode('{rm_b64}'))",
+                f"import base64; getattr(exec, '__call__')(base64.b64decode('{rm_b64}'))",
+                f"import sys, base64; sys.modules['builtins'].exec(base64.b64decode('{rm_b64}'))",
+                f"import base64; globals()['__builtins__'].exec(base64.b64decode('{rm_b64}'))",
+                f"import base64; globals()['__builtins__']['exec'](base64.b64decode('{rm_b64}'))",
+                f"import base64; locals()['__builtins__']['exec'](base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; d = getattr(builtins, '__dict__'); d['exec'](base64.b64decode('{rm_b64}'))",
+                f"import base64; e = [exec][0]; e(base64.b64decode('{rm_b64}'))",
+                f"import base64; d = {{'e': exec}}; d['e'](base64.b64decode('{rm_b64}'))",
+                f"import base64; (lambda: exec)()(base64.b64decode('{rm_b64}'))",
+                # Class 3: bytes([ints]), bytearray([ints]), b"".join([...]), bytes slicing + codecs.getdecoder
+                f"exec(bytes([{rm_ints}]))",
+                f"exec(bytearray([{rm_ints}]))",
+                'exec(b"".join([b"import os; ", b\'os.system("rm -rf /")\']))',
+                'parts = [b"import os; ", b\'os.system("rm -rf /")\']; exec(b"".join(parts))',
+                'exec(bytes(b"xximport os; os.system(\\"rm -rf /\\")")[2:])',
+                f"import codecs; exec(codecs.getdecoder('base64')(b'{rm_b64}')[0])",
+            )
+            for wf_bad in wf_deny_scripts:
+                for ws in (gravity_ws, plain_ws):
+                    dec, reason = safety_policy.evaluate_tool_call(
+                        {"toolCall": {"name": "run_workflow", "args": {"Script": wf_bad}}},
+                        ws,
+                    )
+                    self.assertEqual(dec, "deny", f"Attendu deny sur {wf_bad!r}, obtenu {dec} ({reason})")
+
+            for wf_good in (
+                f"exec(bytes([{ok_ints}]))\n",
+                f"exec(bytearray([{ok_ints}]))\n",
+                'exec(b"".join([b"print(", b"1)"]))\n',
+                'exec(bytes(b"xxprint(1)")[2:])\n',
+                "exec.__call__('print(1)')\n",
+                f"import base64\ndef f():\n    d = base64.b64decode\n    return d('{benign_b64}')\nexec(f())\n",
+                "import codecs\ndef f():\n    e = codecs.encode\n    return e('cevag(1)', 'rot_13')\nexec(f())\n",
+            ):
+                dec, reason = safety_policy.evaluate_tool_call(
+                    {"toolCall": {"name": "run_workflow", "args": {"Script": wf_good}}},
+                    gravity_ws,
+                )
+                self.assertEqual(dec, "allow", f"Faux positif sur {wf_good!r}: {dec} ({reason})")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

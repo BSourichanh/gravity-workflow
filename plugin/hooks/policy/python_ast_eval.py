@@ -12,7 +12,7 @@ _BASE64_DECODE_FUNCS = frozenset(
     {"b64decode", "standard_b64decode", "urlsafe_b64decode", "decodebytes"}
 )
 _OBFUSCATED_DECODE_ATTRS = _BASE64_DECODE_FUNCS | frozenset(
-    {"b32decode", "b16decode", "b85decode", "a85decode", "fromhex", "decompress", "a2b_base64", "a2b_hex", "unhexlify"}
+    {"b32decode", "b16decode", "b85decode", "a85decode", "fromhex", "decompress", "a2b_base64", "a2b_hex", "unhexlify", "getdecoder"}
 )
 _OBFUSCATED_DECODE_MODS = frozenset({"base64", "codecs", "binascii", "zlib", "bz2", "lzma", "gzip"})
 _OS_PATH_TERMINAL_FUNCS = frozenset(
@@ -36,6 +36,7 @@ class _PyImports:
     base64_decode_fns: Dict[str, str] = field(default_factory=dict)
     codecs_mod_names: Set[str] = field(default_factory=lambda: {"codecs"})
     codecs_decode_fns: Dict[str, str] = field(default_factory=dict)
+    sys_mod_names: Set[str] = field(default_factory=lambda: {"sys"})
     builtins_mod_names: Set[str] = field(default_factory=lambda: {"builtins", "__builtins__"})
     eval_exec_fns: Dict[str, str] = field(
         default_factory=lambda: {"eval": "eval", "exec": "exec", "compile": "compile"}
@@ -82,31 +83,23 @@ class _ScopeState:
     )
     func_defs: Dict[str, List[ast.AST]] = field(default_factory=dict)
     cur_bytes: Dict[str, bytes] = field(default_factory=dict)
+    var_nodes: Dict[str, ast.AST] = field(default_factory=dict)
     incomplete_vars: Set[str] = field(default_factory=set)
     obf_tainted: Set[str] = field(default_factory=set)
     shadowed_alts: Set[str] = field(default_factory=set)
 
     def clone(self) -> "_ScopeState":
         return _ScopeState(
-            cur_str=dict(self.cur_str),
-            cur_seq={k: list(v) for k, v in self.cur_seq.items()},
-            subproc_mods=set(self.subproc_mods),
-            os_mods=set(self.os_mods),
-            rmtree_fns=set(self.rmtree_fns),
-            os_shell_fns=set(self.os_shell_fns),
-            subproc_fns=set(self.subproc_fns),
-            base64_mods=set(self.base64_mods),
-            base64_fns=dict(self.base64_fns),
-            codecs_mods=set(self.codecs_mods),
-            codecs_fns=dict(self.codecs_fns),
-            builtins_mods=set(self.builtins_mods),
-            builtins_dicts=set(self.builtins_dicts),
-            eval_exec_fns=dict(self.eval_exec_fns),
-            func_defs={k: list(v) for k, v in self.func_defs.items()},
-            cur_bytes=dict(self.cur_bytes),
-            incomplete_vars=set(self.incomplete_vars),
-            obf_tainted=set(self.obf_tainted),
-            shadowed_alts=set(self.shadowed_alts),
+            cur_str=dict(self.cur_str), cur_seq={k: list(v) for k, v in self.cur_seq.items()},
+            subproc_mods=set(self.subproc_mods), os_mods=set(self.os_mods),
+            rmtree_fns=set(self.rmtree_fns), os_shell_fns=set(self.os_shell_fns),
+            subproc_fns=set(self.subproc_fns), base64_mods=set(self.base64_mods),
+            base64_fns=dict(self.base64_fns), codecs_mods=set(self.codecs_mods),
+            codecs_fns=dict(self.codecs_fns), builtins_mods=set(self.builtins_mods),
+            builtins_dicts=set(self.builtins_dicts), eval_exec_fns=dict(self.eval_exec_fns),
+            func_defs={k: list(v) for k, v in self.func_defs.items()}, cur_bytes=dict(self.cur_bytes),
+            var_nodes=dict(self.var_nodes), incomplete_vars=set(self.incomplete_vars),
+            obf_tainted=set(self.obf_tainted), shadowed_alts=set(self.shadowed_alts),
         )
 
 
@@ -362,21 +355,23 @@ def _eval_static_bytes(
     base64_decode_fns: Optional[Dict[str, str]] = None,
     cur_bytes: Optional[Dict[str, bytes]] = None,
 ) -> Optional[bytes]:
-    """Évalue statiquement une expression AST vers `bytes` (littéraux, `+`, `.encode()`, `bytes.fromhex`, `base64.*decode`)."""
+    """Évalue statiquement une expression AST vers `bytes` (littéraux, `+`, slices, `bytes([ints])`, `b''.join`, `.encode()`, `fromhex`, `base64`)."""
     if _depth > 8:
         return None
-    rec_b = lambda n: _eval_static_bytes(
-        n, const_vars, const_seq_vars, _depth + 1, func_returns, base64_mod_names, base64_decode_fns, cur_bytes
-    )
-    rec_s = lambda n: _eval_static_str(
-        n, const_vars, const_seq_vars, _depth + 1, func_returns, base64_mod_names, base64_decode_fns, cur_bytes
-    )
+    rec_b = lambda n: _eval_static_bytes(n, const_vars, const_seq_vars, _depth + 1, func_returns, base64_mod_names, base64_decode_fns, cur_bytes)
+    rec_s = lambda n: _eval_static_str(n, const_vars, const_seq_vars, _depth + 1, func_returns, base64_mod_names, base64_decode_fns, cur_bytes)
     if isinstance(node, ast.NamedExpr):
         return rec_b(node.value)
     if isinstance(node, ast.Constant) and isinstance(node.value, bytes):
         return node.value
     if isinstance(node, ast.Name) and cur_bytes and node.id in cur_bytes:
         return cur_bytes[node.id]
+    if isinstance(node, ast.Subscript):
+        idx_node = _ast_subscript_slice(node)
+        if isinstance(idx_node, ast.Slice):
+            base_b, sl = rec_b(node.value), _eval_slice_bounds(idx_node)
+            if base_b is not None and sl is not None:
+                return base_b[sl]
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         left, right = rec_b(node.left), rec_b(node.right)
         return (left + right) if (left is not None and right is not None) else None
@@ -396,13 +391,22 @@ def _eval_static_bytes(
                     return s_val.encode(enc)
                 except (LookupError, UnicodeEncodeError):
                     return None
+        if isinstance(fn, ast.Attribute) and fn.attr == "join" and len(node.args) == 1 and not node.keywords:
+            sep = rec_b(fn.value)
+            if sep is not None and isinstance(node.args[0], (ast.List, ast.Tuple)):
+                parts = [rec_b(e) for e in node.args[0].elts]
+                if all(p is not None for p in parts):
+                    return sep.join(p for p in parts if p is not None)
         if isinstance(fn, ast.Name) and fn.id in ("bytes", "bytearray"):
             if len(node.args) == 1 and not node.keywords:
+                if isinstance(node.args[0], (ast.List, ast.Tuple)):
+                    ints = [_eval_static_int(e) for e in node.args[0].elts]
+                    if all(iv is not None and 0 <= iv <= 255 for iv in ints):
+                        return bytes(iv for iv in ints if iv is not None)
+                    return None
                 return rec_b(node.args[0])
             enc_n = node.args[1] if len(node.args) == 2 and not node.keywords else (
-                node.keywords[0].value
-                if len(node.args) == 1 and len(node.keywords) == 1 and node.keywords[0].arg == "encoding"
-                else None
+                node.keywords[0].value if len(node.args) == 1 and len(node.keywords) == 1 and node.keywords[0].arg == "encoding" else None
             )
             if enc_n is not None:
                 s_val, enc = rec_s(node.args[0]), rec_s(enc_n)
@@ -411,14 +415,7 @@ def _eval_static_bytes(
                         return s_val.encode(enc)
                     except (LookupError, UnicodeEncodeError):
                         return None
-        if (
-            isinstance(fn, ast.Attribute)
-            and fn.attr == "fromhex"
-            and isinstance(fn.value, ast.Name)
-            and fn.value.id in ("bytes", "bytearray")
-            and len(node.args) == 1
-            and not node.keywords
-        ):
+        if isinstance(fn, ast.Attribute) and fn.attr == "fromhex" and isinstance(fn.value, ast.Name) and fn.value.id in ("bytes", "bytearray") and len(node.args) == 1 and not node.keywords:
             hex_s = rec_s(node.args[0])
             if hex_s is not None:
                 try:
