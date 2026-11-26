@@ -151,7 +151,7 @@ class TestGravityInstaller(unittest.TestCase):
                 stdout="",
                 stderr="Simulated validation failure",
             )
-            with mock.patch.object(install, "run_plugin_validation", return_value=failed_proc):
+            with mock.patch.object(install.installer_core, "run_plugin_validation", return_value=failed_proc):
                 rc = _run_quiet(["--target", str(target), "--force"])
                 self.assertNotEqual(rc, 0)
 
@@ -247,17 +247,15 @@ class TestGravityInstaller(unittest.TestCase):
             marker = target / "keep_on_rollback.txt"
             marker.write_text("v-old", encoding="utf-8")
 
-            # 1. Rollback sûr si le second rename (staged -> target) échoue après backup
-            real_rename = os.rename
-            call_count = {"n": 0}
+            # 1. Rollback sûr si le second move (staged -> target) échoue après backup
+            real_move = install.shutil.move
 
-            def fail_second_rename(src: str, dst: str) -> None:
-                call_count["n"] += 1
-                if call_count["n"] == 2:
+            def fail_staged_move(src: str, dst: str) -> str:
+                if Path(src).parent.name.startswith(".gravity-workflow-stage-") and Path(dst).resolve() == target.resolve():
                     raise OSError("Simulated move failure")
-                real_rename(src, dst)
+                return real_move(src, dst)
 
-            with mock.patch("install.os.rename", side_effect=fail_second_rename):
+            with mock.patch("install.shutil.move", side_effect=fail_staged_move):
                 rc_rb = _run_quiet(["--target", str(target), "--force", "--skip-validate"])
                 self.assertEqual(rc_rb, 1)
 
@@ -265,6 +263,7 @@ class TestGravityInstaller(unittest.TestCase):
             self.assertEqual(marker.read_text(encoding="utf-8"), "v-old")
 
             # 2. En repli in-place : un fichier verrouillé identique est toléré, un fichier différent renvoie rc=1
+            real_rename = os.rename
             real_copy2 = install.shutil.copy2
 
             def deny_first_rename(src: str, dst: str) -> None:
@@ -729,18 +728,19 @@ class TestGravityInstaller(unittest.TestCase):
             rc = _run_quiet(["--method", "agy"])
             self.assertEqual(rc, 0)
 
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0][:3], ["/usr/local/bin/agy", "plugin", "validate"])
-        self.assertEqual(calls[1][:3], ["/usr/local/bin/agy", "plugin", "install"])
-        self.assertEqual(Path(calls[0][3]), install.PLUGIN_SOURCE)
-        self.assertEqual(Path(calls[1][3]), install.PLUGIN_SOURCE)
+        agy_calls = [c for c in calls if c and c[0] == "/usr/local/bin/agy"]
+        self.assertEqual(len(agy_calls), 2)
+        self.assertEqual(agy_calls[0][:3], ["/usr/local/bin/agy", "plugin", "validate"])
+        self.assertEqual(agy_calls[1][:3], ["/usr/local/bin/agy", "plugin", "install"])
+        self.assertEqual(Path(agy_calls[0][3]), install.PLUGIN_SOURCE)
+        self.assertEqual(Path(agy_calls[1][3]), install.PLUGIN_SOURCE)
 
     def test_stdlib_only_ast(self) -> None:
         stdlib_names = getattr(sys, "stdlib_module_names", None)
         if not stdlib_names:
             self.skipTest("sys.stdlib_module_names requires Python 3.10+")
 
-        allowed = set(stdlib_names) | {"install"}
+        allowed = set(stdlib_names) | {"install", "_shared"}
         for py_path in (REPO_ROOT / "install.py", Path(__file__).resolve()):
             tree = ast.parse(py_path.read_text(encoding="utf-8"), filename=str(py_path))
             for node in ast.walk(tree):
