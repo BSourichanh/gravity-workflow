@@ -485,6 +485,90 @@ class TestSafetyPythonAst(unittest.TestCase):
                 )
                 self.assertEqual(dec, "allow", f"Faux positif sur {wf_good!r}: {dec} ({reason})")
 
+    def test_helper_branch_alias_builtins_get_bytes_wrapper_and_codecs_encode_closed(self) -> None:
+        import base64
+
+        rm_b64 = "aW1wb3J0IG9zOyBvcy5zeXN0ZW0oInJtIC1yZiAvIik="
+        benign_b64 = base64.b64encode(b"print(1)").decode("ascii")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            gravity_ws = make_gravity_workspace(base, "gravity_adv_ast2")
+            plain_ws = base / "plain_adv_ast2"
+            plain_ws.mkdir()
+
+            cmd_deny = (
+                'python3 -c "import base64\ndef f(flag):\n    x = \'print(1)\'\n    if flag:\n        x = base64.b64decode(input()).decode()\n    return x\nexec(f(True))"',
+                'python3 -c "exec(bytes(b\'import os; os.system(\\"rm -rf /\\")\'))"',
+                'python3 -c "exec(bytearray(b\'import os; os.system(\\"rm -rf /\\")\'))"',
+                'python3 -c "import codecs; exec(codecs.encode(\'vzcbeg bf; bf.flfgrz(\\"ez -es /\\")\', \'rot_13\'))"',
+                'python3 -c "from codecs import encode; exec(encode(\'vzcbeg bf; bf.flfgrz(\\"ez -es /\\")\', \'rot_13\'))"',
+                f'python3 -c "import builtins, base64; builtins.__dict__.get(\'exec\')(base64.b64decode(\'{rm_b64}\'))"',
+            )
+            assert_run_commands_decision(
+                self, safety_policy, (gravity_ws, plain_ws), cmd_deny, "deny", "adv_ast2_cmd_deny"
+            )
+
+            cmd_allow = (
+                'python3 -c "exec(bytes(b\'print(1)\'))"',
+                'python3 -c "exec(bytearray(b\'print(1)\'))"',
+                'python3 -c "import codecs; exec(codecs.encode(\'cevag(1)\', \'rot_13\'))"',
+                'python3 -c "from codecs import encode; exec(encode(\'cevag(1)\', \'rot_13\'))"',
+                f'python3 -c "import base64\ndef f(s): return base64.b64decode(s)\nexec(f(\'{benign_b64}\'))"',
+                f'python3 -c "import base64\ndef f(s): return base64.b64decode(s)\ng = f\nexec(g(\'{benign_b64}\'))"',
+            )
+            assert_run_commands_decision(
+                self, safety_policy, (gravity_ws, plain_ws), cmd_allow, "allow", "adv_ast2_cmd_allow"
+            )
+
+            wf_deny_scripts = (
+                # Class 1: helper if-branch / AugAssign / loop / try / helper alias
+                "import base64\ndef f(flag):\n    x = 'print(1)'\n    if flag:\n        x = base64.b64decode(input()).decode()\n    return x\nexec(f(True))",
+                "import base64\ndef f():\n    x = 'print(1); '\n    x += base64.b64decode(input()).decode()\n    return x\nexec(f())",
+                f"import base64\ndef f(s): return base64.b64decode(s)\ng = f\nexec(g('{rm_b64}'))",
+                "def f(flag):\n    x = 'print(1)'\n    if flag:\n        x = 'import os; os.system(\"rm -rf /\")'\n    return x\nexec(f(False))",
+                "import base64\ndef f(items):\n    x = 'print(1)'\n    for i in items:\n        x = base64.b64decode(i).decode()\n    return x\nexec(f([input()]))",
+                # Class 2: builtins subscript aliasing & .get('exec')
+                f"import base64; e = __builtins__['exec']; e(base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; e = builtins.__dict__['exec']; e(base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; e = vars(builtins)['exec']; e(base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; builtins.__dict__.get('exec')(base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; vars(builtins).get('exec')(base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; e = builtins.__dict__.get('exec'); e(base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; d = vars(builtins); d.get('exec')(base64.b64decode('{rm_b64}'))",
+                # Class 3: bytes(...) / bytearray(...) wrappers
+                'exec(bytes(b\'import os; os.system("rm -rf /")\'))',
+                'exec(bytearray(b\'import os; os.system("rm -rf /")\'))',
+                'exec(bytes(\'import os; os.system("rm -rf /")\', "utf-8"))',
+                'b = bytearray(b\'import os; os.system("rm -rf /")\'); exec(b)',
+                # Class 4: codecs.encode(..., 'rot_13') & from codecs import encode
+                'import codecs; exec(codecs.encode(\'vzcbeg bf; bf.flfgrz("ez -es /")\', \'rot_13\'))',
+                'from codecs import encode; exec(encode(\'vzcbeg bf; bf.flfgrz("ez -es /")\', \'rot_13\'))',
+                'from codecs import encode as ce; exec(ce(input(), \'rot_13\'))',
+                'import codecs; exec(getattr(codecs, \'encode\')(\'vzcbeg bf; bf.flfgrz("ez -es /")\', \'rot_13\'))',
+            )
+            for wf_bad in wf_deny_scripts:
+                for ws in (gravity_ws, plain_ws):
+                    dec, reason = safety_policy.evaluate_tool_call(
+                        {"toolCall": {"name": "run_workflow", "args": {"Script": wf_bad}}},
+                        ws,
+                    )
+                    self.assertEqual(dec, "deny", f"Attendu deny sur {wf_bad!r}, obtenu {dec} ({reason})")
+
+            for wf_good in (
+                "exec(bytes(b'print(1)'))\n",
+                "exec(bytearray(b'print(1)'))\n",
+                "import codecs\nexec(codecs.encode('cevag(1)', 'rot_13'))\n",
+                "from codecs import encode\nexec(encode('cevag(1)', 'rot_13'))\n",
+                f"import base64\ndef f(s): return base64.b64decode(s)\nexec(f('{benign_b64}'))\n",
+                f"import base64\ndef f(s): return base64.b64decode(s)\ng = f\nexec(g('{benign_b64}'))\n",
+            ):
+                dec, reason = safety_policy.evaluate_tool_call(
+                    {"toolCall": {"name": "run_workflow", "args": {"Script": wf_good}}},
+                    gravity_ws,
+                )
+                self.assertEqual(dec, "allow", f"Faux positif sur {wf_good!r}: {dec} ({reason})")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

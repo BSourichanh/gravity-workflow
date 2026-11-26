@@ -5,35 +5,17 @@ import ast
 from typing import Dict, List, Optional, Set, Tuple
 
 from .constants import (
-    OS_EXEC_LIST_FUNCS,
-    OS_EXEC_VAR_FUNCS,
-    OS_SHELL_FUNCS,
-    OS_SPAWN_LIST_FUNCS,
-    OS_SPAWN_VAR_FUNCS,
-    RE_PATTERN_FUNCS,
-    SUBPROCESS_CALL_FUNCS,
+    OS_EXEC_LIST_FUNCS, OS_EXEC_VAR_FUNCS, OS_SHELL_FUNCS,
+    OS_SPAWN_LIST_FUNCS, OS_SPAWN_VAR_FUNCS, RE_PATTERN_FUNCS, SUBPROCESS_CALL_FUNCS,
 )
 from .python_ast_eval import (
-    _BASE64_DECODE_FUNCS,
-    _OBFUSCATED_DECODE_ATTRS,
-    _OBFUSCATED_DECODE_MODS,
-    _OS_PATH_PROPAGATING_FUNCS,
-    _OS_PATH_TERMINAL_FUNCS,
-    _PyAstState,
-    _PyImports,
-    _ScopeState,
-    _decode_base64_payload,
-    _decode_bytes_text,
-    _eval_static_bytes,
-    _eval_static_str,
-    _is_named_mod_expr,
-    _match_base64_decode_call,
+    _BASE64_DECODE_FUNCS, _OBFUSCATED_DECODE_ATTRS, _OBFUSCATED_DECODE_MODS,
+    _OS_PATH_PROPAGATING_FUNCS, _OS_PATH_TERMINAL_FUNCS, _PyAstState, _PyImports,
+    _ScopeState, _ast_subscript_slice, _decode_base64_payload, _decode_bytes_text,
+    _eval_static_bytes, _eval_static_str, _is_named_mod_expr, _match_base64_decode_call,
 )
 from .python_ast_readonly import (
-    _decode_codecs_payload,
-    _eval_static_seq_candidates,
-    _has_tainted_name,
-    _match_codecs_decode_call,
+    _decode_codecs_payload, _eval_static_seq_candidates, _has_tainted_name, _match_codecs_decode_call,
 )
 
 
@@ -131,68 +113,49 @@ def _collect_python_imports(
                 if node.module in ("os", "posix", "nt"):
                     if alias.name in ("environ", "environb"):
                         return ("deny", f"Import de `os.environ` dans `{context_label}` bloqué."), imp
-                    matched_os = False
-                    for fn_set, target_set in os_func_sets:
-                        if alias.name in fn_set:
-                            target_set.add(bound)
-                            imp.shadowed_names.add(bound)
-                            matched_os = True
-                            break
-                    if matched_os:
-                        pass
+                    os_tgt = next((t for s, t in os_func_sets if alias.name in s), None)
+                    if os_tgt is not None:
+                        os_tgt.add(bound); imp.shadowed_names.add(bound)
                     elif alias.name == "path":
-                        imp.os_path_mod_names.add(bound)
-                        _record_import_source(bound, "mod:os.path")
+                        imp.os_path_mod_names.add(bound); _record_import_source(bound, "mod:os.path")
                     elif alias.name in ("stat", "lstat", "access", "readlink"):
-                        imp.os_readonly_term_fns.add(bound)
-                        _record_import_source(bound, f"os:{alias.name}")
+                        imp.os_readonly_term_fns.add(bound); _record_import_source(bound, f"os:{alias.name}")
                     elif alias.name in ("fspath", "listdir", "scandir", "walk"):
-                        imp.os_readonly_prop_fns.add(bound)
-                        _record_import_source(bound, f"os:{alias.name}")
+                        imp.os_readonly_prop_fns.add(bound); _record_import_source(bound, f"os:{alias.name}")
                     else:
                         imp.shadowed_names.add(bound)
                 elif node.module in ("os.path", "posixpath", "ntpath"):
                     if alias.name in _OS_PATH_TERMINAL_FUNCS:
-                        imp.os_readonly_term_fns.add(bound)
-                        _record_import_source(bound, f"os.path:{alias.name}")
+                        imp.os_readonly_term_fns.add(bound); _record_import_source(bound, f"os.path:{alias.name}")
                     elif alias.name in _OS_PATH_PROPAGATING_FUNCS:
-                        imp.os_readonly_prop_fns.add(bound)
-                        _record_import_source(bound, f"os.path:{alias.name}")
+                        imp.os_readonly_prop_fns.add(bound); _record_import_source(bound, f"os.path:{alias.name}")
                     else:
                         imp.shadowed_names.add(bound)
                 elif node.module == "pathlib" and alias.name in ("Path", "PurePath", "PosixPath", "WindowsPath"):
-                    imp.path_ctor_names.add(bound)
-                    _record_import_source(bound, f"pathlib:{alias.name}")
+                    imp.path_ctor_names.add(bound); _record_import_source(bound, f"pathlib:{alias.name}")
                 elif node.module == "json" and alias.name in ("load", "loads"):
-                    imp.json_load_fns.add(bound)
-                    _record_import_source(bound, f"json:{alias.name}")
-                elif node.module == "shutil" and alias.name == "rmtree":
-                    imp.rmtree_func_names.add(bound)
-                    imp.shadowed_names.add(bound)
-                elif node.module == "subprocess" and alias.name in SUBPROCESS_CALL_FUNCS:
-                    imp.subprocess_func_names.add(bound)
-                    imp.shadowed_names.add(bound)
-                elif node.module == "shlex" and alias.name == "split":
-                    imp.shlex_split_names.add(bound)
-                    imp.shadowed_names.add(bound)
-                elif node.module == "importlib" and alias.name == "import_module":
-                    imp.import_module_fns.add(bound)
-                    imp.shadowed_names.add(bound)
-                elif node.module == "base64" and alias.name in _BASE64_DECODE_FUNCS:
-                    imp.base64_decode_fns[bound] = alias.name
-                    imp.shadowed_names.add(bound)
-                elif node.module == "codecs" and alias.name == "decode":
-                    imp.codecs_decode_fns.add(bound)
-                    imp.shadowed_names.add(bound)
-                elif node.module == "builtins" and alias.name in ("eval", "exec", "compile"):
-                    imp.eval_exec_fns[bound] = alias.name
-                    imp.shadowed_names.add(bound)
+                    imp.json_load_fns.add(bound); _record_import_source(bound, f"json:{alias.name}")
                 elif node.module == "re" and alias.name in RE_PATTERN_FUNCS:
                     imp.re_func_names.add(bound)
                     if bound == "compile":
                         imp.eval_exec_fns.pop("compile", None)
                     _record_import_source(bound, f"re:{alias.name}")
                 else:
+                    mod_fn_sets = {
+                        "shutil": ({"rmtree"}, imp.rmtree_func_names),
+                        "subprocess": (SUBPROCESS_CALL_FUNCS, imp.subprocess_func_names),
+                        "shlex": ({"split"}, imp.shlex_split_names),
+                        "importlib": ({"import_module"}, imp.import_module_fns),
+                    }
+                    mod_fn_dicts = {
+                        "base64": (_BASE64_DECODE_FUNCS, imp.base64_decode_fns),
+                        "codecs": ({"decode", "encode"}, imp.codecs_decode_fns),
+                        "builtins": ({"eval", "exec", "compile"}, imp.eval_exec_fns),
+                    }
+                    if node.module in mod_fn_sets and alias.name in mod_fn_sets[node.module][0]:
+                        mod_fn_sets[node.module][1].add(bound)
+                    elif node.module in mod_fn_dicts and alias.name in mod_fn_dicts[node.module][0]:
+                        mod_fn_dicts[node.module][1][bound] = alias.name
                     imp.shadowed_names.add(bound)
         elif isinstance(node, ast.Assign):
             for tgt in node.targets:
@@ -203,22 +166,19 @@ def _collect_python_imports(
             _mark_target_shadowed(node.target)
             if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and isinstance(node.value, ast.Lambda):
                 imp.func_defs.setdefault(node.target.id, []).append(node.value)
-        elif isinstance(node, ast.NamedExpr):
-            imp.shadowed_names.add(node.target.id)
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
             _mark_target_shadowed(node.target)
         elif isinstance(node, ast.withitem) and node.optional_vars is not None:
             _mark_target_shadowed(node.optional_vars)
-        elif isinstance(node, ast.ExceptHandler) and node.name:
-            imp.shadowed_names.add(node.name)
-        elif isinstance(node, ast.arg):
-            imp.shadowed_names.add(node.arg)
-        elif isinstance(node, ast.ClassDef):
-            imp.shadowed_names.add(node.name)
+        elif isinstance(node, (ast.NamedExpr, ast.ClassDef)):
+            imp.shadowed_names.add(node.target.id if isinstance(node, ast.NamedExpr) else node.name)
+        elif isinstance(node, (ast.ExceptHandler, ast.arg)):
+            nm = node.name if isinstance(node, ast.ExceptHandler) else node.arg
+            if nm:
+                imp.shadowed_names.add(nm)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            imp.shadowed_names.add(node.name)
-            imp.func_defs.setdefault(node.name, []).append(node)
-            if not node.args.args and not node.args.posonlyargs and not node.args.kwonlyargs:
+            imp.shadowed_names.add(node.name); imp.func_defs.setdefault(node.name, []).append(node)
+            if not (node.args.args or node.args.posonlyargs or node.args.kwonlyargs):
                 rets = [s.value for s in ast.walk(node) if isinstance(s, ast.Return) and s.value is not None]
                 if rets:
                     imp.func_returns.setdefault(node.name, []).extend(rets[:4])
@@ -247,71 +207,107 @@ def _eval_func_call_code_cands(
     all_params = set(pos_params) | set(kw_params)
     if len(call.args) > len(pos_params):
         return [], False
-    bound_exprs: Dict[str, ast.AST] = {}
-    for p, d in zip(pos_params[-len(args_spec.defaults) :], args_spec.defaults) if args_spec.defaults else ():
-        bound_exprs[p] = d
-    for p, d in zip(kw_params, args_spec.kw_defaults):
-        if d is not None:
-            bound_exprs[p] = d
-    for p, a in zip(pos_params, call.args):
-        bound_exprs[p] = a
+    bound_exprs: Dict[str, ast.AST] = {
+        **({p: d for p, d in zip(pos_params[-len(args_spec.defaults):], args_spec.defaults)} if args_spec.defaults else {}),
+        **{p: d for p, d in zip(kw_params, args_spec.kw_defaults) if d is not None},
+        **dict(zip(pos_params, call.args)),
+    }
     pos_only = {a.arg for a in args_spec.posonlyargs}
     for kw in call.keywords:
         if kw.arg is None or kw.arg in pos_only or kw.arg not in all_params:
             return [], False
         bound_exprs[kw.arg] = kw.value
 
+    fn_alts: Dict[str, List[str]] = {k: list(v) for k, v in state.alt_str.items() if k not in all_params and k not in scope.shadowed_alts}
+
+    def _rec_alt(vn: str, val: str) -> None:
+        b = fn_alts.setdefault(vn, [])
+        if val not in b and len(b) < 8: b.append(val)
+
     def _eval_s(expr: ast.AST, sc: _ScopeState, inc_b: bool = False) -> Tuple[List[str], bool]:
         return _eval_str_cands_impl(
-            expr, sc.cur_str, sc.cur_seq, state.alt_str, state.imp.func_returns, _depth + 1,
+            expr, sc.cur_str, sc.cur_seq, fn_alts, state.imp.func_returns, _depth + 1,
             sc.base64_mods, sc.base64_fns, sc.cur_bytes, state=state, scope=sc, include_bytes=inc_b, _seen_fns=seen,
         )
 
-    def _bind_local(dst: _ScopeState, target: str, expr: ast.AST, src: _ScopeState) -> None:
-        bv = _eval_static_bytes(
-            expr, src.cur_str, src.cur_seq, 0, state.imp.func_returns, src.base64_mods, src.base64_fns, src.cur_bytes
-        )
+    def _taint_var(sc: _ScopeState, vn: str, has_obf: bool) -> None:
+        sc.cur_str.pop(vn, None); sc.cur_bytes.pop(vn, None); sc.incomplete_vars.add(vn)
+        if has_obf: sc.obf_tainted.add(vn)
+
+    def _bind_local(dst: _ScopeState, target: str, expr: ast.AST, src: _ScopeState, clear_alts: bool = True) -> None:
+        dst.shadowed_alts.add(target)
+        if clear_alts: fn_alts.pop(target, None)
+        flist = (src.func_defs.get(expr.id) or state.imp.func_defs.get(expr.id)) if isinstance(expr, ast.Name) else None
+        if flist: dst.func_defs[target] = list(flist)
+        elif isinstance(expr, ast.Lambda): dst.func_defs[target] = [expr]
+        bv = _eval_static_bytes(expr, src.cur_str, src.cur_seq, 0, state.imp.func_returns, src.base64_mods, src.base64_fns, src.cur_bytes)
         sc_list, sok = _eval_s(expr, src, False)
         if bv is not None and not _has_tainted_name(expr, state, src):
-            dst.cur_bytes[target] = bv
-            dst.cur_str.pop(target, None)
+            dst.cur_bytes[target] = bv; dst.cur_str.pop(target, None); _rec_alt(target, _decode_bytes_text(bv))
         elif sok and len(sc_list) == 1:
-            dst.cur_str[target] = sc_list[0]
-            dst.cur_bytes.pop(target, None)
+            dst.cur_str[target] = sc_list[0]; dst.cur_bytes.pop(target, None); _rec_alt(target, sc_list[0])
         else:
-            dst.cur_str.pop(target, None)
-            dst.cur_bytes.pop(target, None)
-            dst.incomplete_vars.add(target)
+            _taint_var(dst, target, _expr_has_obfuscated_decode(expr, state, src) is not None)
+            for cand in sc_list: _rec_alt(target, cand)
 
-    fn_scope = scope.clone()
-    fn_scope.shadowed_alts.update(all_params)
+    fn_scope = scope.clone(); fn_scope.shadowed_alts.update(all_params)
     for p in all_params:
-        fn_scope.cur_str.pop(p, None)
-        fn_scope.cur_bytes.pop(p, None)
-        fn_scope.cur_seq.pop(p, None)
-        fn_scope.incomplete_vars.discard(p)
-        fn_scope.obf_tainted.discard(p)
+        for d in (fn_scope.cur_str, fn_scope.cur_bytes, fn_scope.cur_seq): d.pop(p, None)
+        fn_scope.incomplete_vars.discard(p); fn_scope.obf_tainted.discard(p)
     for p, expr in bound_exprs.items():
         _bind_local(fn_scope, p, expr, scope)
 
     if isinstance(fn_node, ast.Lambda):
         return _eval_s(fn_node.body, fn_scope, include_bytes)
     out: List[str] = []
-    all_ok, has_ret = True, False
-    for st in getattr(fn_node, "body", ()):
-        if isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name):
-            fn_scope.shadowed_alts.add(st.targets[0].id)
-            _bind_local(fn_scope, st.targets[0].id, st.value, fn_scope)
-            continue
-        for sub in ast.walk(st):
-            if isinstance(sub, ast.Return) and sub.value is not None:
-                has_ret = True
-                rc, rok = _eval_s(sub.value, fn_scope, include_bytes)
+    flags = [True, False]  # [all_ok, has_ret]
+
+    def _walk_fn(stmts: List[ast.stmt], sc: _ScopeState, in_branch: bool = False) -> None:
+        for st in stmts:
+            if isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name):
+                _bind_local(sc, st.targets[0].id, st.value, sc, not in_branch)
+            elif isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name) and st.value is not None:
+                _bind_local(sc, st.target.id, st.value, sc, not in_branch)
+            elif isinstance(st, ast.AugAssign) and isinstance(st.target, ast.Name) and isinstance(st.op, ast.Add):
+                vn = st.target.id; sc.shadowed_alts.add(vn)
+                rc_s, rok_s = _eval_s(st.value, sc, False)
+                if vn in sc.cur_str and rok_s and len(rc_s) == 1 and len(fn_alts.get(vn, ())) <= 1:
+                    sc.cur_str[vn] += rc_s[0]
+                    if not in_branch: fn_alts.pop(vn, None)
+                    _rec_alt(vn, sc.cur_str[vn])
+                else:
+                    _taint_var(sc, vn, _expr_has_obfuscated_decode(st.value, state, sc) is not None)
+            elif isinstance(st, ast.Return) and st.value is not None:
+                flags[1] = True; rc, rok = _eval_s(st.value, sc, include_bytes)
                 for item in rc:
-                    if item not in out and len(out) < 8:
-                        out.append(item)
-                all_ok = all_ok and rok and bool(rc)
-    return out, bool(has_ret and out and all_ok)
+                    if item not in out and len(out) < 8: out.append(item)
+                flags[0] = flags[0] and rok and bool(rc)
+            elif isinstance(st, (ast.If, ast.Try)):
+                branches = [list(b) for b in (st.body, getattr(st, "orelse", None)) if b]
+                branches.extend(list(h.body) for h in getattr(st, "handlers", None) or [] if h.body)
+                base = sc.clone()
+                for b_stmts in branches:
+                    b_sc = base.clone(); _walk_fn(b_stmts, b_sc, True)
+                    sc.incomplete_vars.update(b_sc.incomplete_vars); sc.obf_tainted.update(b_sc.obf_tainted)
+                    sc.shadowed_alts.update(b_sc.shadowed_alts); sc.func_defs.update(b_sc.func_defs)
+                    for k in sc.incomplete_vars: sc.cur_str.pop(k, None); sc.cur_bytes.pop(k, None)
+                    for k, v in b_sc.cur_str.items():
+                        if k not in sc.incomplete_vars: sc.cur_str[k] = v
+                    for k, vb in b_sc.cur_bytes.items():
+                        if k not in sc.incomplete_vars: sc.cur_bytes[k] = vb
+                if getattr(st, "finalbody", None): _walk_fn(list(st.finalbody), sc, in_branch)
+            else:
+                has_obf = _expr_has_obfuscated_decode(st, state, sc) is not None
+                for sub in ast.walk(st):
+                    if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store): _taint_var(sc, sub.id, has_obf)
+                if any(isinstance(sub, ast.Return) and sub.value is not None for sub in ast.walk(st)):
+                    flags[1] = True; flags[0] = False
+                    for attr in ("body", "orelse", "finalbody"):
+                        sub_s = getattr(st, attr, None)
+                        if isinstance(sub_s, list) and sub_s: _walk_fn(sub_s, sc.clone(), True)
+
+    _walk_fn(list(getattr(fn_node, "body", ())), fn_scope)
+    return out, bool(flags[1] and out and flags[0])
 
 
 def _eval_str_cands_impl(
@@ -353,7 +349,7 @@ def _eval_str_cands_impl(
             _add(cur_str[node.id])
         if cur_bytes and node.id in cur_bytes:
             _add(_decode_bytes_text(cur_bytes[node.id]))
-        if not (scope and node.id in scope.shadowed_alts):
+        if alt_str is not (state.alt_str if state else None) or not (scope and node.id in scope.shadowed_alts):
             for alt in alt_str.get(node.id, ()):
                 _add(alt)
             if include_bytes and state:
@@ -385,7 +381,7 @@ def _eval_str_cands_impl(
         c_fns = scope.codecs_fns if scope else (state.imp.codecs_decode_fns if state else None)
         codecs_match = _match_codecs_decode_call(node, c_mods, c_fns)
         if codecs_match is not None:
-            obj_arg, enc_arg = codecs_match
+            obj_arg, enc_arg, c_mode = codecs_match
             raw_b = _eval_static_bytes(obj_arg, cur_str, cur_seq, 0, func_returns, base64_mod_names, base64_decode_fns, cur_bytes)
             if raw_b is not None and not _has_tainted_name(obj_arg, state, scope):
                 raw_list: List[object] = [raw_b]
@@ -397,13 +393,15 @@ def _eval_str_cands_impl(
             all_ok = raw_ok and enc_ok and bool(raw_list) and bool(enc_cands)
             for r_val in raw_list:
                 for e_val in enc_cands:
-                    dec_s = _decode_codecs_payload(r_val, e_val if isinstance(e_val, str) else None)
+                    dec_s = _decode_codecs_payload(r_val, e_val if isinstance(e_val, str) else None, c_mode)
                     all_ok = all_ok and (dec_s is not None)
                     _add(dec_s)
             return out, bool(out and all_ok)
         fn = node.func
-        if isinstance(fn, ast.Attribute) and fn.attr == "decode" and len(node.args) <= 1 and not node.keywords:
-            if isinstance(fn.value, ast.Call) and (
+        if include_bytes and isinstance(fn, ast.Name) and fn.id in ("bytes", "bytearray") and len(node.args) == 1 and not node.keywords:
+            return _rec(node.args[0], True)
+        if isinstance(fn, ast.Attribute) and fn.attr in ("decode", "encode") and len(node.args) <= 1 and not node.keywords:
+            if (fn.attr == "decode" or include_bytes) and isinstance(fn.value, ast.Call) and (
                 _match_base64_decode_call(fn.value, base64_mod_names, base64_decode_fns)
                 or _match_codecs_decode_call(fn.value, c_mods, c_fns)
             ):
@@ -411,9 +409,10 @@ def _eval_str_cands_impl(
         if state is not None and scope is not None:
             if isinstance(fn, ast.Lambda):
                 return _eval_func_call_code_cands(node, fn, state, scope, _depth + 1, _seen_fns, include_bytes)
-            if isinstance(fn, ast.Name) and fn.id in state.imp.func_defs:
+            fn_list = (scope.func_defs.get(fn.id) or state.imp.func_defs.get(fn.id)) if isinstance(fn, ast.Name) else None
+            if fn_list:
                 all_ok = True
-                for fn_def in state.imp.func_defs[fn.id]:
+                for fn_def in fn_list:
                     fc, fok = _eval_func_call_code_cands(node, fn_def, state, scope, _depth + 1, _seen_fns, include_bytes)
                     for item in fc:
                         _add(item)
@@ -484,39 +483,40 @@ def _expr_has_obfuscated_decode(
         if isinstance(sub, ast.Call):
             if _match_base64_decode_call(sub, scope.base64_mods, scope.base64_fns):
                 return "b64decode"
-            if _match_codecs_decode_call(sub, scope.codecs_mods, scope.codecs_fns):
-                return "codecs.decode"
+            c_hit = _match_codecs_decode_call(sub, scope.codecs_mods, scope.codecs_fns)
+            if c_hit is not None:
+                return f"codecs.{c_hit[2]}"
             fn = sub.func
-            if isinstance(fn, ast.Name) and (fn.id in scope.base64_fns or fn.id in state.imp.base64_decode_fns):
-                return fn.id
-            if isinstance(fn, ast.Name) and (fn.id in scope.codecs_fns or fn.id in state.imp.codecs_decode_fns):
-                return "codecs.decode"
+            if isinstance(fn, ast.Name):
+                if fn.id in scope.base64_fns or fn.id in state.imp.base64_decode_fns: return fn.id
+                c_mode = scope.codecs_fns.get(fn.id) or state.imp.codecs_decode_fns.get(fn.id)
+                if c_mode: return f"codecs.{c_mode}"
             if isinstance(fn, ast.Attribute):
-                if fn.attr in _OBFUSCATED_DECODE_ATTRS:
-                    return fn.attr
-                if fn.attr == "decode" and _is_named_mod_expr(fn.value, "codecs", scope.codecs_mods):
-                    return "codecs.decode"
+                if fn.attr in _OBFUSCATED_DECODE_ATTRS: return fn.attr
+                if fn.attr in ("decode", "encode") and _is_named_mod_expr(fn.value, "codecs", scope.codecs_mods):
+                    return f"codecs.{fn.attr}"
                 if fn.attr == "loads" and isinstance(fn.value, ast.Name) and fn.value.id in ("marshal", "pickle"):
                     return f"{fn.value.id}.loads"
             if isinstance(fn, ast.Name) and fn.id == "getattr" and len(sub.args) >= 2:
                 for attr_s in _eval_scope_str_cands(sub.args[1], state, scope):
-                    if attr_s in _OBFUSCATED_DECODE_ATTRS or attr_s in ("decode", "loads"):
+                    if attr_s in _OBFUSCATED_DECODE_ATTRS or attr_s in ("decode", "loads") or (
+                        attr_s == "encode" and _is_named_mod_expr(sub.args[0], "codecs", scope.codecs_mods)
+                    ):
                         return attr_s
                 if isinstance(sub.args[0], ast.Name) and (
                     sub.args[0].id in (_OBFUSCATED_DECODE_MODS | scope.codecs_mods | scope.base64_mods)
                 ):
                     return "getattr"
-            if isinstance(fn, ast.Lambda):
-                hit = _expr_has_obfuscated_decode(fn.body, state, scope, _depth + 1, seen)
-                if hit is not None:
-                    return hit
-            elif isinstance(fn, ast.Name) and fn.id in state.imp.func_defs and f"fn:{fn.id}" not in seen:
+            fn_bodies = [fn.body] if isinstance(fn, ast.Lambda) else (
+                [b for fd in (scope.func_defs.get(fn.id) or state.imp.func_defs.get(fn.id) or ())
+                 for b in ([fd.body] if isinstance(fd, ast.Lambda) else list(getattr(fd, "body", ())))]
+                if isinstance(fn, ast.Name) and f"fn:{fn.id}" not in seen else []
+            )
+            if isinstance(fn, ast.Name) and fn_bodies:
                 seen.add(f"fn:{fn.id}")
-                for fn_def in state.imp.func_defs[fn.id]:
-                    for b_node in ([fn_def.body] if isinstance(fn_def, ast.Lambda) else list(getattr(fn_def, "body", ()))):
-                        hit = _expr_has_obfuscated_decode(b_node, state, scope, _depth + 1, seen)
-                        if hit is not None:
-                            return hit
+            for b_node in fn_bodies:
+                hit = _expr_has_obfuscated_decode(b_node, state, scope, _depth + 1, seen)
+                if hit is not None: return hit
         elif isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load) and sub.id not in seen:
             seen.add(sub.id)
             for contrib in state.var_contributors.get(sub.id, ()):
@@ -528,13 +528,43 @@ def _expr_has_obfuscated_decode(
     return None
 
 
+def _is_builtins_dict_expr(node: ast.AST, scope: _ScopeState) -> bool:
+    """Retourne True si `node` représente `builtins`, `__builtins__`, `.__dict__`, `vars(builtins)` ou alias."""
+    return (
+        (isinstance(node, ast.Name) and node.id in scope.builtins_dicts)
+        or _is_named_mod_expr(node, "builtins", scope.builtins_mods)
+        or (isinstance(node, ast.Attribute) and node.attr == "__dict__" and _is_named_mod_expr(node.value, "builtins", scope.builtins_mods))
+        or (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "vars"
+            and len(node.args) == 1 and not node.keywords and _is_named_mod_expr(node.args[0], "builtins", scope.builtins_mods))
+    )
+
+
+def _resolve_builtins_lookup(
+    expr: ast.AST, state: _PyAstState, scope: _ScopeState, *, is_re_call: bool = False
+) -> Optional[str]:
+    """Résout `eval`/`exec`/`compile` via alias, `builtins.<fn>`, `getattr`, subscript ou `.get(...)`."""
+    eval_names = ("eval", "exec", "compile")
+    if isinstance(expr, ast.Name):
+        return scope.eval_exec_fns[expr.id] if (expr.id in scope.eval_exec_fns and not (expr.id == "compile" and is_re_call)) else None
+    if isinstance(expr, ast.Attribute) and expr.attr in eval_names and _is_named_mod_expr(expr.value, "builtins", scope.builtins_mods):
+        return expr.attr
+    key_node: Optional[ast.AST] = None
+    if isinstance(expr, ast.Subscript) and _is_builtins_dict_expr(expr.value, scope):
+        key_node = _ast_subscript_slice(expr)
+    elif isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id == "getattr" and len(expr.args) >= 2:
+        if _is_named_mod_expr(expr.args[0], "builtins", scope.builtins_mods):
+            key_node = expr.args[1]
+    elif isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr == "get" and _is_builtins_dict_expr(expr.func.value, scope):
+        key_node = expr.args[0] if expr.args else next((kw.value for kw in expr.keywords if kw.arg == "key"), None)
+    return next((k for k in _eval_scope_str_cands(key_node, state, scope) if k in eval_names), None) if key_node is not None else None
+
+
 def _bind_var(state: _PyAstState, scope: _ScopeState, target_name: str, rhs_node: ast.AST) -> None:
     """Met à jour les liaisons dynamiques/statiques locales pour `target_name = rhs_node`."""
     state.var_contributors.setdefault(target_name, []).append(rhs_node)
     dyn_mod = _resolve_dynamic_import_module(
         rhs_node, scope.cur_str, scope.cur_seq, state.imp.importlib_mod_names, state.imp.import_module_fns
     )
-    bound_eval_exec = False
     mod_map = {
         "subprocess": scope.subproc_mods, "os": scope.os_mods, "posix": scope.os_mods,
         "nt": scope.os_mods, "base64": scope.base64_mods, "codecs": scope.codecs_mods, "builtins": scope.builtins_mods,
@@ -542,94 +572,75 @@ def _bind_var(state: _PyAstState, scope: _ScopeState, target_name: str, rhs_node
     if dyn_mod in mod_map:
         mod_map[dyn_mod].add(target_name)
     elif isinstance(rhs_node, ast.Name):
-        if rhs_node.id in scope.eval_exec_fns and rhs_node.id not in state.imp.re_func_names:
-            scope.eval_exec_fns[target_name] = scope.eval_exec_fns[rhs_node.id]
-            bound_eval_exec = True
-        for mset in (scope.builtins_mods, scope.codecs_mods, scope.codecs_fns, scope.base64_mods):
+        for mset in (scope.builtins_mods, scope.builtins_dicts, scope.codecs_mods, scope.base64_mods):
             if rhs_node.id in mset:
                 mset.add(target_name)
+        if rhs_node.id in scope.codecs_fns:
+            scope.codecs_fns[target_name] = scope.codecs_fns[rhs_node.id]
         if rhs_node.id in scope.base64_fns:
             scope.base64_fns[target_name] = scope.base64_fns[rhs_node.id]
-    elif isinstance(rhs_node, ast.Attribute):
-        if rhs_node.attr == "rmtree":
-            scope.rmtree_fns.add(target_name)
-        elif rhs_node.attr in OS_SHELL_FUNCS:
-            scope.os_shell_fns.add(target_name)
-        elif rhs_node.attr in ("eval", "exec", "compile") and _is_named_mod_expr(rhs_node.value, "builtins", scope.builtins_mods):
-            scope.eval_exec_fns[target_name] = rhs_node.attr
-            bound_eval_exec = True
-        elif rhs_node.attr == "decode" and _is_named_mod_expr(rhs_node.value, "codecs", scope.codecs_mods):
-            scope.codecs_fns.add(target_name)
-        elif rhs_node.attr in _BASE64_DECODE_FUNCS and _is_named_mod_expr(rhs_node.value, "base64", scope.base64_mods):
-            scope.base64_fns[target_name] = rhs_node.attr
-        elif rhs_node.attr in SUBPROCESS_CALL_FUNCS and _is_named_mod_expr(rhs_node.value, "subprocess", scope.subproc_mods):
-            scope.subproc_fns.add(target_name)
-    elif isinstance(rhs_node, ast.Call) and isinstance(rhs_node.func, ast.Name) and rhs_node.func.id == "getattr" and len(rhs_node.args) >= 2:
-        for g_attr in _eval_scope_str_cands(rhs_node.args[1], state, scope):
-            if g_attr == "rmtree":
-                scope.rmtree_fns.add(target_name)
-            elif g_attr in OS_SHELL_FUNCS:
-                scope.os_shell_fns.add(target_name)
-            elif g_attr in SUBPROCESS_CALL_FUNCS:
+    else:
+        attr_pairs: List[Tuple[str, ast.AST]] = []
+        if isinstance(rhs_node, ast.Attribute):
+            attr_pairs = [(rhs_node.attr, rhs_node.value)]
+        elif isinstance(rhs_node, ast.Call) and isinstance(rhs_node.func, ast.Name) and rhs_node.func.id == "getattr" and len(rhs_node.args) >= 2:
+            attr_pairs = [(a, rhs_node.args[0]) for a in _eval_scope_str_cands(rhs_node.args[1], state, scope)]
+        is_getattr = isinstance(rhs_node, ast.Call)
+        for attr_n, recv in attr_pairs:
+            if attr_n == "rmtree": scope.rmtree_fns.add(target_name)
+            elif attr_n in OS_SHELL_FUNCS: scope.os_shell_fns.add(target_name)
+            elif attr_n in SUBPROCESS_CALL_FUNCS and (is_getattr or _is_named_mod_expr(recv, "subprocess", scope.subproc_mods)):
                 scope.subproc_fns.add(target_name)
-            elif g_attr in _BASE64_DECODE_FUNCS:
-                scope.base64_fns[target_name] = g_attr
-            elif g_attr == "decode" and _is_named_mod_expr(rhs_node.args[0], "codecs", scope.codecs_mods):
-                scope.codecs_fns.add(target_name)
-            elif g_attr in ("eval", "exec", "compile") and _is_named_mod_expr(rhs_node.args[0], "builtins", scope.builtins_mods):
-                scope.eval_exec_fns[target_name] = g_attr
-                bound_eval_exec = True
-    if not bound_eval_exec:
-        scope.eval_exec_fns.pop(target_name, None)
+            elif attr_n in _BASE64_DECODE_FUNCS and (is_getattr or _is_named_mod_expr(recv, "base64", scope.base64_mods)):
+                scope.base64_fns[target_name] = attr_n
+            elif attr_n in ("decode", "encode") and _is_named_mod_expr(recv, "codecs", scope.codecs_mods):
+                scope.codecs_fns[target_name] = attr_n
+    if isinstance(rhs_node, (ast.Attribute, ast.Call)) and _is_builtins_dict_expr(rhs_node, scope) and not _is_named_mod_expr(rhs_node, "builtins", scope.builtins_mods):
+        scope.builtins_dicts.add(target_name)
+    elif not (isinstance(rhs_node, ast.Name) and rhs_node.id in scope.builtins_dicts):
+        scope.builtins_dicts.discard(target_name)
+    bi_kind = _resolve_builtins_lookup(
+        rhs_node, state, scope, is_re_call=(isinstance(rhs_node, ast.Name) and rhs_node.id in state.imp.re_func_names)
+    )
+    if bi_kind is not None: scope.eval_exec_fns[target_name] = bi_kind
+    else: scope.eval_exec_fns.pop(target_name, None)
+    fn_list = (scope.func_defs.get(rhs_node.id) or state.imp.func_defs.get(rhs_node.id)) if isinstance(rhs_node, ast.Name) else None
+    if fn_list: scope.func_defs[target_name] = list(fn_list)
+    elif isinstance(rhs_node, ast.Lambda): scope.func_defs[target_name] = [rhs_node]
+    else: scope.func_defs.pop(target_name, None)
 
     obf_rhs = _expr_has_obfuscated_decode(rhs_node, state, scope)
+
+    def _set_taint(is_ok: bool) -> None:
+        (scope.incomplete_vars.discard if is_ok else scope.incomplete_vars.add)(target_name)
+        if is_ok:
+            scope.obf_tainted.discard(target_name)
+        elif obf_rhs is not None:
+            scope.obf_tainted.add(target_name)
+
+    def _clear_other(*dicts: Dict[str, object]) -> None:
+        for d in dicts:
+            d.pop(target_name, None)
+
     str_cands = _eval_scope_str_cands(rhs_node, state, scope)
     if str_cands:
-        _, is_complete = _eval_code_arg_cands(rhs_node, state, scope)
-        scope.cur_str[target_name] = str_cands[0]
-        scope.cur_seq.pop(target_name, None)
-        scope.cur_bytes.pop(target_name, None)
+        scope.cur_str[target_name] = str_cands[0]; _clear_other(scope.cur_seq, scope.cur_bytes)
         for c in str_cands:
             state.record_alt_str(target_name, c)
-        if is_complete:
-            scope.incomplete_vars.discard(target_name)
-            scope.obf_tainted.discard(target_name)
-        else:
-            scope.incomplete_vars.add(target_name)
-            if obf_rhs is not None:
-                scope.obf_tainted.add(target_name)
-        return
+        _set_taint(_eval_code_arg_cands(rhs_node, state, scope)[1]); return
     bytes_val = _eval_static_bytes(
         rhs_node, scope.cur_str, scope.cur_seq, 0, state.imp.func_returns,
         scope.base64_mods, scope.base64_fns, scope.cur_bytes,
     )
     if bytes_val is not None:
-        scope.cur_bytes[target_name] = bytes_val
-        state.record_alt_bytes(target_name, bytes_val)
-        scope.cur_str.pop(target_name, None)
-        scope.cur_seq.pop(target_name, None)
-        if not _has_tainted_name(rhs_node, state, scope):
-            scope.incomplete_vars.discard(target_name)
-            scope.obf_tainted.discard(target_name)
-        else:
-            scope.incomplete_vars.add(target_name)
-            if obf_rhs is not None:
-                scope.obf_tainted.add(target_name)
-        return
+        scope.cur_bytes[target_name] = bytes_val; state.record_alt_bytes(target_name, bytes_val)
+        _clear_other(scope.cur_str, scope.cur_seq)
+        _set_taint(not _has_tainted_name(rhs_node, state, scope)); return
     seq_cands = _eval_scope_seq_cands(rhs_node, state, scope)
     if seq_cands:
-        scope.cur_seq[target_name] = list(seq_cands[0])
-        scope.cur_str.pop(target_name, None)
-        scope.cur_bytes.pop(target_name, None)
+        scope.cur_seq[target_name] = list(seq_cands[0]); _clear_other(scope.cur_str, scope.cur_bytes)
         for sc in seq_cands:
             state.record_alt_seq(target_name, sc)
-        scope.incomplete_vars.discard(target_name)
-        return
-    scope.cur_str.pop(target_name, None)
-    scope.cur_seq.pop(target_name, None)
-    scope.cur_bytes.pop(target_name, None)
-    scope.incomplete_vars.add(target_name)
-    if obf_rhs is not None:
-        scope.obf_tainted.add(target_name)
-    state.alt_seq.pop(target_name, None)
-    state.dynamic_tainted_vars.add(target_name)
+        scope.incomplete_vars.discard(target_name); return
+    _clear_other(scope.cur_str, scope.cur_seq, scope.cur_bytes)
+    _set_taint(False); state.alt_seq.pop(target_name, None); state.dynamic_tainted_vars.add(target_name)

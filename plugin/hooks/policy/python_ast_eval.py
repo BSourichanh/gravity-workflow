@@ -35,7 +35,7 @@ class _PyImports:
     base64_mod_names: Set[str] = field(default_factory=lambda: {"base64"})
     base64_decode_fns: Dict[str, str] = field(default_factory=dict)
     codecs_mod_names: Set[str] = field(default_factory=lambda: {"codecs"})
-    codecs_decode_fns: Set[str] = field(default_factory=set)
+    codecs_decode_fns: Dict[str, str] = field(default_factory=dict)
     builtins_mod_names: Set[str] = field(default_factory=lambda: {"builtins", "__builtins__"})
     eval_exec_fns: Dict[str, str] = field(
         default_factory=lambda: {"eval": "eval", "exec": "exec", "compile": "compile"}
@@ -74,11 +74,13 @@ class _ScopeState:
     base64_mods: Set[str] = field(default_factory=lambda: {"base64"})
     base64_fns: Dict[str, str] = field(default_factory=dict)
     codecs_mods: Set[str] = field(default_factory=lambda: {"codecs"})
-    codecs_fns: Set[str] = field(default_factory=set)
+    codecs_fns: Dict[str, str] = field(default_factory=dict)
     builtins_mods: Set[str] = field(default_factory=lambda: {"builtins", "__builtins__"})
+    builtins_dicts: Set[str] = field(default_factory=set)
     eval_exec_fns: Dict[str, str] = field(
         default_factory=lambda: {"eval": "eval", "exec": "exec", "compile": "compile"}
     )
+    func_defs: Dict[str, List[ast.AST]] = field(default_factory=dict)
     cur_bytes: Dict[str, bytes] = field(default_factory=dict)
     incomplete_vars: Set[str] = field(default_factory=set)
     obf_tainted: Set[str] = field(default_factory=set)
@@ -96,9 +98,11 @@ class _ScopeState:
             base64_mods=set(self.base64_mods),
             base64_fns=dict(self.base64_fns),
             codecs_mods=set(self.codecs_mods),
-            codecs_fns=set(self.codecs_fns),
+            codecs_fns=dict(self.codecs_fns),
             builtins_mods=set(self.builtins_mods),
+            builtins_dicts=set(self.builtins_dicts),
             eval_exec_fns=dict(self.eval_exec_fns),
+            func_defs={k: list(v) for k, v in self.func_defs.items()},
             cur_bytes=dict(self.cur_bytes),
             incomplete_vars=set(self.incomplete_vars),
             obf_tainted=set(self.obf_tainted),
@@ -392,6 +396,21 @@ def _eval_static_bytes(
                     return s_val.encode(enc)
                 except (LookupError, UnicodeEncodeError):
                     return None
+        if isinstance(fn, ast.Name) and fn.id in ("bytes", "bytearray"):
+            if len(node.args) == 1 and not node.keywords:
+                return rec_b(node.args[0])
+            enc_n = node.args[1] if len(node.args) == 2 and not node.keywords else (
+                node.keywords[0].value
+                if len(node.args) == 1 and len(node.keywords) == 1 and node.keywords[0].arg == "encoding"
+                else None
+            )
+            if enc_n is not None:
+                s_val, enc = rec_s(node.args[0]), rec_s(enc_n)
+                if s_val is not None and enc:
+                    try:
+                        return s_val.encode(enc)
+                    except (LookupError, UnicodeEncodeError):
+                        return None
         if (
             isinstance(fn, ast.Attribute)
             and fn.attr == "fromhex"

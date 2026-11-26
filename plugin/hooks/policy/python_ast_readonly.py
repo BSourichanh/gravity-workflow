@@ -590,32 +590,40 @@ def _eval_static_seq_candidates(
 
 
 def _match_codecs_decode_call(
-    node: ast.Call, codecs_mod_names: Optional[Set[str]] = None, codecs_decode_fns: Optional[Set[str]] = None
-) -> Optional[Tuple[ast.AST, Optional[ast.AST]]]:
-    """Retourne `(obj_arg, encoding_arg)` si `node` appelle `codecs.decode` (ou alias / `getattr`)."""
-    mods, fns, fn = codecs_mod_names or {"codecs"}, codecs_decode_fns or set(), node.func
-    matched = (
-        (isinstance(fn, ast.Name) and fn.id in fns)
-        or (isinstance(fn, ast.Attribute) and fn.attr == "decode" and _is_named_mod_expr(fn.value, "codecs", mods))
-        or (
-            isinstance(fn, ast.Call) and isinstance(fn.func, ast.Name) and fn.func.id == "getattr"
-            and len(fn.args) >= 2 and isinstance(fn.args[1], ast.Constant) and fn.args[1].value == "decode"
-            and _is_named_mod_expr(fn.args[0], "codecs", mods)
-        )
-    )
-    if not matched:
+    node: ast.Call, codecs_mod_names: Optional[Set[str]] = None, codecs_decode_fns: Optional[Dict[str, str]] = None
+) -> Optional[Tuple[ast.AST, Optional[ast.AST], str]]:
+    """Retourne `(obj_arg, encoding_arg, mode)` si `node` appelle `codecs.{decode,encode}` (ou alias / `getattr`)."""
+    mods, fns, fn = codecs_mod_names or {"codecs"}, codecs_decode_fns or {}, node.func
+    mode: Optional[str] = None
+    if isinstance(fn, ast.Name) and fn.id in fns:
+        mode = fns[fn.id]
+    elif isinstance(fn, ast.Attribute) and fn.attr in ("decode", "encode") and _is_named_mod_expr(fn.value, "codecs", mods):
+        mode = fn.attr
+    elif (
+        isinstance(fn, ast.Call) and isinstance(fn.func, ast.Name) and fn.func.id == "getattr"
+        and len(fn.args) >= 2 and isinstance(fn.args[1], ast.Constant)
+        and fn.args[1].value in ("decode", "encode") and _is_named_mod_expr(fn.args[0], "codecs", mods)
+    ):
+        mode = str(fn.args[1].value)
+    if mode is None:
         return None
     kw = {k.arg: k.value for k in node.keywords if k.arg is not None}
     obj_arg = node.args[0] if node.args else kw.get("obj")
     enc_arg = node.args[1] if len(node.args) > 1 else kw.get("encoding")
     if obj_arg is None or len(node.args) > 3 or any(k not in ("obj", "encoding", "errors") for k in kw):
         return None
-    return obj_arg, enc_arg
+    return obj_arg, enc_arg, mode
 
 
-def _decode_codecs_payload(raw: object, enc: Optional[str]) -> Optional[str]:
-    """Décode statiquement un payload `codecs.decode` pour les encodages texte/bytes sûrs."""
+def _decode_codecs_payload(raw: object, enc: Optional[str], mode: str = "decode") -> Optional[str]:
+    """Décode statiquement un payload `codecs.{decode,encode}` pour les encodages texte/bytes sûrs."""
     enc_norm = (enc or "utf-8").lower()
+    if mode == "encode":
+        if not isinstance(raw, str):
+            return None
+        if enc_norm in ("rot_13", "rot-13"):
+            return codecs.encode(raw, enc_norm)
+        return raw if enc_norm in ("utf-8", "utf8", "ascii", "latin-1", "latin1") else None
     if enc_norm not in _SAFE_CODECS_ENCODINGS or not isinstance(raw, (str, bytes)):
         return None
     try:

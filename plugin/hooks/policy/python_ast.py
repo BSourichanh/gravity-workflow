@@ -37,6 +37,7 @@ from .python_ast_imports import (
     _eval_scope_str_cands,
     _eval_static_str_candidates,
     _expr_has_obfuscated_decode,
+    _resolve_builtins_lookup,
     _resolve_dynamic_import_module,
 )
 from .python_ast_readonly import (
@@ -228,23 +229,9 @@ def _inspect_exec_spawn_call(
 def _resolve_eval_exec_call_kind(
     fn: ast.AST, state: _PyAstState, scope: _ScopeState, resolved_dyn_attrs: List[str], is_re_call: bool
 ) -> Optional[str]:
-    """Résout si `fn` correspond à `eval`/`exec`/`compile` (direct, alias, `builtins`, `getattr`, subscript)."""
-    if isinstance(fn, ast.Name) and fn.id in scope.eval_exec_fns and not (fn.id == "compile" and is_re_call):
-        return scope.eval_exec_fns[fn.id]
-    if isinstance(fn, ast.Attribute) and fn.attr in ("eval", "exec", "compile") and _is_named_mod_expr(fn.value, "builtins", scope.builtins_mods):
-        return fn.attr
-    if isinstance(fn, ast.Call) and isinstance(fn.func, ast.Name) and fn.func.id == "getattr" and len(fn.args) >= 2 and _is_named_mod_expr(fn.args[0], "builtins", scope.builtins_mods):
-        return next((a for a in resolved_dyn_attrs if a in ("eval", "exec", "compile")), None)
-    if isinstance(fn, ast.Subscript):
-        val = fn.value
-        is_bi = _is_named_mod_expr(val, "builtins", scope.builtins_mods) or (
-            isinstance(val, ast.Attribute) and val.attr == "__dict__" and _is_named_mod_expr(val.value, "builtins", scope.builtins_mods)
-        ) or (
-            isinstance(val, ast.Call) and isinstance(val.func, ast.Name) and val.func.id == "vars" and bool(val.args) and _is_named_mod_expr(val.args[0], "builtins", scope.builtins_mods)
-        )
-        if is_bi:
-            return next((k for k in _eval_scope_str_cands(_ast_subscript_slice(fn), state, scope) if k in ("eval", "exec", "compile")), None)
-    return None
+    """Résout si `fn` correspond à `eval`/`exec`/`compile` (direct, alias, `builtins`, `getattr`, subscript, `.get`)."""
+    _ = resolved_dyn_attrs
+    return _resolve_builtins_lookup(fn, state, scope, is_re_call=is_re_call)
 
 
 def _inspect_python_call(
@@ -442,11 +429,13 @@ def _walk_python_stmts(
                     return verdict
                 for s_attr in (
                     "subproc_mods", "os_mods", "rmtree_fns", "os_shell_fns", "subproc_fns",
-                    "base64_mods", "codecs_mods", "codecs_fns", "builtins_mods", "incomplete_vars", "obf_tainted",
+                    "base64_mods", "codecs_mods", "builtins_mods", "builtins_dicts", "incomplete_vars", "obf_tainted",
                 ):
                     getattr(scope, s_attr).update(getattr(b_scope, s_attr))
                 scope.base64_fns.update(b_scope.base64_fns)
+                scope.codecs_fns.update(b_scope.codecs_fns)
                 scope.eval_exec_fns.update(b_scope.eval_exec_fns)
+                scope.func_defs.update(b_scope.func_defs)
                 for k in b_scope.incomplete_vars:
                     scope.cur_str.pop(k, None)
                     scope.cur_bytes.pop(k, None)
@@ -610,9 +599,10 @@ def _inspect_python_ast(
         base64_mods=set(imp.base64_mod_names),
         base64_fns=dict(imp.base64_decode_fns),
         codecs_mods=set(imp.codecs_mod_names),
-        codecs_fns=set(imp.codecs_decode_fns),
+        codecs_fns=dict(imp.codecs_decode_fns),
         builtins_mods=set(imp.builtins_mod_names),
         eval_exec_fns=dict(imp.eval_exec_fns),
+        func_defs={k: list(v) for k, v in imp.func_defs.items()},
     )
     pass1_verdict = _walk_python_stmts(state, scope, list(tree.body))
     if pass1_verdict is not None:
