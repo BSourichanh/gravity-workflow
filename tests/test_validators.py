@@ -2,7 +2,6 @@
 """Tests unitaires des validateurs (eval_checks, plugin_validator, frontmatter, init_workspace)."""
 
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -14,12 +13,9 @@ from unittest import mock
 from _unit_helpers import ensure_plugin_paths
 
 PLUGIN_ROOT = ensure_plugin_paths()
-if str(PLUGIN_ROOT / "workflows") not in sys.path:
-    sys.path.insert(0, str(PLUGIN_ROOT / "workflows"))
 
 import eval_checks  # noqa: E402
 import init_workspace  # noqa: E402
-import patch_apply  # noqa: E402
 from validators import Report, plugin_validator, validate_plugin, validate_workspace  # noqa: E402
 from validators.base import parse_frontmatter, validate_agent_file  # noqa: E402
 
@@ -137,111 +133,6 @@ class TestEvalChecks(unittest.TestCase):
             )
             self.assertFalse(ok_bad)
 
-    def test_manual_cases_selection_studio_checks_and_report(self) -> None:
-        cases_path = PLUGIN_ROOT / "evals/cases.json"
-        all_cases = json.loads(cases_path.read_text(encoding="utf-8"))
-        self.assertEqual(len(all_cases), 17)
-
-        # is_manual_case variants
-        self.assertFalse(eval_checks.is_manual_case(all_cases[0]))
-        self.assertTrue(eval_checks.is_manual_case({"id": "M1", "manual": True, "description": "Test"}))
-        self.assertTrue(eval_checks.is_manual_case({"id": "M2", "description": "[MANUAL] Check"}))
-        self.assertFalse(eval_checks.is_manual_case("invalid"))
-
-        # select_eval_cases default excludes [manual]
-        auto_selected, skipped_ids = eval_checks.select_eval_cases(all_cases)
-        self.assertEqual(len(auto_selected), 12)
-        self.assertEqual(
-            skipped_ids,
-            [
-                "CASE-13-STUDIO-TRACKED-RO",
-                "CASE-14-STUDIO-GIT-RELEASE-GUARD",
-                "CASE-15-STUDIO-PLAN-CHECKPOINT",
-                "CASE-16-STUDIO-FAIL-CLOSED-BRIDGE",
-                "CASE-17-STUDIO-TASKS-NO-DRIFT",
-            ],
-        )
-
-        # include_manual=True keeps all
-        all_selected, skipped_none = eval_checks.select_eval_cases(all_cases, include_manual=True)
-        self.assertEqual(len(all_selected), 17)
-        self.assertEqual(skipped_none, [])
-
-        # explicit case_ids includes requested [manual] cases
-        explicit, skipped_exp = eval_checks.select_eval_cases(
-            all_cases,
-            selected_ids=["CASE-01-SCHEMA-INTEGRITY", "CASE-13-STUDIO-TRACKED-RO"],
-        )
-        self.assertEqual([c["id"] for c in explicit], ["CASE-01-SCHEMA-INTEGRITY", "CASE-13-STUDIO-TRACKED-RO"])
-        self.assertEqual(skipped_exp, [])
-
-        # manual case without auto_checks returns []
-        self.assertEqual(
-            eval_checks.run_deterministic_checks(
-                {"id": "M-EMPTY", "manual": True, "description": "[manual] Empty"},
-                PLUGIN_ROOT,
-                {},
-            ),
-            [],
-        )
-
-        # run_deterministic_checks on CASE-13..17
-        by_id = {c["id"]: c for c in all_cases}
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-
-            # CASE-13 & CASE-14: expect_refusal()
-            self.assertEqual(eval_checks.run_deterministic_checks(by_id["CASE-13-STUDIO-TRACKED-RO"], base, {"refused": True}), [])
-            self.assertTrue(eval_checks.run_deterministic_checks(by_id["CASE-13-STUDIO-TRACKED-RO"], base, {"refused": False}))
-            self.assertEqual(eval_checks.run_deterministic_checks(by_id["CASE-14-STUDIO-GIT-RELEASE-GUARD"], base, {"refused": True}), [])
-            self.assertTrue(eval_checks.run_deterministic_checks(by_id["CASE-14-STUDIO-GIT-RELEASE-GUARD"], base, {"refused": False}))
-
-            # CASE-15: docs/dispatch_plan.md with dispatch=true
-            (base / "docs").mkdir()
-            (base / "docs/dispatch_plan.md").write_text(
-                "# Plan\n1. Checkpoint humain unique avant send_message(..., dispatch=true).\n",
-                encoding="utf-8",
-            )
-            self.assertEqual(eval_checks.run_deterministic_checks(by_id["CASE-15-STUDIO-PLAN-CHECKPOINT"], base, {}), [])
-            (base / "docs/dispatch_plan.md").write_text("# Plan sans dispatch\n", encoding="utf-8")
-            self.assertTrue(eval_checks.run_deterministic_checks(by_id["CASE-15-STUDIO-PLAN-CHECKPOINT"], base, {}))
-
-            # CASE-16: out/bridge_reply.json fail-closed
-            (base / "out").mkdir()
-            (base / "out/bridge_reply.json").write_text(
-                json.dumps({"close": False, "dispatch": False, "status": "blocked", "reason": "test rouge"}),
-                encoding="utf-8",
-            )
-            self.assertEqual(eval_checks.run_deterministic_checks(by_id["CASE-16-STUDIO-FAIL-CLOSED-BRIDGE"], base, {}), [])
-            (base / "out/bridge_reply.json").write_text(
-                json.dumps({"close": True, "dispatch": False}),
-                encoding="utf-8",
-            )
-            self.assertTrue(eval_checks.run_deterministic_checks(by_id["CASE-16-STUDIO-FAIL-CLOSED-BRIDGE"], base, {}))
-
-            # CASE-17: out/handoff_body.md referencing tasks/2026-11-24-w2.md
-            (base / "out/handoff_body.md").write_text(
-                "Source : tasks/2026-11-24-w2.md (`run_deterministic_checks`)\n`python3 plugin/scripts/validate.py --strict`\n",
-                encoding="utf-8",
-            )
-            self.assertEqual(eval_checks.run_deterministic_checks(by_id["CASE-17-STUDIO-TASKS-NO-DRIFT"], base, {}), [])
-            (base / "out/handoff_body.md").write_text("Résumé vague\n", encoding="utf-8")
-            self.assertTrue(eval_checks.run_deterministic_checks(by_id["CASE-17-STUDIO-TASKS-NO-DRIFT"], base, {}))
-
-        # render_markdown_report includes skipped_manual_ids when present
-        md = eval_checks.render_markdown_report(
-            {
-                "timestamp": "2026-11-24T20:00:00Z",
-                "passed": 12,
-                "total": 12,
-                "prefilter_rejected": 0,
-                "skipped_manual_ids": ["CASE-13-STUDIO-TRACKED-RO"],
-                "results": [],
-            }
-        )
-        self.assertIn("CASE-13-STUDIO-TRACKED-RO", md)
-        self.assertIn("[manual]", md)
-
 
 class TestPluginValidator(unittest.TestCase):
     def _build_minimal_plugin(self, root: Path) -> None:
@@ -261,57 +152,56 @@ class TestPluginValidator(unittest.TestCase):
                 manifest_path = plugin_dir / "plugin.json"
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 manifest["disabled"] = False
-                manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
+                manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
                 rep_ok = Report()
                 validate_plugin(plugin_dir, rep_ok)
                 self.assertTrue(rep_ok.ok(strict=True), f"Erreurs inattendues: {rep_ok.errors} {rep_ok.warnings}")
 
                 # 2. Reject forbidden legacy keys ($schema, license, keywords)
-                with mock.patch.object(plugin_validator, "check_stdlib_only"):
-                    for bad_key in ("$schema", "license", "keywords"):
-                        bad_manifest = dict(manifest)
-                        bad_manifest[bad_key] = "bad"
-                        manifest_path.write_text(json.dumps(bad_manifest) + "\n", encoding="utf-8", newline="\n")
-                        rep_bad_key = Report()
-                        validate_plugin(plugin_dir, rep_bad_key)
-                        self.assertFalse(rep_bad_key.ok(strict=True), f"Devrait rejeter la clé {bad_key}")
+                for bad_key in ("$schema", "license", "keywords"):
+                    bad_manifest = dict(manifest)
+                    bad_manifest[bad_key] = "bad"
+                    manifest_path.write_text(json.dumps(bad_manifest) + "\n", encoding="utf-8")
+                    rep_bad_key = Report()
+                    validate_plugin(plugin_dir, rep_bad_key)
+                    self.assertFalse(rep_bad_key.ok(strict=True), f"Devrait rejeter la clé {bad_key}")
 
-                    # 3. Reject missing official field
-                    missing_repo = dict(manifest)
-                    missing_repo.pop("repository", None)
-                    manifest_path.write_text(json.dumps(missing_repo) + "\n", encoding="utf-8", newline="\n")
-                    rep_missing = Report()
-                    validate_plugin(plugin_dir, rep_missing)
-                    self.assertFalse(rep_missing.ok(strict=True))
+                # 3. Reject missing official field
+                missing_repo = dict(manifest)
+                missing_repo.pop("repository", None)
+                manifest_path.write_text(json.dumps(missing_repo) + "\n", encoding="utf-8")
+                rep_missing = Report()
+                validate_plugin(plugin_dir, rep_missing)
+                self.assertFalse(rep_missing.ok(strict=True))
 
-                    # 4. Reject UTF-8 BOM in plugin.json
-                    manifest_path.write_bytes(b"\xef\xbb\xbf" + json.dumps(manifest).encode("utf-8"))
-                    rep_bom = Report()
-                    validate_plugin(plugin_dir, rep_bom)
-                    self.assertFalse(rep_bom.ok(strict=True))
-                    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8", newline="\n")
+                # 4. Reject UTF-8 BOM in plugin.json
+                manifest_path.write_bytes(b"\xef\xbb\xbf" + json.dumps(manifest).encode("utf-8"))
+                rep_bom = Report()
+                validate_plugin(plugin_dir, rep_bom)
+                self.assertFalse(rep_bom.ok(strict=True))
+                manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
 
-                    # 5. Validate config/module.json v1
-                    module_path = plugin_dir / "config" / "module.json"
-                    module_data = json.loads(module_path.read_text(encoding="utf-8"))
-                    bad_mod = dict(module_data)
-                    bad_mod["schema_version"] = 2
-                    module_path.write_text(json.dumps(bad_mod) + "\n", encoding="utf-8", newline="\n")
-                    rep_sv = Report()
-                    validate_plugin(plugin_dir, rep_sv)
-                    self.assertFalse(rep_sv.ok(strict=True))
+                # 5. Validate config/module.json v1
+                module_path = plugin_dir / "config" / "module.json"
+                module_data = json.loads(module_path.read_text(encoding="utf-8"))
+                bad_mod = dict(module_data)
+                bad_mod["schema_version"] = 2
+                module_path.write_text(json.dumps(bad_mod) + "\n", encoding="utf-8")
+                rep_sv = Report()
+                validate_plugin(plugin_dir, rep_sv)
+                self.assertFalse(rep_sv.ok(strict=True))
 
-                    bad_name = dict(module_data)
-                    bad_name["plugin_name"] = "wrong-plugin"
-                    module_path.write_text(json.dumps(bad_name) + "\n", encoding="utf-8", newline="\n")
-                    rep_name = Report()
-                    validate_plugin(plugin_dir, rep_name)
-                    self.assertFalse(rep_name.ok(strict=True))
+                bad_name = dict(module_data)
+                bad_name["plugin_name"] = "wrong-plugin"
+                module_path.write_text(json.dumps(bad_name) + "\n", encoding="utf-8")
+                rep_name = Report()
+                validate_plugin(plugin_dir, rep_name)
+                self.assertFalse(rep_name.ok(strict=True))
 
-                    module_path.unlink()
-                    rep_no_mod = Report()
-                    validate_plugin(plugin_dir, rep_no_mod)
-                    self.assertFalse(rep_no_mod.ok(strict=True))
+                module_path.unlink()
+                rep_no_mod = Report()
+                validate_plugin(plugin_dir, rep_no_mod)
+                self.assertFalse(rep_no_mod.ok(strict=True))
 
     def test_templates_repo_agents_and_workspace_template_drift_checks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -325,9 +215,7 @@ class TestPluginValidator(unittest.TestCase):
             repo_agents = repo_dir / "AGENTS.md"
             repo_agents.write_text("# Agents\n\n## Invariants\n- OK.\n", encoding="utf-8", newline="\n")
 
-            with mock.patch.object(plugin_validator, "run_hook_dry_runs"), mock.patch.object(
-                plugin_validator, "check_stdlib_only"
-            ):
+            with mock.patch.object(plugin_validator, "run_hook_dry_runs"):
                 rep_ok = Report()
                 validate_plugin(plugin_dir, rep_ok)
                 self.assertTrue(rep_ok.ok(strict=True), f"Erreurs inattendues: {rep_ok.errors} {rep_ok.warnings}")
@@ -421,9 +309,7 @@ class TestPluginValidator(unittest.TestCase):
             plugin_dir = Path(tmp) / "plugin"
             self._build_minimal_plugin(plugin_dir)
 
-            with mock.patch.object(plugin_validator, "run_hook_dry_runs"), mock.patch.object(
-                plugin_validator, "check_stdlib_only"
-            ):
+            with mock.patch.object(plugin_validator, "run_hook_dry_runs"):
                 rep_ok = Report()
                 validate_plugin(plugin_dir, rep_ok)
                 self.assertTrue(rep_ok.ok(strict=True), f"Erreurs inattendues: {rep_ok.errors} {rep_ok.warnings}")
@@ -457,9 +343,7 @@ class TestPluginValidator(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             plugin_dir = Path(tmp) / "plugin"
             self._build_minimal_plugin(plugin_dir)
-            with mock.patch.object(plugin_validator, "run_hook_dry_runs"), mock.patch.object(
-                plugin_validator, "check_stdlib_only"
-            ):
+            with mock.patch.object(plugin_validator, "run_hook_dry_runs"):
                 rep_clean = Report()
                 validate_plugin(plugin_dir, rep_clean)
                 self.assertTrue(rep_clean.ok(strict=True), f"Warnings/erreurs inattendus: {rep_clean.errors} {rep_clean.warnings}")
@@ -469,336 +353,6 @@ class TestPluginValidator(unittest.TestCase):
                 validate_plugin(plugin_dir, rep_vestige)
                 self.assertEqual(rep_vestige.errors, [])
                 self.assertTrue(any("sidecars/live-widget" in w for w in rep_vestige.warnings), rep_vestige.warnings)
-
-    def test_ui_mode_and_integrity_checks_int01_03_04_06_09(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_dir = Path(tmp)
-            plugin_dir = repo_dir / "plugin"
-            self._build_minimal_plugin(plugin_dir)
-            wt_dir = repo_dir / "workspace-template"
-            wt_src = PLUGIN_ROOT.parent / "workspace-template"
-            if wt_src.is_dir():
-                shutil.copytree(wt_src, wt_dir)
-
-            with mock.patch.object(plugin_validator, "run_hook_dry_runs"), mock.patch.object(
-                plugin_validator, "check_stdlib_only"
-            ):
-                # Baseline strict OK
-                rep_ok = Report()
-                validate_plugin(plugin_dir, rep_ok)
-                self.assertTrue(rep_ok.ok(strict=True), f"Erreurs/warnings : {rep_ok.errors} {rep_ok.warnings}")
-
-                # ui.mode : transition-mcp accepté, transition-mcp-app rejeté
-                mod_path = plugin_dir / "config" / "module.json"
-                mod_orig = mod_path.read_text(encoding="utf-8")
-                mod_data = json.loads(mod_orig)
-                mod_data["ui"]["mode"] = "transition-mcp"
-                mod_path.write_text(json.dumps(mod_data, indent=2) + "\n", encoding="utf-8", newline="\n")
-                rep_ui_ok = Report()
-                validate_plugin(plugin_dir, rep_ui_ok)
-                self.assertTrue(rep_ui_ok.ok(strict=True), rep_ui_ok.errors)
-
-                mod_data["ui"]["mode"] = "transition-mcp-app"
-                mod_path.write_text(json.dumps(mod_data, indent=2) + "\n", encoding="utf-8", newline="\n")
-                rep_ui_bad = Report()
-                validate_plugin(plugin_dir, rep_ui_bad)
-                self.assertTrue(any("ui.mode" in e for e in rep_ui_bad.errors), rep_ui_bad.errors)
-                mod_path.write_text(mod_orig, encoding="utf-8", newline="\n")
-
-                # INT-01 : suggestedPrompts format & <= 100 chars
-                manifest_path = plugin_dir / "plugin.json"
-                manifest_orig = manifest_path.read_text(encoding="utf-8")
-                manifest_bad_fmt = json.loads(manifest_orig)
-                manifest_bad_fmt["suggestedPrompts"][0] = "pas une commande"
-                manifest_path.write_text(json.dumps(manifest_bad_fmt, indent=2) + "\n", encoding="utf-8", newline="\n")
-                rep_pfmt = Report()
-                validate_plugin(plugin_dir, rep_pfmt)
-                self.assertTrue(any("suggestedPrompts[0]" in e for e in rep_pfmt.errors), rep_pfmt.errors)
-
-                manifest_bad_len = json.loads(manifest_orig)
-                manifest_bad_len["suggestedPrompts"][1] = "/gravity-workflow — " + ("a" * 85)
-                manifest_path.write_text(json.dumps(manifest_bad_len, indent=2) + "\n", encoding="utf-8", newline="\n")
-                rep_plen = Report()
-                validate_plugin(plugin_dir, rep_plen)
-                self.assertTrue(any("suggestedPrompts[1]" in e and "100" in e for e in rep_plen.errors), rep_plen.errors)
-                manifest_path.write_text(manifest_orig, encoding="utf-8", newline="\n")
-
-                # INT-03 : UTF-8 sans BOM + LF sans doublon sur templates/AGENTS.md
-                tpl_agents = plugin_dir / "templates/AGENTS.md"
-                orig_tpl_agents = tpl_agents.read_bytes()
-                tpl_agents.write_bytes(b"\xef\xbb\xbf" + orig_tpl_agents)
-                rep_no_dup = Report()
-                validate_plugin(plugin_dir, rep_no_dup)
-                bom_errs = [e for e in rep_no_dup.errors if "templates/AGENTS.md" in e and "BOM" in e]
-                self.assertEqual(len(bom_errs), 1, rep_no_dup.errors)
-                tpl_agents.write_bytes(orig_tpl_agents)
-
-                ref00 = plugin_dir / "skills/gravity-workflow/references/00-quick-start.md"
-                orig_ref00 = ref00.read_bytes()
-                ref00.write_bytes(orig_ref00.replace(b"\n", b"\r\n"))
-                rep_ref_crlf = Report()
-                validate_plugin(plugin_dir, rep_ref_crlf)
-                self.assertTrue(any("00-quick-start.md" in e and "CRLF" in e for e in rep_ref_crlf.errors), rep_ref_crlf.errors)
-                ref00.write_bytes(orig_ref00)
-
-                # INT-04 : chemins machine hardcodés rejetés (hors tests/ et fixtures/)
-                bad_doc = plugin_dir / "docs_tmp_leak.md"
-                bad_doc.write_text("Chemin : /Users/alice/work\n", encoding="utf-8", newline="\n")
-                rep_path_mac = Report()
-                validate_plugin(plugin_dir, rep_path_mac)
-                self.assertTrue(any("chemin machine hardcodé" in e for e in rep_path_mac.errors), rep_path_mac.errors)
-                bad_doc.unlink()
-
-                (plugin_dir / "fixtures").mkdir()
-                (plugin_dir / "fixtures/sample.md").write_text("C:\\Users\\bob\\ok\n", encoding="utf-8", newline="\n")
-                rep_fix_ok = Report()
-                validate_plugin(plugin_dir, rep_fix_ok)
-                self.assertTrue(rep_fix_ok.ok(strict=True), rep_fix_ok.errors)
-                shutil.rmtree(plugin_dir / "fixtures")
-
-                # INT-06 : dérive profile.json vs profile_engine.default_profile()
-                tpl_prof = plugin_dir / "templates/.agents/gravity-workflow/profile.json"
-                wt_prof = wt_dir / ".agents/gravity-workflow/profile.json"
-                orig_prof = tpl_prof.read_bytes()
-                bad_prof = json.loads(orig_prof.decode("utf-8"))
-                bad_prof["signals"].pop("metrics", None)
-                bad_prof_bytes = (json.dumps(bad_prof, indent=2) + "\n").encode("utf-8")
-                tpl_prof.write_bytes(bad_prof_bytes)
-                wt_prof.write_bytes(bad_prof_bytes)
-                rep_prof_drift = Report()
-                validate_plugin(plugin_dir, rep_prof_drift)
-                self.assertTrue(any("default_profile()" in e for e in rep_prof_drift.errors), rep_prof_drift.errors)
-                tpl_prof.write_bytes(orig_prof)
-                wt_prof.write_bytes(orig_prof)
-
-                # INT-09 : dérive workspace-template PROGRESS.md & live_state.json vs init_workspace._render_*("full")
-                wt_prog = wt_dir / ".agents/gravity-workflow/PROGRESS.md"
-                orig_prog = wt_prog.read_text(encoding="utf-8")
-                wt_prog.write_text(orig_prog + "\n# drift\n", encoding="utf-8", newline="\n")
-                rep_prog_drift = Report()
-                validate_plugin(plugin_dir, rep_prog_drift)
-                self.assertTrue(any("_render_progress_md" in e for e in rep_prog_drift.errors), rep_prog_drift.errors)
-                wt_prog.write_text(orig_prog, encoding="utf-8", newline="\n")
-
-                wt_live = wt_dir / ".agents/gravity-workflow/observability/live_state.json"
-                orig_live = wt_live.read_text(encoding="utf-8")
-                wt_live.write_text(orig_live.replace('"idle"', '"busy"'), encoding="utf-8", newline="\n")
-                rep_live_drift = Report()
-                validate_plugin(plugin_dir, rep_live_drift)
-                self.assertTrue(any("_render_live_state_json" in e for e in rep_live_drift.errors), rep_live_drift.errors)
-                wt_live.write_text(orig_live, encoding="utf-8", newline="\n")
-
-    def test_validators_count_only_auto_cases_and_check_progress_and_release_checklist(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_dir = Path(tmp)
-            plugin_dir = repo_dir / "plugin"
-            self._build_minimal_plugin(plugin_dir)
-            wt_dir = repo_dir / "workspace-template"
-            shutil.copytree(PLUGIN_ROOT.parent / "workspace-template", wt_dir)
-
-            with mock.patch.object(plugin_validator, "run_hook_dry_runs"), mock.patch.object(
-                plugin_validator, "check_stdlib_only"
-            ), mock.patch(
-                "validators.workspace_validator.run_hook_dry_runs"
-            ):
-                # 12 auto + 5 [manual] passes strict without warnings in both validators
-                rep_p = Report()
-                validate_plugin(plugin_dir, rep_p)
-                self.assertTrue(rep_p.ok(strict=True), f"{rep_p.errors} {rep_p.warnings}")
-
-                rep_w = Report()
-                validate_workspace(wt_dir, rep_w)
-                self.assertTrue(rep_w.ok(strict=True), f"{rep_w.errors} {rep_w.warnings}")
-
-                # Dropping auto cases below 10 triggers warning even with many [manual] cases
-                cases_data = json.loads((plugin_dir / "evals/cases.json").read_text(encoding="utf-8"))
-                reduced = cases_data[:5] + [c for c in cases_data if eval_checks.is_manual_case(c)]
-                reduced_txt = json.dumps(reduced, indent=2, ensure_ascii=False) + "\n"
-                (plugin_dir / "evals/cases.json").write_text(reduced_txt, encoding="utf-8", newline="\n")
-                (wt_dir / ".agents/gravity-workflow/evals/cases.json").write_text(
-                    reduced_txt, encoding="utf-8", newline="\n"
-                )
-
-                rep_p_warn = Report()
-                validate_plugin(plugin_dir, rep_p_warn)
-                self.assertTrue(any("5 cas auto" in w for w in rep_p_warn.warnings), rep_p_warn.warnings)
-
-                rep_w_warn = Report()
-                validate_workspace(wt_dir, rep_w_warn)
-                self.assertTrue(any("5 cas auto" in w for w in rep_w_warn.warnings), rep_w_warn.warnings)
-
-        # PROGRESS.md clarifies (8 étapes + 1 bonus) in both modes and matches workspace-template
-        full_prog = init_workspace._render_progress_md("full")
-        qs_prog = init_workspace._render_progress_md("quickstart")
-        self.assertIn("## Avancement des étapes (8 étapes + 1 bonus)", full_prog)
-        self.assertIn("8 étapes + 1 bonus", full_prog.splitlines()[2])
-        self.assertIn("(8 étapes + 1 bonus)", qs_prog.splitlines()[2])
-        wt_prog_txt = (PLUGIN_ROOT.parent / "workspace-template/.agents/gravity-workflow/PROGRESS.md").read_text(
-            encoding="utf-8"
-        )
-        self.assertEqual(wt_prog_txt, full_prog)
-
-        # 04-release-checklist.md byte parity + updated requirements
-        tpl_chk = (PLUGIN_ROOT / "templates/.agents/rules/04-release-checklist.md").read_bytes()
-        wt_chk = (PLUGIN_ROOT.parent / "workspace-template/.agents/rules/04-release-checklist.md").read_bytes()
-        self.assertEqual(tpl_chk, wt_chk)
-        chk_txt = tpl_chk.decode("utf-8")
-        self.assertIn("`100 % PASS` auto, plus cas `[manual]` rejoués si applicables", chk_txt)
-        self.assertIn("python3", chk_txt)
-        self.assertIn("python", chk_txt)
-        self.assertIn("CHANGELOG.md", chk_txt)
-
-
-class TestReviewPipelineHelpers(unittest.TestCase):
-    def test_patch_detection_save_apply_and_safe_worktree_cleanup(self) -> None:
-        unified = (
-            "diff --git a/hello.txt b/hello.txt\n"
-            "index 8ab686e..c00c20b 100644\n"
-            "--- a/hello.txt\n"
-            "+++ b/hello.txt\n"
-            "@@ -1 +1 @@\n"
-            "-hello\n"
-            "+world\n"
-        )
-        snippet = "--- hello.txt ---\nworld\n"
-        self.assertTrue(patch_apply._is_unified_diff(unified))
-        self.assertFalse(patch_apply._is_unified_diff(snippet))
-        self.assertFalse(patch_apply._is_unified_diff(""))
-
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            wf_home = base / "wf_home"
-            repo = base / "repo"
-            repo.mkdir()
-            (repo / "hello.txt").write_text("hello\n", encoding="utf-8", newline="\n")
-            for args in (
-                ["git", "init", "-q"],
-                ["git", "config", "user.email", "test@example.com"],
-                ["git", "config", "user.name", "Test"],
-                ["git", "add", "hello.txt"],
-                ["git", "commit", "-q", "-m", "init"],
-            ):
-                subprocess.run(args, cwd=str(repo), check=True, capture_output=True)
-
-            wt_dir = base / "isolated_wt"
-            subprocess.run(
-                ["git", "-C", str(repo), "worktree", "add", "-q", "-b", "feat/test", str(wt_dir)],
-                check=True,
-                capture_output=True,
-            )
-            (wt_dir / "hello.txt").write_text("world\n", encoding="utf-8", newline="\n")
-
-            # _read_worktree_patch fallback -> git -C <wt_dir> diff
-            read_diff = patch_apply._read_worktree_patch(str(wt_dir), "", ["hello.txt"])
-            self.assertIn("diff --git a/hello.txt b/hello.txt", read_diff)
-            self.assertIn("+world", read_diff)
-
-            with mock.patch.dict(os.environ, {"GRAVITY_WORKFLOW_HOME": str(wf_home)}):
-                with mock.patch.object(patch_apply, "WS_ROOT", repo):
-                    # Non-unified snippet is rejected (returns None)
-                    self.assertIsNone(patch_apply._safe_save_verified_patch(snippet, str(wt_dir)))
-                    # Unified diff is saved in UTF-8 without BOM + LF
-                    saved = patch_apply._safe_save_verified_patch(read_diff.replace("\n", "\r\n"), str(wt_dir))
-                    self.assertIsNotNone(saved)
-                    assert saved is not None
-                    raw_saved = saved.read_bytes()
-                    self.assertFalse(raw_saved.startswith(b"\xef\xbb\xbf"))
-                    self.assertNotIn(b"\r\n", raw_saved)
-
-                # Safety guard: cleanup refuses caller_workspace, parent, plugin root, .git
-                self.assertFalse(patch_apply.cleanup_worktree_best_effort(repo, repo))
-                self.assertFalse(patch_apply.cleanup_worktree_best_effort(base, repo))
-                self.assertFalse(patch_apply.cleanup_worktree_best_effort(PLUGIN_ROOT, repo))
-                self.assertFalse(patch_apply.cleanup_worktree_best_effort(repo / ".git", repo))
-                self.assertTrue(repo.is_dir())
-
-                # CLI --apply applies patch onto repo and cleans isolated worktree
-                proc = subprocess.run(
-                    [
-                        sys.executable,
-                        str(PLUGIN_ROOT / "workflows/patch_apply.py"),
-                        "--apply",
-                        "--workspace",
-                        str(repo),
-                        "--worktree",
-                        str(wt_dir),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=20,
-                    check=False,
-                )
-                self.assertEqual(proc.returncode, 0, proc.stderr)
-                self.assertEqual((repo / "hello.txt").read_text(encoding="utf-8"), "world\n")
-                self.assertFalse(wt_dir.exists())
-
-    def test_read_worktree_patch_stages_untracked_excludes_verified_patch_and_apply_guards_wt(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            repo = base / "repo"
-            repo.mkdir()
-            (repo / "tracked.txt").write_text("v1\n", encoding="utf-8", newline="\n")
-            for args in (
-                ["git", "init", "-q"],
-                ["git", "config", "user.email", "test@example.com"],
-                ["git", "config", "user.name", "Test"],
-                ["git", "add", "tracked.txt"],
-                ["git", "commit", "-q", "-m", "init"],
-            ):
-                subprocess.run(args, cwd=str(repo), check=True, capture_output=True)
-
-            (repo / "main_untracked.txt").write_text("stay_untracked\n", encoding="utf-8", newline="\n")
-            self.assertEqual(patch_apply._read_worktree_patch(str(repo), ""), "")
-            (repo / "main_untracked.txt").unlink()
-
-            wt_dir = base / "wt_untracked"
-            subprocess.run(
-                ["git", "-C", str(repo), "worktree", "add", "-q", "--detach", str(wt_dir)],
-                check=True,
-                capture_output=True,
-            )
-            (wt_dir / "tracked.txt").write_text("v2\n", encoding="utf-8", newline="\n")
-            (wt_dir / "brand_new.py").write_text("X = 1\n", encoding="utf-8", newline="\n")
-            (wt_dir / ".gravity_verified.patch").write_text("", encoding="utf-8", newline="\n")
-
-            read_diff = patch_apply._read_worktree_patch(str(wt_dir), "")
-            self.assertIn("diff --git a/tracked.txt b/tracked.txt", read_diff)
-            self.assertIn("diff --git a/brand_new.py b/brand_new.py", read_diff)
-            self.assertIn("+X = 1", read_diff)
-            self.assertNotIn(".gravity_verified.patch", read_diff)
-
-            # Patch partiel (omettant brand_new.py) -> apply_verified_patch préserve le worktree avec [WARN]
-            partial_patch = base / "partial.patch"
-            only_tracked = subprocess.run(
-                ["git", "-C", str(wt_dir), "diff", "--", "tracked.txt"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                check=True,
-            ).stdout
-            partial_patch.write_text(only_tracked, encoding="utf-8", newline="\n")
-            warnings: list[str] = []
-            self.assertTrue(
-                patch_apply.apply_verified_patch(
-                    repo, partial_patch, worktree_path=wt_dir, cleanup_worktree=True, log_fn=warnings.append
-                )
-            )
-            self.assertTrue(wt_dir.exists())
-            self.assertTrue(any("[WARN]" in w and "brand_new.py" in w for w in warnings))
-
-            # Patch complet -> supprime normalement le worktree
-            subprocess.run(["git", "-C", str(repo), "checkout", "--", "tracked.txt"], check=True, capture_output=True)
-            full_patch = base / "full.patch"
-            full_patch.write_text(read_diff, encoding="utf-8", newline="\n")
-            warnings_ok: list[str] = []
-            self.assertTrue(
-                patch_apply.apply_verified_patch(
-                    repo, full_patch, worktree_path=wt_dir, cleanup_worktree=True, log_fn=warnings_ok.append
-                )
-            )
-            self.assertFalse(wt_dir.exists())
-            self.assertTrue((repo / "brand_new.py").is_file())
-            self.assertEqual(warnings_ok, [])
 
 
 class TestFrontmatterParser(unittest.TestCase):

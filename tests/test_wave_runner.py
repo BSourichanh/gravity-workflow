@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Tests unitaires pour `wave_runner.py`, `review_pipeline.py` (plan_file/watchdog) et `patch_apply.py` (100 % stdlib)."""
+"""Tests unitaires pour `worktree_ops.py`, `patch_apply.py`, `wave_runner.py` et `review_pipeline.py` (100 % stdlib)."""
 
 import ast
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ if WORKFLOWS_DIR not in sys.path:
 
 import patch_apply  # noqa: E402
 import state_writer  # noqa: E402
+import worktree_ops  # noqa: E402
 
 
 def _init_git_repo(repo_dir: Path, files: dict, branch: str = "dev") -> None:
@@ -70,20 +72,33 @@ def _exec_workflow(script_path: Path, *, workspaces: list, args_dict: dict, fake
 
 
 class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
+    def test_patch_apply_reexports_worktree_ops_symbols(self) -> None:
+        for attr in (
+            "_is_snap_agy",
+            "resolve_worktree_base",
+            "_is_protected_cleanup_target",
+            "_is_verified_linked_worktree",
+            "create_repo_worktree",
+            "cleanup_worktree_best_effort",
+        ):
+            self.assertIs(getattr(patch_apply, attr), getattr(worktree_ops, attr))
+
     def test_create_repo_worktree_detached_and_protected_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             g_home = base / "gravity_home"
             repo = base / "demo-repo"
             _init_git_repo(repo, {"app.py": "x = 1\n", "AGENTS.md": "# Demo AGENTS\n"}, branch="dev")
+            (repo / ".agents").mkdir(parents=True, exist_ok=True)
+            (repo / ".agents" / "keep.md").write_text("safe\n", encoding="utf-8")
 
             with mock.patch.dict(os.environ, {"GRAVITY_HOME": str(g_home)}, clear=False):
                 os.environ.pop("GRAVITY_WORKFLOW_HOME", None)
                 os.environ.pop("GRAVITY_WORKTREE_BASE", None)
-                wt_base = patch_apply.resolve_worktree_base()
+                wt_base = worktree_ops.resolve_worktree_base()
                 self.assertEqual(wt_base, (g_home / "workflow" / "worktrees").resolve())
 
-                wt_path = patch_apply.create_repo_worktree(repo, wt_base, "run-01")
+                wt_path = worktree_ops.create_repo_worktree(repo, wt_base, "run-01")
                 self.assertTrue(wt_path.is_dir())
                 self.assertEqual(wt_path, (wt_base / "demo-repo-run-01").resolve())
                 self.assertNotIn(repo, wt_path.parents)
@@ -98,9 +113,9 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
 
                 # Rejects worktree inside target repo or .gemini/antigravity outside worktrees/
                 with self.assertRaises(ValueError):
-                    patch_apply.create_repo_worktree(repo, repo / ".wt", "bad")
+                    worktree_ops.create_repo_worktree(repo, repo / ".wt", "bad")
                 with self.assertRaises(ValueError):
-                    patch_apply.create_repo_worktree(repo, base / ".gemini" / "antigravity" / "brain", "bad")
+                    worktree_ops.create_repo_worktree(repo, base / ".gemini" / "antigravity" / "brain", "bad")
 
                 # Protected & non-linked-worktree targets must NEVER be deleted
                 external_dir = base / "external_dir"
@@ -115,17 +130,25 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
                 self.assertFalse(patch_apply.cleanup_worktree_best_effort(wt_base, repo))
                 self.assertFalse(patch_apply.cleanup_worktree_best_effort(base, repo))
                 self.assertFalse(patch_apply.cleanup_worktree_best_effort(repo, repo))
+                self.assertFalse(patch_apply.cleanup_worktree_best_effort(repo / ".git", repo))
+                self.assertFalse(patch_apply.cleanup_worktree_best_effort(repo / ".agents", repo))
                 self.assertFalse(patch_apply.cleanup_worktree_best_effort(inside_ws_wt, repo))
                 self.assertFalse(patch_apply.cleanup_worktree_best_effort(external_dir, repo))
                 self.assertFalse(patch_apply.cleanup_worktree_best_effort(standalone_clone, repo))
-                self.assertFalse(patch_apply.cleanup_worktree_best_effort(base / ".gemini" / "gravity" / "workflow" / "workspaces", repo))
+                self.assertFalse(
+                    patch_apply.cleanup_worktree_best_effort(
+                        base / ".gemini" / "gravity" / "workflow" / "workspaces", repo
+                    )
+                )
                 self.assertTrue((external_dir / "keep.txt").is_file())
                 self.assertTrue((inside_ws_wt / "keep.txt").is_file())
+                self.assertTrue((repo / ".git").exists())
+                self.assertTrue((repo / ".agents" / "keep.md").is_file())
                 self.assertTrue((standalone_clone / "README.md").is_file())
                 self.assertTrue(wt_base.is_dir())
 
                 # Valid detached worktree is cleanly removed & pruned
-                self.assertTrue(patch_apply.cleanup_worktree_best_effort(wt_path, repo))
+                self.assertTrue(worktree_ops.cleanup_worktree_best_effort(wt_path, repo))
                 self.assertFalse(wt_path.exists())
 
     def test_resolve_worktree_base_env_snap_fallback_and_protection(self) -> None:
@@ -139,7 +162,7 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
             non_hidden_gravity = base / "gravity_home"
 
             with mock.patch("pathlib.Path.home", return_value=fake_home), mock.patch.object(
-                patch_apply.sys, "platform", "linux"
+                worktree_ops.sys, "platform", "linux"
             ):
                 # 1. Explicit arg > GRAVITY_WORKTREE_BASE > GRAVITY_WORKFLOW_HOME > GRAVITY_HOME
                 with mock.patch.dict(
@@ -150,13 +173,13 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
                         "GRAVITY_HOME": str(non_hidden_gravity),
                     },
                     clear=False,
-                ), mock.patch.object(patch_apply, "_is_snap_agy", return_value=True):
+                ), mock.patch.object(worktree_ops, "_is_snap_agy", return_value=True):
                     self.assertEqual(patch_apply.resolve_worktree_base(explicit_arg), explicit_arg.resolve())
                     self.assertEqual(patch_apply.resolve_worktree_base(), env_wt.resolve())
 
                 # 2. Snap Linux fallback applies to hidden dotdir under $HOME (~/.gemini/... or ~/.custom)
                 with mock.patch.dict(os.environ, {}, clear=False), mock.patch.object(
-                    patch_apply, "_is_snap_agy", return_value=True
+                    worktree_ops, "_is_snap_agy", return_value=True
                 ):
                     for key in ("GRAVITY_WORKTREE_BASE", "GRAVITY_WORKFLOW_HOME", "GRAVITY_HOME"):
                         os.environ.pop(key, None)
@@ -178,14 +201,25 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
                         (non_hidden_gravity / "workflow" / "worktrees").resolve(),
                     )
 
-                # 3. Without Snap, ~/.gemini/gravity/workflow/worktrees is preserved
+                # 2b. Mocking shutil.which('/snap/bin/agy') via patch_apply.resolve_worktree_base works
                 with mock.patch.dict(os.environ, {}, clear=False), mock.patch.object(
-                    patch_apply, "_is_snap_agy", return_value=False
+                    shutil, "which", return_value="/snap/bin/agy"
                 ):
                     for key in ("GRAVITY_WORKTREE_BASE", "GRAVITY_WORKFLOW_HOME", "GRAVITY_HOME"):
                         os.environ.pop(key, None)
                     self.assertEqual(
                         patch_apply.resolve_worktree_base(),
+                        (fake_home / "gravity-worktrees").resolve(),
+                    )
+
+                # 3. Without Snap, ~/.gemini/gravity/workflow/worktrees is preserved
+                with mock.patch.dict(os.environ, {}, clear=False), mock.patch.object(
+                    worktree_ops, "_is_snap_agy", return_value=False
+                ):
+                    for key in ("GRAVITY_WORKTREE_BASE", "GRAVITY_WORKFLOW_HOME", "GRAVITY_HOME"):
+                        os.environ.pop(key, None)
+                    self.assertEqual(
+                        worktree_ops.resolve_worktree_base(),
                         (fake_home / ".gemini" / "gravity" / "workflow" / "worktrees").resolve(),
                     )
 
@@ -195,35 +229,35 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
                 snap_root = (fake_home / "gravity-worktrees").resolve()
                 snap_root.mkdir(parents=True, exist_ok=True)
                 with mock.patch.dict(os.environ, {"GRAVITY_WORKTREE_BASE": str(env_wt)}, clear=False):
-                    self.assertTrue(patch_apply._is_protected_cleanup_target(snap_root, repo))
-                    self.assertFalse(patch_apply.cleanup_worktree_best_effort(snap_root, repo))
+                    self.assertTrue(worktree_ops._is_protected_cleanup_target(snap_root, repo))
+                    self.assertFalse(worktree_ops.cleanup_worktree_best_effort(snap_root, repo))
                     self.assertTrue(snap_root.is_dir())
 
                     # Nested linked worktree inside gravity-worktrees can still be created and cleaned
-                    nested_wt = patch_apply.create_repo_worktree(repo, snap_root, "snap-01")
+                    nested_wt = worktree_ops.create_repo_worktree(repo, snap_root, "snap-01")
                     self.assertTrue(nested_wt.is_dir())
-                    self.assertTrue(patch_apply.cleanup_worktree_best_effort(nested_wt, repo))
+                    self.assertTrue(worktree_ops.cleanup_worktree_best_effort(nested_wt, repo))
                     self.assertFalse(nested_wt.exists())
                     self.assertTrue(snap_root.is_dir())
 
             # 5. _is_snap_agy detects /snap/ paths and /usr/bin/snap realpaths on Linux only
-            with mock.patch.object(patch_apply.sys, "platform", "linux"):
+            with mock.patch.object(worktree_ops.sys, "platform", "linux"):
                 with mock.patch("shutil.which", side_effect=lambda c: "/snap/bin/agy" if c == "agy" else None), mock.patch(
                     "os.path.realpath", return_value="/usr/bin/snap"
                 ):
-                    self.assertTrue(patch_apply._is_snap_agy())
+                    self.assertTrue(worktree_ops._is_snap_agy())
                 with mock.patch("shutil.which", side_effect=lambda c: "/usr/local/bin/agy" if c == "agy" else None), mock.patch(
                     "os.path.realpath", return_value="/usr/bin/snap"
                 ):
-                    self.assertTrue(patch_apply._is_snap_agy())
+                    self.assertTrue(worktree_ops._is_snap_agy())
                 with mock.patch("shutil.which", side_effect=lambda c: "/usr/bin/agy" if c == "agy" else None), mock.patch(
                     "os.path.realpath", return_value="/usr/share/antigravity/agy"
                 ):
-                    self.assertFalse(patch_apply._is_snap_agy())
-            with mock.patch.object(patch_apply.sys, "platform", "win32"), mock.patch(
+                    self.assertFalse(worktree_ops._is_snap_agy())
+            with mock.patch.object(worktree_ops.sys, "platform", "win32"), mock.patch(
                 "shutil.which", return_value="/snap/bin/agy"
             ):
-                self.assertFalse(patch_apply._is_snap_agy())
+                self.assertFalse(worktree_ops._is_snap_agy())
 
     def test_extract_changed_files_from_diff_bounds_and_formats(self) -> None:
         dotfile_and_patch_diff = (
@@ -355,6 +389,10 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
             self.assertEqual(last_ok["verdict"], "PASS")
             self.assertEqual(len(last_ok["changed_files"]), 20)
 
+            live_ok = json.loads(state_writer.resolve_state_path(workspace_root=ws).read_text(encoding="utf-8"))
+            self.assertEqual(live_ok["progress"], "1/1")
+            self.assertNotEqual(live_ok["progress"], "0/8")
+
             # 2. Watchdog timeout produces TIMEOUT verdict cleanly
             _exec_workflow(
                 rp_path,
@@ -368,13 +406,15 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
             )
             last_to = json.loads(runs_file.read_text(encoding="utf-8").splitlines()[-1])
             self.assertEqual(last_to["verdict"], "TIMEOUT")
+            live_to = json.loads(state_writer.resolve_state_path(workspace_root=ws).read_text(encoding="utf-8"))
+            self.assertEqual(live_to["progress"], "0/1")
 
     def test_wave_runner_fail_isolated_routing_apply_and_timeout(self) -> None:
         wr_path = PLUGIN_ROOT / "workflows" / "wave_runner.py"
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            studio = base / "atelier"
-            (studio / "tasks").mkdir(parents=True)
+            atelier = base / "atelier"
+            (atelier / "tasks").mkdir(parents=True)
             wt_base = base / "wf_worktrees"
 
             repo_q = base / "repo-quick"
@@ -394,7 +434,7 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
                 ("t3-err.md", repo_err, "repo-error", "standard", ["e.txt"]),
                 ("t4-to.md", repo_to, "repo-timeout", "standard", ["t.txt"]),
             ):
-                tpath = studio / "tasks" / fname
+                tpath = atelier / "tasks" / fname
                 tpath.write_text(
                     f"# Task {rname}\n\n- Update `{target[0]}` in `{rname}`.\n",
                     encoding="utf-8",
@@ -416,7 +456,7 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
 
             wave_plan = {
                 "schema_version": "wave_plan_v1",
-                "workspace": str(studio),
+                "workspace": str(atelier),
                 "wave": 1,
                 "tasks": wave_tasks,
             }
@@ -442,7 +482,6 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
                         mod = ["q.txt"]
                     else:
                         (wt_dir / "s.txt").write_text("std-updated\n", encoding="utf-8", newline="\n")
-                        # Create 21 files to verify changed_files <= 20 cap
                         mod = ["s.txt"]
                         for i in range(21):
                             extra = wt_dir / f"extra_{i}.txt"
@@ -490,7 +529,7 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
 
             ns, _, _ = _exec_workflow(
                 wr_path,
-                workspaces=[studio],
+                workspaces=[atelier],
                 args_dict={
                     "plugin_root": str(PLUGIN_ROOT),
                     "wave_plan": wave_plan,
@@ -517,6 +556,12 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
             self.assertFalse(results["repo-error"]["applied"])
             self.assertEqual(results["repo-timeout"]["status"], "TIMEOUT")
             self.assertFalse(results["repo-timeout"]["applied"])
+
+            # Real progress recorded in live_state.json (never 0/8)
+            live_q = json.loads(state_writer.resolve_state_path(workspace_root=repo_q).read_text(encoding="utf-8"))
+            self.assertEqual(live_q["progress"], "1/1")
+            live_to = json.loads(state_writer.resolve_state_path(workspace_root=repo_to).read_text(encoding="utf-8"))
+            self.assertEqual(live_to["progress"], "0/1")
 
             # dev updated on PASS repos and untouched on failed/timed-out repos
             self.assertEqual((repo_q / "q.txt").read_text(encoding="utf-8"), "quick-updated\n")
@@ -545,6 +590,21 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
             self.assertEqual(parsed["passed"], 2)
             self.assertEqual(parsed["total"], 4)
             self.assertLessEqual(len(summary_text.splitlines()), 10 * 4)
+
+    def test_wave_runner_empty_tasks_sets_zero_of_zero_progress(self) -> None:
+        wr_path = PLUGIN_ROOT / "workflows" / "wave_runner.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "empty-ws"
+            ws.mkdir()
+            ns, _, _ = _exec_workflow(
+                wr_path,
+                workspaces=[ws],
+                args_dict={"plugin_root": str(PLUGIN_ROOT), "tasks": []},
+                fake_agent=lambda *_a, **_kw: None,
+            )
+            self.assertEqual(ns["WAVE_RESULTS"], [])
+            live_empty = json.loads(state_writer.resolve_state_path(workspace_root=ws).read_text(encoding="utf-8"))
+            self.assertEqual(live_empty["progress"], "0/0")
 
     def test_wave_runner_wave_plan_json_file_and_structured_tasks(self) -> None:
         wr_path = PLUGIN_ROOT / "workflows" / "wave_runner.py"
@@ -707,10 +767,8 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
             }
 
             bad_args_cases = [
-                # Wrong or missing schema_version
                 {"wave_plan": {"schema_version": "wave_plan_v0", "tasks": [valid_task]}},
                 {"wave_plan": {"tasks": [valid_task]}},
-                # Raw string entry without repo_root
                 {"tasks": ["tasks/raw-markdown.md"]},
                 {
                     "wave_plan": {
@@ -720,7 +778,6 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
                         "tasks": ["tasks/raw-markdown.md"],
                     }
                 },
-                # Missing or invalid repo_root
                 {"tasks": [{"plan": "# No repo", "profile": "standard"}]},
                 {"tasks": [{"repo_root": str(base / "missing-repo"), "plan": "# Missing"}]},
                 {"tasks": [{"repo_root": str(non_git), "plan": "# Non git"}]},

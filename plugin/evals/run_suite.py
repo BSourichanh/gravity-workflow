@@ -71,11 +71,7 @@ for _sub in ("evals", "observability"):
         sys.path.insert(0, str(_sub_dir))
 
 try:
-    from eval_checks import (  # type: ignore[import-not-found]
-        render_markdown_report,
-        run_deterministic_checks,
-        select_eval_cases,
-    )
+    from eval_checks import render_markdown_report, run_deterministic_checks  # type: ignore[import-not-found]
 except Exception as exc:
     _log_warn(f"[ERROR] Import eval_checks impossible depuis {PLUGIN_ROOT / 'evals'} : {type(exc).__name__}: {exc}")
     raise
@@ -277,11 +273,13 @@ if _is_workflow_runtime():
     preset = _load_level_preset(_ARGS.get("level"))
     candidate_model = str(_ARGS.get("candidate_model") or preset["eval_candidate"])
     judge_model = str(_ARGS.get("judge_model") or preset["eval_judge"])
+    selected_ids = _ARGS.get("case_ids")
+
     all_cases: List[Dict[str, Any]] = json.loads(CASES_PATH.read_text(encoding="utf-8"))
-    cases, skipped_manual_ids = select_eval_cases(
-        all_cases,
-        selected_ids=_ARGS.get("case_ids"),
-        include_manual=bool(_ARGS.get("include_manual")),
+    cases = (
+        [c for c in all_cases if c.get("id") in set(selected_ids)]
+        if isinstance(selected_ids, list) and selected_ids
+        else all_cases
     )
 
     _safe_update_live(
@@ -298,15 +296,13 @@ if _is_workflow_runtime():
     passed_count = sum(1 for r in results if r["verdict"] == "PASS")
     prefilter_rejected = sum(1 for r in results if r["deterministic_failures"])
 
-    summary: Dict[str, Any] = {
+    summary = {
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "passed": passed_count,
         "total": len(results),
         "prefilter_rejected": prefilter_rejected,
         "results": results,
     }
-    if skipped_manual_ids:
-        summary["skipped_manual_ids"] = skipped_manual_ids
 
     REPORT_JSON.parent.mkdir(parents=True, exist_ok=True)
     REPORT_JSON.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

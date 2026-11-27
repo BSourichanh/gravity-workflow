@@ -5,7 +5,6 @@
   "locked": false,
   "caveman": "lite",
   "caveman_locked": false,
-  "execution_engine": "swarm",
   "suggested_profile": "standard",
   "allow_pro": true,
   "model_overrides": {},
@@ -22,11 +21,7 @@
     "guard_deny_recent": 0,
     "guard_ask_recent": 0,
     "eval_pass_rate": null,
-    "session_error": false,
-    "metrics": {
-      "available": false,
-      "sample_count": 0
-    }
+    "session_error": false
   },
   "history": []
 }

@@ -63,7 +63,7 @@ class TestSafetyPaths(unittest.TestCase):
 
     def test_scoped_hooks_protection_and_hardening(self) -> None:
         for allowed_target in (
-            "gravity-metrics/plugin/hooks/hook_runtime.py",
+            "gravity-metrics/plugin/hooks/session_start_metrics.py",
             "gravity-metrics/plugin/hooks/pre_invocation_metrics.py",
             "gravity-metrics/plugin/hooks.json",
             "src/hooks/useAuth.ts",
@@ -246,45 +246,6 @@ class TestSafetyPaths(unittest.TestCase):
                     source_repo,
                 )
                 self.assertEqual(dec_val, "allow", f"Faux positif validation plugin actif: {reason_val}")
-
-    def test_harness_read_with_stderr_redirection_allowed_and_write_denied(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            installed_plugin = base / "installed_plugins" / "gravity-workflow"
-            installed_hooks = installed_plugin / "hooks"
-            installed_hooks.mkdir(parents=True)
-            (installed_plugin / "hooks.json").write_text("{}", encoding="utf-8")
-            (installed_hooks / "pre_tool_guard.py").write_text("# installed\n", encoding="utf-8")
-
-            ws = make_gravity_workspace(base, "proj")
-
-            with mock.patch.object(safety_policy, "HOOKS_DIR", installed_hooks):
-                allow_cmds = (
-                    f'grep -rn "foo" {installed_hooks}/ 2>/dev/null | head -n 30',
-                    f"ls -la {installed_hooks}/ 2>/dev/null",
-                    f"cat {installed_hooks}/pre_tool_guard.py 2>/dev/null",
-                )
-                for cmd in allow_cmds:
-                    dec, reason = safety_policy.evaluate_tool_call(
-                        {"toolCall": {"name": "run_command", "args": {"CommandLine": cmd}}},
-                        ws,
-                    )
-                    self.assertEqual(dec, "allow", f"Faux positif redirection lecture sur {cmd}: {reason}")
-
-                deny_cmds = (
-                    f"grep x y > {installed_hooks}/pre_tool_guard.py",
-                    f"echo a >> {installed_hooks}/x.py",
-                    "cat a > .agents/rules/01-safety-boundaries.md",
-                    f"tee {installed_hooks}/x.py 2>/dev/null",
-                    f"sed -i 's/a/b/' {installed_hooks}/x.py 2>/dev/null",
-                    f"python3 -c \"open('x')\" {installed_hooks}/pre_tool_guard.py 2>/dev/null",
-                )
-                for cmd in deny_cmds:
-                    dec, reason = safety_policy.evaluate_tool_call(
-                        {"toolCall": {"name": "run_command", "args": {"CommandLine": cmd}}},
-                        ws,
-                    )
-                    self.assertEqual(dec, "deny", f"Redirection/écriture harnais non bloquée sur {cmd}: {reason}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "source_repo": "gravity",
+  "source_path": "shared/gravity_shared",
+  "generated_at": "2026-11-27T00:25:19Z",
+  "files": {
+    "__init__.py": "ca90d689072a9e41f3b914866c9d6dff2a740c31ae8542e09df9d62de57f13c2",
+    "atomic_io.py": "4e482388687c39942a3694ac0a3e3cd9156fcceb36c1d607c530dd7c4b1044b9",
+    "file_lock.py": "2ff1d22c55a546dff01a411f247a793543c7bbf56c125d3b237eac7a7808e422",
+    "hook_runtime.py": "f831e142e306eab61558ece40bf97b58285364f6f13b168edc9455df443b3025",
+    "installer_core.py": "0a8de86e12967209451392bc6094f0d33371d2dbb26797186e6575923b0e9732",
+    "path_safety.py": "1b1223ca6b5cd07fdda5783af64751e3961c5baed2eed2b5935618c698a0c847",
+    "signal_bus.py": "22f5cd670224d1036fe147879f00c6a54f528967f85ca4f28a9c47b05241b77d",
+    "transcript_reader.py": "e3c138f38a937f3f4ee25f6db6659f8d3883753df9cc6d03c4429abe039a427b",
+    "validator_core.py": "37fd97f5a8c8cf19891024d0eedff0adf8ee9283048a3133fed3311285693b63"
+  }
+}

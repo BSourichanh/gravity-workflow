@@ -149,6 +149,91 @@ class TestHooksRuntime(WorkflowEnvTestCase):
             self.assertEqual(r1_t2["signals"]["guard_deny_recent"], 0)
             self.assertEqual(r1_t2["suggested_profile"], "standard")
 
+    def test_stop_session_logger_shared_runtime_arbitrary_cwd_and_state_progress(self) -> None:
+        stop_hook = PLUGIN_ROOT / "hooks/stop_session_logger.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ws = base / "ws_shared_stop"
+            ws.mkdir()
+
+            # Invocation directe depuis un cwd arbitraire (bootstrap sys.path vers plugin/_shared)
+            proc_ws_paths = subprocess.run(
+                [sys.executable, str(stop_hook)],
+                input=json.dumps(
+                    {
+                        "workspacePaths": [str(ws)],
+                        "conversationId": "conv-shared-1",
+                        "terminationReason": "NO_TOOL_CALL",
+                        "fullyIdle": True,
+                    }
+                ),
+                text=True,
+                encoding="utf-8",
+                capture_output=True,
+                cwd=str(ws),
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(proc_ws_paths.returncode, 0)
+            self.assertEqual(proc_ws_paths.stdout.strip(), "{}")
+            self.assertFalse((ws / ".agents").exists())
+
+            prof = json.loads(
+                state_writer.resolve_profile_storage_path(ws).read_text(encoding="utf-8")
+            )
+            self.assertEqual(prof["workspace"], str(ws.resolve()))
+            self.assertEqual(prof["last_evaluated_conversation_id"], "conv-shared-1")
+
+            # Résolution via GRAVITY_WORKFLOW_WORKSPACE avec JSON valide minimal
+            ws_env = base / "ws_env_stop"
+            ws_env.mkdir()
+            env = dict(os.environ)
+            env["GRAVITY_WORKFLOW_WORKSPACE"] = str(ws_env)
+            proc_env = subprocess.run(
+                [sys.executable, str(stop_hook)],
+                input='{"fullyIdle": true}',
+                text=True,
+                encoding="utf-8",
+                capture_output=True,
+                cwd=str(base),
+                env=env,
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(proc_env.returncode, 0)
+            self.assertEqual(proc_env.stdout.strip(), "{}")
+            self.assertTrue(state_writer.resolve_runs_log_path(ws_env).is_file())
+
+            # stdin vide, malformé ou non-dict -> fail-closed (aucune écriture dans runs.jsonl ni profile.json)
+            ws_bad = base / "ws_bad_stop"
+            ws_bad.mkdir()
+            env_bad = dict(os.environ)
+            env_bad["GRAVITY_WORKFLOW_WORKSPACE"] = str(ws_bad)
+            for bad_payload in ("{not_json", "", "[]"):
+                proc_bad = subprocess.run(
+                    [sys.executable, str(stop_hook)],
+                    input=bad_payload,
+                    text=True,
+                    encoding="utf-8",
+                    capture_output=True,
+                    cwd=str(base),
+                    env=env_bad,
+                    timeout=5,
+                    check=False,
+                )
+                self.assertEqual(proc_bad.returncode, 0)
+                self.assertEqual(proc_bad.stdout.strip(), "{}")
+                self.assertFalse(state_writer.resolve_runs_log_path(ws_bad).exists())
+                self.assertFalse(state_writer.resolve_profile_storage_path(ws_bad).exists())
+
+            # state_writer._default_state()["progress"] vaut "0/0"
+            self.assertEqual(state_writer._default_state()["progress"], "0/0")
+            state_writer.update_live_state(workspace_root=ws_env, stage="idle")
+            live_data = json.loads(
+                state_writer.resolve_state_path(workspace_root=ws_env).read_text(encoding="utf-8")
+            )
+            self.assertEqual(live_data["progress"], "0/0")
+
     def test_session_start_hook_and_statusline_subprocesses(self) -> None:
         session_hook = PLUGIN_ROOT / "hooks/session_start_caveman.py"
         statusline_script = PLUGIN_ROOT / "observability/statusline.py"
@@ -381,6 +466,74 @@ class TestHooksRuntime(WorkflowEnvTestCase):
                 if asyncio.iscoroutine(res_orphan):
                     asyncio.run(res_orphan)
             self.assertTrue(any("PLUGIN_ROOT introuvable" in m for m in logs_orphan))
+
+    def test_hooks_migrated_onto_shared_hook_runtime_with_zero_legacy_imports(self) -> None:
+        hooks_dir = PLUGIN_ROOT / "hooks"
+        self.assertFalse((hooks_dir / "hook_runtime.py").exists())
+        for py_file in sorted(hooks_dir.rglob("*.py")):
+            src = py_file.read_text(encoding="utf-8")
+            self.assertNotIn("from hook_runtime import", src, str(py_file))
+            self.assertNotIn("hooks.hook_runtime", src, str(py_file))
+            tree = ast.parse(src, filename=str(py_file))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        self.assertNotIn("hook_runtime", alias.name, str(py_file))
+                elif isinstance(node, ast.ImportFrom):
+                    mod = node.module or ""
+                    self.assertNotEqual(mod, "hook_runtime", str(py_file))
+                    self.assertNotEqual(mod, "hooks.hook_runtime", str(py_file))
+
+        post_hook = PLUGIN_ROOT / "hooks/post_tool_format.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ws = base / "ws_fmt"
+            ws.mkdir()
+            (ws / ".agents").mkdir()
+            agents_file = ws / ".agents/sample.py"
+            agents_file.write_text("x=1\n", encoding="utf-8")
+
+            for payload in (
+                "",
+                "{bad_json",
+                json.dumps({"cwd": str(ws), "toolCall": {"name": "write_file", "args": {"TargetFile": ".agents/sample.py"}}}),
+                json.dumps({"cwd": str(ws), "toolCall": {"name": "write_file", "args": {"TargetFile": "missing.py"}}}),
+            ):
+                proc = subprocess.run(
+                    [sys.executable, "-I", "-B", str(post_hook)],
+                    input=payload,
+                    text=True,
+                    encoding="utf-8",
+                    capture_output=True,
+                    cwd=str(base),
+                    timeout=5,
+                    check=False,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(proc.stdout.strip(), "{}")
+
+    def test_pre_tool_guard_fail_closed_ec2_and_live_event_recording(self) -> None:
+        guard = PLUGIN_ROOT / "hooks/pre_tool_guard.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ws = base / "ws_ec2"
+            ws.mkdir()
+            for raw_input in ("", "{malformed_json", "[]", json.dumps({"cwd": str(ws)})):
+                proc = subprocess.run(
+                    [sys.executable, "-I", "-B", str(guard)],
+                    input=raw_input,
+                    text=True,
+                    encoding="utf-8",
+                    capture_output=True,
+                    cwd=str(base),
+                    timeout=5,
+                    check=False,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                out = json.loads(proc.stdout.strip())
+                self.assertEqual(out["decision"], "force_ask")
+                self.assertTrue(out.get("reason"))
+                self.assertFalse((ws / ".agents").exists())
 
 
 if __name__ == "__main__":

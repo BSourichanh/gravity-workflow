@@ -5,10 +5,12 @@ import sys
 from pathlib import Path
 
 HOOKS_DIR = Path(__file__).resolve().parent
-if str(HOOKS_DIR) not in sys.path:
-    sys.path.insert(0, str(HOOKS_DIR))
+PLUGIN_ROOT = HOOKS_DIR.parent
+for _p in (str(PLUGIN_ROOT), str(HOOKS_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-from hook_runtime import first_str_arg, is_gravity_workspace, resolve_workspace_root  # noqa: E402
+from _shared.hook_runtime import first_str_arg  # noqa: E402
 from policy.constants import (  # noqa: E402
     BENIGN_GLOB_PROBES,
     DB_CLIENT_HEADS,
@@ -77,6 +79,8 @@ from policy.evaluator import (  # noqa: E402
     _try_decode_ps_encoded_command,
     evaluate_tool_call,
     inspect_workflow_code,
+    is_gravity_workspace,
+    resolve_workspace_root,
 )
 from policy.git_and_fs import (  # noqa: E402
     _check_git_config_overrides,

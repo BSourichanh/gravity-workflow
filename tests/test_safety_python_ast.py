@@ -278,6 +278,601 @@ class TestSafetyPythonAst(unittest.TestCase):
                 self.assertEqual(raw_res[0], "deny")
                 self.assertEqual(safety_policy.inspect_inline_python_code(raw_bad, ws_root)[0], "deny")
 
+    def test_srp_split_modules_and_reexports(self) -> None:
+        import ast
+        import policy
+        from policy import (
+            python_ast, python_ast_calls, python_ast_cands, python_ast_eval,
+            python_ast_flow, python_ast_imports, python_ast_readonly, python_ast_state,
+        )
+
+        for mod_obj, expected in (
+            (python_ast_state, ("_PyImports", "_ScopeState", "_PyAstState", "_collect_python_imports", "_eval_static_int")),
+            (python_ast_eval, ("_eval_static_str", "_eval_static_seq", "_eval_static_bytes", "_collect_static_bindings", "_PyAstState")),
+            (python_ast_cands, ("_eval_scope_str_cands", "_eval_code_arg_cands", "_expr_has_obfuscated_decode", "_match_dict_lookup_key")),
+            (python_ast_imports, ("_PyImports", "_resolve_dynamic_import_module", "_collect_python_imports", "_bind_var")),
+            (python_ast_flow, ("_unwrap_call_target", "_inspect_user_callable", "_mutate_bytes_method", "_mutate_bytes_subscript")),
+            (python_ast_calls, ("_inspect_python_call", "_inspect_rmtree_call", "_inspect_os_shell_call", "_inspect_subprocess_call")),
+            (python_ast_readonly, ("_raw_code_hard_deny_check", "_is_readonly_harness_usage", "_is_open_call_readonly")),
+            (python_ast, ("_walk_python_stmts", "_inspect_pass2_ast_nodes", "_inspect_python_ast", "inspect_inline_python_code")),
+        ):
+            for sym in expected:
+                self.assertTrue(hasattr(mod_obj, sym), f"{sym} manquant sur {mod_obj.__name__}")
+
+        for reexported in (
+            "_ast_subscript_slice",
+            "_collect_const_str_vars",
+            "_collect_static_bindings",
+            "_eval_static_int",
+            "_eval_static_seq",
+            "_eval_static_seq_candidates",
+            "_eval_static_str",
+            "_eval_static_str_candidates",
+            "_inspect_python_ast",
+            "_iter_stmt_expr_nodes",
+            "_mark_subtree",
+            "_raw_code_hard_deny_check",
+            "_resolve_dynamic_import_module",
+            "inspect_inline_python_code",
+        ):
+            self.assertIs(getattr(safety_policy, reexported), getattr(python_ast, reexported))
+        self.assertIs(policy.inspect_inline_python_code, python_ast.inspect_inline_python_code)
+
+        tree = ast.parse("import os\na = '.'\nb = 'env'\n")
+        verdict, imp = python_ast_imports._collect_python_imports(tree, "python -c")
+        self.assertIsNone(verdict)
+        self.assertIn("os", imp.os_mod_names)
+        cvars, _, _ = python_ast_eval._collect_static_bindings(tree, imp.shlex_mod_names, imp.shlex_split_names)
+        self.assertEqual(cvars, {"a": ".", "b": "env"})
+        expr = ast.parse("a + b", mode="eval").body
+        self.assertEqual(python_ast_eval._eval_static_str(expr, cvars), ".env")
+
+    def test_base64_and_obfuscated_dynamic_exec_fail_closed(self) -> None:
+        import base64
+
+        rm_b64 = "aW1wb3J0IG9zOyBvcy5zeXN0ZW0oInJtIC1yZiAvIik="
+        env_b64 = base64.b64encode(b"import os; print(os.environ)").decode("ascii")
+        env_urlsafe_b64 = base64.urlsafe_b64encode(b"import os; print(os.environ)").decode("ascii")
+        benign_b64 = base64.b64encode(b"print(1)").decode("ascii")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            gravity_ws = make_gravity_workspace(base, "gravity_b64")
+            plain_ws = base / "plain_b64"
+            plain_ws.mkdir()
+
+            deny_cmds = (
+                f'python3 -c "import base64; exec(base64.b64decode(\'{rm_b64}\'))"',
+                f'python3 -c "import base64; exec(base64.b64decode(b\'{rm_b64}\').decode())"',
+                f'python3 -c "import base64; eval(base64.standard_b64decode(\'{env_b64}\').decode(\'utf-8\'))"',
+                f'python3 -c "import base64; exec(base64.urlsafe_b64decode(\'{env_urlsafe_b64}\'))"',
+                f'python3 -c "import base64; exec(base64.decodebytes(b\'{rm_b64}\'))"',
+                f'python3 -c "import base64 as b; exec(b.b64decode(\'{rm_b64}\'))"',
+                f'python3 -c "from base64 import b64decode as d; exec(d(\'{rm_b64}\'))"',
+                f'python3 -c "import base64; d = base64.b64decode; exec(d(\'{rm_b64}\'))"',
+                f'python3 -c "exec(__import__(\'base64\').b64decode(\'{rm_b64}\'))"',
+                f'python3 -c "import base64; exec(compile(base64.b64decode(\'{rm_b64}\'), \'<x>\', \'exec\'))"',
+                f'python3 -c "import base64; compile(base64.b64decode(\'{rm_b64}\'), \'<x>\', \'exec\')"',
+                f'python3 -c "import base64; p = base64.b64decode(\'{rm_b64}\'); exec(p)"',
+                'python3 -c "import base64; var = input(); exec(base64.b64decode(var))"',
+                'python3 -c "from base64 import b64decode as d; var = input(); exec(d(var))"',
+                'python3 -c "import base64; var = input(); eval(base64.urlsafe_b64decode(var))"',
+                'python3 -c "import base64; var = input(); compile(base64.b64decode(var), \'<x>\', \'exec\')"',
+                'python3 -c "import base64; p = base64.b64decode(input()); exec(p)"',
+                'python3 -c "import codecs; exec(codecs.decode(input(), \'rot_13\'))"',
+                'python3 -c "import zlib; exec(zlib.decompress(input().encode()))"',
+                'python3 -c "exec(bytes.fromhex(input()).decode())"',
+                'python3 -c "import base64; exec(base64.b64decode(\'!!!invalid_b64!!!\'))"',
+            )
+            assert_run_commands_decision(
+                self, safety_policy, (gravity_ws, plain_ws), deny_cmds, "deny", "b64_deny"
+            )
+
+            allow_cmds = (
+                f'python3 -c "import base64; exec(base64.b64decode(\'{benign_b64}\'))"',
+                'python3 -c "import base64; print(base64.b64decode(\'aGVsbG8=\'))"',
+            )
+            assert_run_commands_decision(
+                self, safety_policy, (gravity_ws, plain_ws), allow_cmds, "allow", "b64_allow"
+            )
+
+            for wf_bad in (
+                f"import base64\nexec(base64.b64decode('{rm_b64}'))\n",
+                f"from base64 import b64decode as d\nexec(d('{rm_b64}'))\n",
+                "import base64\nexec(base64.b64decode(var))\n",
+                "from base64 import b64decode as d\nexec(d(var))\n",
+            ):
+                for ws in (gravity_ws, plain_ws):
+                    dec, reason = safety_policy.evaluate_tool_call(
+                        {"toolCall": {"name": "run_workflow", "args": {"Script": wf_bad}}},
+                        ws,
+                    )
+                    self.assertNotEqual(dec, "allow", f"run_workflow ne doit pas autoriser {wf_bad!r}")
+                    self.assertEqual(dec, "deny", f"Attendu deny sur {wf_bad!r}, obtenu {dec} ({reason})")
+
+            wf_ok_dec, wf_ok_reason = safety_policy.evaluate_tool_call(
+                {
+                    "toolCall": {
+                        "name": "run_workflow",
+                        "args": {"Script": f"import base64\nexec(base64.b64decode('{benign_b64}'))\n"},
+                    }
+                },
+                gravity_ws,
+            )
+            self.assertEqual(wf_ok_dec, "allow", wf_ok_reason)
+
+    def test_ifexp_bytes_builtins_alias_codecs_and_helper_bypasses_closed(self) -> None:
+        import base64
+
+        rm_b64 = "aW1wb3J0IG9zOyBvcy5zeXN0ZW0oInJtIC1yZiAvIik="
+        benign_b64 = base64.b64encode(b"print(1)").decode("ascii")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            gravity_ws = make_gravity_workspace(base, "gravity_adv_ast")
+            plain_ws = base / "plain_adv_ast"
+            plain_ws.mkdir()
+
+            deny_cmds = (
+                # Class 1: mixed IfExp & if-branch tainting
+                'python3 -c "import base64; x=input(); exec(\'print(1)\' if False else base64.b64decode(x))"',
+                'python3 -c "import base64; x=\'print(1)\'\nif True: x = base64.b64decode(input()).decode()\nexec(x)"',
+                # Class 2: raw bytes literals
+                'python3 -c \'exec(b"import os; os.system(\\"rm -rf /\\")")\'',
+                'python3 -c \'b = b"import os; " + b"os.system(\\"rm -rf /\\")"; exec(b)\'',
+                # Class 3: aliased / builtins-qualified eval/exec/compile
+                f'python3 -c "import base64; e=exec; e(base64.b64decode(\'{rm_b64}\'))"',
+                f'python3 -c "import builtins, base64; builtins.exec(base64.b64decode(\'{rm_b64}\'))"',
+                f'python3 -c "import base64; __import__(\'builtins\').exec(base64.b64decode(\'{rm_b64}\'))"',
+                f'python3 -c "import builtins, base64; getattr(builtins, \'exec\')(base64.b64decode(\'{rm_b64}\'))"',
+                # Class 4: from codecs import decode & helper-wrapped decoders
+                f'python3 -c "from codecs import decode; exec(decode(b\'{rm_b64}\', \'base64\'))"',
+                'python3 -c "from codecs import decode; exec(decode(input(), \'rot_13\'))"',
+                'python3 -c "import base64\ndef f(): return base64.b64decode(input())\nexec(f())"',
+                f'python3 -c "import base64\ndef f(s): return base64.b64decode(s)\nexec(f(\'{rm_b64}\'))"',
+            )
+            assert_run_commands_decision(
+                self, safety_policy, (gravity_ws, plain_ws), deny_cmds, "deny", "adv_ast_deny"
+            )
+
+            allow_cmds = (
+                f'python3 -c "import base64; exec(base64.b64decode(\'{benign_b64}\'))"',
+                'python3 -c "exec(b\'print(1)\')"',
+                f'python3 -c "from codecs import decode; exec(decode(b\'{benign_b64}\', \'base64\'))"',
+                f'python3 -c "import base64\ndef f(s): return base64.b64decode(s)\nexec(f(\'{benign_b64}\'))"',
+                'python3 -c "import re; re.compile(r\'rm -rf /\')"',
+                'python3 -c "from re import compile; compile(r\'rm -rf /\')"',
+            )
+            assert_run_commands_decision(
+                self, safety_policy, (gravity_ws, plain_ws), allow_cmds, "allow", "adv_ast_allow"
+            )
+
+            wf_deny_scripts = (
+                "import base64; x = input(); exec('print(1)' if False else base64.b64decode(x).decode())",
+                f"import base64; exec(base64.b64decode('{benign_b64}') if input() else base64.b64decode(input()))",
+                "import base64; x = 'print(1)';\nif True: x = base64.b64decode(input()).decode()\nexec(x)",
+                "import base64\nif input(): x = base64.b64decode(input()).decode()\nelse: x = 'print(1)'\nexec(x)",
+                'exec(b\'import os; os.system("rm -rf /")\')',
+                'eval(b\'__import__("os").system("rm -rf /")\')',
+                'compile(b\'import os; os.system("rm -rf /")\', "<x>", "exec")',
+                f"import base64; e = exec; e(base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; builtins.exec(base64.b64decode('{rm_b64}'))",
+                f"import builtins as bi, base64; bi.exec(base64.b64decode('{rm_b64}'))",
+                f"import base64; __import__('builtins').exec(base64.b64decode('{rm_b64}'))",
+                f"import importlib, base64; importlib.import_module('builtins').exec(base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; getattr(builtins, 'exec')(base64.b64decode('{rm_b64}'))",
+                f"import base64; getattr(__builtins__, 'exec')(base64.b64decode('{rm_b64}'))",
+                f"import base64; __builtins__['exec'](base64.b64decode('{rm_b64}'))",
+                f"from codecs import decode; exec(decode(b'{rm_b64}', 'base64'))",
+                "from codecs import decode; exec(decode(input(), 'rot_13'))",
+                "import base64\ndef f(): return base64.b64decode(input())\nexec(f())",
+                f"import base64\ndef f(s): return base64.b64decode(s)\nexec(f('{rm_b64}'))",
+                "import base64\ndef f(s): return base64.b64decode(s)\nexec(f(input()))",
+                f"import base64\ndef f(s):\n    r = base64.b64decode(s)\n    return r.decode()\nexec(f('{rm_b64}'))",
+                "import base64\nf = lambda s: base64.b64decode(s)\nexec(f(input()))",
+            )
+            for wf_bad in wf_deny_scripts:
+                for ws in (gravity_ws, plain_ws):
+                    dec, reason = safety_policy.evaluate_tool_call(
+                        {"toolCall": {"name": "run_workflow", "args": {"Script": wf_bad}}},
+                        ws,
+                    )
+                    self.assertEqual(dec, "deny", f"Attendu deny sur {wf_bad!r}, obtenu {dec} ({reason})")
+
+            for wf_good in (
+                f"import base64\nexec(base64.b64decode('{benign_b64}'))\n",
+                "exec(b'print(1)')\n",
+                f"from codecs import decode\nexec(decode(b'{benign_b64}', 'base64'))\n",
+                f"import base64\ndef f(s): return base64.b64decode(s)\nexec(f('{benign_b64}'))\n",
+                "import re\nre.compile(r'rm -rf /')\n",
+            ):
+                dec, reason = safety_policy.evaluate_tool_call(
+                    {"toolCall": {"name": "run_workflow", "args": {"Script": wf_good}}},
+                    gravity_ws,
+                )
+                self.assertEqual(dec, "allow", f"Faux positif sur {wf_good!r}: {dec} ({reason})")
+
+    def test_helper_branch_alias_builtins_get_bytes_wrapper_and_codecs_encode_closed(self) -> None:
+        import base64
+
+        rm_b64 = "aW1wb3J0IG9zOyBvcy5zeXN0ZW0oInJtIC1yZiAvIik="
+        benign_b64 = base64.b64encode(b"print(1)").decode("ascii")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            gravity_ws = make_gravity_workspace(base, "gravity_adv_ast2")
+            plain_ws = base / "plain_adv_ast2"
+            plain_ws.mkdir()
+
+            cmd_deny = (
+                'python3 -c "import base64\ndef f(flag):\n    x = \'print(1)\'\n    if flag:\n        x = base64.b64decode(input()).decode()\n    return x\nexec(f(True))"',
+                'python3 -c "exec(bytes(b\'import os; os.system(\\"rm -rf /\\")\'))"',
+                'python3 -c "exec(bytearray(b\'import os; os.system(\\"rm -rf /\\")\'))"',
+                'python3 -c "import codecs; exec(codecs.encode(\'vzcbeg bf; bf.flfgrz(\\"ez -es /\\")\', \'rot_13\'))"',
+                'python3 -c "from codecs import encode; exec(encode(\'vzcbeg bf; bf.flfgrz(\\"ez -es /\\")\', \'rot_13\'))"',
+                f'python3 -c "import builtins, base64; builtins.__dict__.get(\'exec\')(base64.b64decode(\'{rm_b64}\'))"',
+            )
+            assert_run_commands_decision(
+                self, safety_policy, (gravity_ws, plain_ws), cmd_deny, "deny", "adv_ast2_cmd_deny"
+            )
+
+            cmd_allow = (
+                'python3 -c "exec(bytes(b\'print(1)\'))"',
+                'python3 -c "exec(bytearray(b\'print(1)\'))"',
+                'python3 -c "import codecs; exec(codecs.encode(\'cevag(1)\', \'rot_13\'))"',
+                'python3 -c "from codecs import encode; exec(encode(\'cevag(1)\', \'rot_13\'))"',
+                f'python3 -c "import base64\ndef f(s): return base64.b64decode(s)\nexec(f(\'{benign_b64}\'))"',
+                f'python3 -c "import base64\ndef f(s): return base64.b64decode(s)\ng = f\nexec(g(\'{benign_b64}\'))"',
+            )
+            assert_run_commands_decision(
+                self, safety_policy, (gravity_ws, plain_ws), cmd_allow, "allow", "adv_ast2_cmd_allow"
+            )
+
+            wf_deny_scripts = (
+                # Class 1: helper if-branch / AugAssign / loop / try / helper alias
+                "import base64\ndef f(flag):\n    x = 'print(1)'\n    if flag:\n        x = base64.b64decode(input()).decode()\n    return x\nexec(f(True))",
+                "import base64\ndef f():\n    x = 'print(1); '\n    x += base64.b64decode(input()).decode()\n    return x\nexec(f())",
+                f"import base64\ndef f(s): return base64.b64decode(s)\ng = f\nexec(g('{rm_b64}'))",
+                "def f(flag):\n    x = 'print(1)'\n    if flag:\n        x = 'import os; os.system(\"rm -rf /\")'\n    return x\nexec(f(False))",
+                "import base64\ndef f(items):\n    x = 'print(1)'\n    for i in items:\n        x = base64.b64decode(i).decode()\n    return x\nexec(f([input()]))",
+                # Class 2: builtins subscript aliasing & .get('exec')
+                f"import base64; e = __builtins__['exec']; e(base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; e = builtins.__dict__['exec']; e(base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; e = vars(builtins)['exec']; e(base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; builtins.__dict__.get('exec')(base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; vars(builtins).get('exec')(base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; e = builtins.__dict__.get('exec'); e(base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; d = vars(builtins); d.get('exec')(base64.b64decode('{rm_b64}'))",
+                # Class 3: bytes(...) / bytearray(...) wrappers
+                'exec(bytes(b\'import os; os.system("rm -rf /")\'))',
+                'exec(bytearray(b\'import os; os.system("rm -rf /")\'))',
+                'exec(bytes(\'import os; os.system("rm -rf /")\', "utf-8"))',
+                'b = bytearray(b\'import os; os.system("rm -rf /")\'); exec(b)',
+                # Class 4: codecs.encode(..., 'rot_13') & from codecs import encode
+                'import codecs; exec(codecs.encode(\'vzcbeg bf; bf.flfgrz("ez -es /")\', \'rot_13\'))',
+                'from codecs import encode; exec(encode(\'vzcbeg bf; bf.flfgrz("ez -es /")\', \'rot_13\'))',
+                'from codecs import encode as ce; exec(ce(input(), \'rot_13\'))',
+                'import codecs; exec(getattr(codecs, \'encode\')(\'vzcbeg bf; bf.flfgrz("ez -es /")\', \'rot_13\'))',
+            )
+            for wf_bad in wf_deny_scripts:
+                for ws in (gravity_ws, plain_ws):
+                    dec, reason = safety_policy.evaluate_tool_call(
+                        {"toolCall": {"name": "run_workflow", "args": {"Script": wf_bad}}},
+                        ws,
+                    )
+                    self.assertEqual(dec, "deny", f"Attendu deny sur {wf_bad!r}, obtenu {dec} ({reason})")
+
+            for wf_good in (
+                "exec(bytes(b'print(1)'))\n",
+                "exec(bytearray(b'print(1)'))\n",
+                "import codecs\nexec(codecs.encode('cevag(1)', 'rot_13'))\n",
+                "from codecs import encode\nexec(encode('cevag(1)', 'rot_13'))\n",
+                f"import base64\ndef f(s): return base64.b64decode(s)\nexec(f('{benign_b64}'))\n",
+                f"import base64\ndef f(s): return base64.b64decode(s)\ng = f\nexec(g('{benign_b64}'))\n",
+            ):
+                dec, reason = safety_policy.evaluate_tool_call(
+                    {"toolCall": {"name": "run_workflow", "args": {"Script": wf_good}}},
+                    gravity_ws,
+                )
+                self.assertEqual(dec, "allow", f"Faux positif sur {wf_good!r}: {dec} ({reason})")
+
+    def test_helper_local_decode_indirect_exec_builtins_and_bytes_list_join_slice_closed(self) -> None:
+        import base64
+
+        rm_b64 = "aW1wb3J0IG9zOyBvcy5zeXN0ZW0oInJtIC1yZiAvIik="
+        benign_b64 = base64.b64encode(b"print(1)").decode("ascii")
+        rm_ints = ",".join(str(b) for b in b'import os; os.system("rm -rf /")')
+        ok_ints = ",".join(str(b) for b in b"print(1)")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            gravity_ws = make_gravity_workspace(base, "gravity_adv_ast3")
+            plain_ws = base / "plain_adv_ast3"
+            plain_ws.mkdir()
+
+            cmd_deny = (
+                f'python3 -c "import base64\ndef f():\n    d = base64.b64decode\n    return d(\'{rm_b64}\')\nexec(f())"',
+                f'python3 -c "import base64; exec.__call__(base64.b64decode(\'{rm_b64}\'))"',
+                f'python3 -c "import base64; globals()[\'__builtins__\'].exec(base64.b64decode(\'{rm_b64}\'))"',
+                f'python3 -c "import base64; globals()[\'__builtins__\'][\'exec\'](base64.b64decode(\'{rm_b64}\'))"',
+                f'python3 -c "exec(bytes([{rm_ints}]))"',
+            )
+            assert_run_commands_decision(
+                self, safety_policy, (gravity_ws, plain_ws), cmd_deny, "deny", "adv_ast3_cmd_deny"
+            )
+
+            cmd_allow = (
+                f'python3 -c "exec(bytes([{ok_ints}]))"',
+                'python3 -c "exec(b\'\'.join([b\'print(\', b\'1)\']))"',
+                'python3 -c "exec(bytes(b\'xxprint(1)\')[2:])"',
+                'python3 -c "exec.__call__(\'print(1)\')"',
+                f'python3 -c "import base64\ndef f():\n    d = base64.b64decode\n    return d(\'{benign_b64}\')\nexec(f())"',
+            )
+            assert_run_commands_decision(
+                self, safety_policy, (gravity_ws, plain_ws), cmd_allow, "allow", "adv_ast3_cmd_allow"
+            )
+
+            wf_deny_scripts = (
+                # Class 1: helper-local base64/codecs alias & if-branch taint
+                f"import base64\ndef f():\n    d = base64.b64decode\n    return d('{rm_b64}')\nexec(f())",
+                "import base64\ndef f(flag):\n    x = 'print(1)'\n    d = base64.b64decode\n    if flag:\n        x = d(input()).decode()\n    return x\nexec(f(True))",
+                "import codecs\ndef f():\n    e = codecs.encode\n    return e('vzcbeg bf; bf.flfgrz(\"ez -es /\")', 'rot_13')\nexec(f())",
+                # Class 2: __call__, sys.modules, globals/locals __builtins__, getattr(__dict__), container & lambda exec
+                f"import base64; exec.__call__(base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; builtins.exec.__call__(base64.b64decode('{rm_b64}'))",
+                f"import base64; getattr(exec, '__call__')(base64.b64decode('{rm_b64}'))",
+                f"import sys, base64; sys.modules['builtins'].exec(base64.b64decode('{rm_b64}'))",
+                f"import base64; globals()['__builtins__'].exec(base64.b64decode('{rm_b64}'))",
+                f"import base64; globals()['__builtins__']['exec'](base64.b64decode('{rm_b64}'))",
+                f"import base64; locals()['__builtins__']['exec'](base64.b64decode('{rm_b64}'))",
+                f"import builtins, base64; d = getattr(builtins, '__dict__'); d['exec'](base64.b64decode('{rm_b64}'))",
+                f"import base64; e = [exec][0]; e(base64.b64decode('{rm_b64}'))",
+                f"import base64; d = {{'e': exec}}; d['e'](base64.b64decode('{rm_b64}'))",
+                f"import base64; (lambda: exec)()(base64.b64decode('{rm_b64}'))",
+                # Class 3: bytes([ints]), bytearray([ints]), b"".join([...]), bytes slicing + codecs.getdecoder
+                f"exec(bytes([{rm_ints}]))",
+                f"exec(bytearray([{rm_ints}]))",
+                'exec(b"".join([b"import os; ", b\'os.system("rm -rf /")\']))',
+                'parts = [b"import os; ", b\'os.system("rm -rf /")\']; exec(b"".join(parts))',
+                'exec(bytes(b"xximport os; os.system(\\"rm -rf /\\")")[2:])',
+                f"import codecs; exec(codecs.getdecoder('base64')(b'{rm_b64}')[0])",
+            )
+            for wf_bad in wf_deny_scripts:
+                for ws in (gravity_ws, plain_ws):
+                    dec, reason = safety_policy.evaluate_tool_call(
+                        {"toolCall": {"name": "run_workflow", "args": {"Script": wf_bad}}},
+                        ws,
+                    )
+                    self.assertEqual(dec, "deny", f"Attendu deny sur {wf_bad!r}, obtenu {dec} ({reason})")
+
+            for wf_good in (
+                f"exec(bytes([{ok_ints}]))\n",
+                f"exec(bytearray([{ok_ints}]))\n",
+                'exec(b"".join([b"print(", b"1)"]))\n',
+                'exec(bytes(b"xxprint(1)")[2:])\n',
+                "exec.__call__('print(1)')\n",
+                f"import base64\ndef f():\n    d = base64.b64decode\n    return d('{benign_b64}')\nexec(f())\n",
+                "import codecs\ndef f():\n    e = codecs.encode\n    return e('cevag(1)', 'rot_13')\nexec(f())\n",
+            ):
+                dec, reason = safety_policy.evaluate_tool_call(
+                    {"toolCall": {"name": "run_workflow", "args": {"Script": wf_good}}},
+                    gravity_ws,
+                )
+                self.assertEqual(dec, "allow", f"Faux positif sur {wf_good!r}: {dec} ({reason})")
+
+    def test_indirect_calls_bytearray_mutations_bytes_ctors_and_dynamic_str_builders_closed(self) -> None:
+        import base64
+        import shlex
+
+        rm_b64 = "aW1wb3J0IG9zOyBvcy5zeXN0ZW0oInJtIC1yZiAvIik="
+        benign_b64 = base64.b64encode(b"print(1)").decode("ascii")
+        rm_bytes = b'import os; os.system("rm -rf /")'
+        rm_ints = ",".join(str(b) for b in rm_bytes)
+        rm_xor_ints = ",".join(str(b ^ 1) for b in rm_bytes)
+        ok_ints = ",".join(str(b) for b in b"print(1)")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            gravity_ws = make_gravity_workspace(base, "gravity_adv_ast4")
+            plain_ws = base / "plain_adv_ast4"
+            plain_ws.mkdir()
+
+            wf_deny_scripts = (
+                # Class A: indirect / higher-order / partial / attrgetter / walrus / vars() / class / dict() / sys alias / __getattribute__
+                f"import base64\ndef run(fn, s):\n    fn(base64.b64decode(s))\nrun(exec, '{rm_b64}')",
+                f"import base64\nclass R:\n    def run(self, c):\n        exec(c)\nR().run(base64.b64decode('{rm_b64}'))",
+                f"import base64\nclass R:\n    def run(self, c):\n        exec(c)\nr = R()\nr.run(base64.b64decode('{rm_b64}'))",
+                f"import base64\n(lambda x: x)(exec)(base64.b64decode('{rm_b64}'))",
+                f"import base64\n(lambda f: f(base64.b64decode('{rm_b64}')))(exec)",
+                f"import base64\n(e := exec)(base64.b64decode('{rm_b64}'))",
+                f"import base64\nvars()['__builtins__'].exec(base64.b64decode('{rm_b64}'))",
+                f"import base64\nclass C:\n    f = exec\nC.f(base64.b64decode('{rm_b64}'))",
+                f"import base64\ndict(e=exec)['e'](base64.b64decode('{rm_b64}'))",
+                f"import functools, base64\nfunctools.partial(exec)(base64.b64decode('{rm_b64}'))",
+                f"import operator, builtins, base64\noperator.attrgetter('exec')(builtins)(base64.b64decode('{rm_b64}'))",
+                "import functools, os\nfunctools.partial(os.system)('rm -rf /')",
+                "import functools, os\npf = functools.partial(os.system, 'rm -rf /')\npf()",
+                "import operator, os\noperator.attrgetter('system')(os)('rm -rf /')",
+                "import operator, subprocess\noperator.attrgetter('run')(subprocess)(['rm', '-rf', '/'])",
+                "import operator, shutil\noperator.attrgetter('rmtree')(shutil)('/')",
+                "import operator, os\nprint(operator.attrgetter('environ')(os))",
+                f"import sys, base64\ns = sys\ns.modules['builtins'].exec(base64.b64decode('{rm_b64}'))",
+                f"import base64\nexec.__getattribute__('__call__')(base64.b64decode('{rm_b64}'))",
+                # Class B: post-assignment bytearray mutations
+                'b = bytearray(b"print(1); ")\nb.extend(b\'import os; os.system("rm -rf /")\')\nexec(b)',
+                'b = bytearray(b\'Xmport os; os.system("rm -rf /")\')\nb[0] = 105\nexec(b)',
+                'b = bytearray(b"print(1)")\nb[:] = b\'import os; os.system("rm -rf /")\'\nexec(b)',
+                "b = bytearray(b'print(1); ')\nb += b'import os; os.system(\"rm -rf /\")'\nexec(b)",
+                "b = bytearray(b'print(1)')\nb.append(int(input()))\nexec(b)",
+                # Class C: bytes/bytearray/memoryview constructors & unresolvable dynamic bytes
+                f"exec(bytes(c ^ 1 for c in [{rm_xor_ints}]))",
+                f"exec(bytes(x for x in [{rm_ints}]))",
+                f"exec(bytes([x for x in [{rm_ints}]]))",
+                f"exec(bytearray([120, 120] + [{rm_ints}])[2:])",
+                f"exec(bytes([120, 120] + [{rm_ints}])[2:])",
+                'exec(memoryview(b\'import os; os.system("rm -rf /")\').tobytes())',
+                f"ints = [{rm_ints}]\nexec(bytes(ints))",
+                "exec(bytes(c ^ 1 for c in unknown_ints))",
+                "exec(memoryview(input().encode()).tobytes())",
+                # Class D: dynamic string builders & unresolvable format/replace/f-string/chr loops
+                'exec(\'import {0}; {0}.sys{1}("rm -rf /")\'.format(\'os\', \'tem\'))',
+                'exec(\'import os; os.sysX("rm -rf /")\'.replace(\'X\', \'tem\'))',
+                'a = \'os\'\nb = \'system\'\nexec(f\'import {a}; {a}.{b:s}("rm -rf /")\')',
+                f"exec(''.join(chr(c) for c in [{rm_ints}]))",
+                f"exec(''.join(map(chr, [{rm_ints}])))",
+                "exec('import {0}'.format(input()))",
+                "exec('import os; os.sysX()'.replace('X', input()))",
+                "x = input()\nexec(f'import {x:s}')",
+                "exec(''.join(chr(c) for c in unknown_ints))",
+            )
+            for wf_bad in wf_deny_scripts:
+                cmd_bad = f"python3 -c {shlex.quote(wf_bad)}"
+                for ws in (gravity_ws, plain_ws):
+                    dec_wf, reason_wf = safety_policy.evaluate_tool_call(
+                        {"toolCall": {"name": "run_workflow", "args": {"Script": wf_bad}}},
+                        ws,
+                    )
+                    self.assertEqual(dec_wf, "deny", f"Attendu deny workflow sur {wf_bad!r}, obtenu {dec_wf} ({reason_wf})")
+                    dec_cmd, reason_cmd = safety_policy.evaluate_tool_call(
+                        {"toolCall": {"name": "run_command", "args": {"CommandLine": cmd_bad}}},
+                        ws,
+                    )
+                    self.assertEqual(dec_cmd, "deny", f"Attendu deny cmd sur {cmd_bad!r}, obtenu {dec_cmd} ({reason_cmd})")
+
+            benign_scripts = (
+                f"import base64\ndef run(fn, s):\n    fn(base64.b64decode(s))\nrun(print, '{benign_b64}')",
+                f"import base64\nclass R:\n    def run(self, c):\n        exec(c)\nR().run(base64.b64decode('{benign_b64}'))",
+                "import functools\nfunctools.partial(print)('hello')",
+                "import operator, os\noperator.attrgetter('system')(os)('echo ok')",
+                f"exec(bytes(x for x in [{ok_ints}]))",
+                "exec('prin{0}(1)'.format('t'))",
+                "exec(f'print({1})')",
+                "a = 1\nexec(f'print({a!r})')",
+                "b = bytearray(b'print(1); ')\nb.extend(b'print(2)')\nexec(b)",
+                f"import base64\n(e := exec)(base64.b64decode('{benign_b64}'))",
+                f"import base64\nvars()['__builtins__'].exec(base64.b64decode('{benign_b64}'))",
+                "exec(memoryview(b'print(1)').tobytes())",
+                "exec('prinX(1)'.replace('X', 't'))",
+                f"exec(''.join(chr(c) for c in [{ok_ints}]))",
+                f"ints = [{ok_ints}]\nexec(bytes(ints))",
+                "(lambda f: f('hello'))(print)",
+            )
+            for wf_good in benign_scripts:
+                cmd_good = f"python3 -c {shlex.quote(wf_good)}"
+                dec_wf, reason_wf = safety_policy.evaluate_tool_call(
+                    {"toolCall": {"name": "run_workflow", "args": {"Script": wf_good}}},
+                    gravity_ws,
+                )
+                self.assertEqual(dec_wf, "allow", f"Faux positif workflow sur {wf_good!r}: {dec_wf} ({reason_wf})")
+                dec_cmd, reason_cmd = safety_policy.evaluate_tool_call(
+                    {"toolCall": {"name": "run_command", "args": {"CommandLine": cmd_good}}},
+                    gravity_ws,
+                )
+                self.assertEqual(dec_cmd, "allow", f"Faux positif cmd sur {cmd_good!r}: {dec_cmd} ({reason_cmd})")
+
+    def test_bytearray_aliases_str_transforms_ctor_aliases_indirect_calls_and_environ_dict_closed(self) -> None:
+        import base64
+        import shlex
+
+        rm_b64 = "aW1wb3J0IG9zOyBvcy5zeXN0ZW0oInJtIC1yZiAvIik="
+        benign_b64 = base64.b64encode(b"print(1)").decode("ascii")
+        rm_bytes = b'import os; os.system("rm -rf /")'
+        rm_xor_ints = ",".join(str(b ^ 1) for b in rm_bytes)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            gravity_ws = make_gravity_workspace(base, "gravity_adv_ast5")
+            plain_ws = base / "plain_adv_ast5"
+            plain_ws.mkdir()
+
+            wf_deny_scripts = (
+                # Class 1 + N10: bytearray alias staleness, non-Expr calls, unbound bytearray.extend
+                'b = bytearray(b"print(1); ")\nb2 = b\nb.extend(b\'import os; os.system("rm -rf /")\')\nexec(b2)',
+                'b = bytearray(b"print(1); ")\na = b\na.extend(b\'import os; os.system("rm -rf /")\')\nexec(b)',
+                'b = bytearray(b"print(1); ")\n(b.extend(b\'import os; os.system("rm -rf /")\'), exec(b))',
+                'b = bytearray(b"print(1); ")\n_ = b.extend(b\'import os; os.system("rm -rf /")\')\nexec(b)',
+                'b = bytearray(b"print(1); ")\nbytearray.extend(b, b\'import os; os.system("rm -rf /")\')\nexec(b)',
+                # Class 2 + N1, N7, N9: %, *, format_map, strip/lstrip, lower, removeprefix, translate, codecs.lookup
+                "exec('import %s; %s.system(\"rm -rf /\")' % ('os', 'os'))",
+                "print(open('.%s' % 'env').read())",
+                "exec('ximport os; os.system(\"rm -rf /\")'.lstrip('x'))",
+                "exec('IMPORT OS; OS.SYSTEM(\"rm -rf /\")'.lower())",
+                "exec('import {a}; {a}.system(\"rm -rf /\")'.format_map({'a': 'os'}))",
+                "exec('__import os; os.system(\"rm -rf /\")'.removeprefix('__'))",
+                "exec('imporX os; os.sysXem(\"rm -rf /\")'.translate({88: 116}))",
+                "exec('import os; os.system(\"rm -rf /\")' * 1)",
+                f"import codecs\nexec(codecs.lookup('base64').decode(b'{rm_b64}')[0])",
+                "x = input()\nexec('import %s' % x)",
+                # Class 3: aliased bytes/bytearray constructors
+                f"B = bytes\nexec(B(c ^ 1 for c in [{rm_xor_ints}]))",
+                f"BA = bytearray\nexec(BA(c ^ 1 for c in [{rm_xor_ints}]))",
+                # Class 4 + N4, N6, N12: methodcaller, __call__, *args/**kwargs, lambda/def attrs, curried, setattr, map, *args exec
+                "import operator, os\noperator.methodcaller('system', 'rm -rf /')(os)",
+                "import operator, subprocess\noperator.methodcaller('run', ['rm', '-rf', '/'])(subprocess)",
+                f"import base64\nclass R:\n    def __call__(self, c):\n        exec(c)\nR()(base64.b64decode('{rm_b64}'))",
+                f"import base64\ndef run(*a):\n    a[0](a[1])\nrun(exec, base64.b64decode('{rm_b64}'))",
+                f"import base64\ndef run(fn, *a):\n    fn(*a)\nrun(exec, base64.b64decode('{rm_b64}'))",
+                f"import base64\ndef run(**kw):\n    exec(kw['c'])\nrun(c=base64.b64decode('{rm_b64}'))",
+                "import os\n(lambda: os.system)()('rm -rf /')",
+                "import os\n(lambda m: m.system)(os)('rm -rf /')",
+                f"import base64\nlist(map(exec, [base64.b64decode('{rm_b64}')]))",
+                "import os\nlist(map(os.system, ['rm -rf /']))",
+                "args = ['import os; os.system(\"rm -rf /\")']\nexec(*args)",
+                "import os\ndef id_fn(x):\n    return x\nid_fn(os.system)('rm -rf /')",
+                f"import base64\nclass X:\n    pass\nsetattr(X, 'f', exec)\nX.f(base64.b64decode('{rm_b64}'))",
+                f"import base64\n(lambda a: (lambda b: a(b)))(exec)(base64.b64decode('{rm_b64}'))",
+                # Class 5: indirect os.__dict__.get / vars(os).get / aliases
+                "import os\nprint(os.__dict__.get('environ'))",
+                "import os\nprint(vars(os).get('environ'))",
+                "import os\nd = vars(os)\nprint(d['environ'])",
+                "import os\nd = os.__dict__\nprint(d['environ'])",
+            )
+            for wf_bad in wf_deny_scripts:
+                cmd_bad = f"python3 -c {shlex.quote(wf_bad)}"
+                for ws in (gravity_ws, plain_ws):
+                    dec_wf, reason_wf = safety_policy.evaluate_tool_call(
+                        {"toolCall": {"name": "run_workflow", "args": {"Script": wf_bad}}},
+                        ws,
+                    )
+                    self.assertEqual(dec_wf, "deny", f"Attendu deny workflow sur {wf_bad!r}, obtenu {dec_wf} ({reason_wf})")
+                    dec_cmd, reason_cmd = safety_policy.evaluate_tool_call(
+                        {"toolCall": {"name": "run_command", "args": {"CommandLine": cmd_bad}}},
+                        ws,
+                    )
+                    self.assertEqual(dec_cmd, "deny", f"Attendu deny cmd sur {cmd_bad!r}, obtenu {dec_cmd} ({reason_cmd})")
+
+            benign_scripts = (
+                "exec('print(%d)' % (1,))",
+                "print('hello %s' % 'world')",
+                "exec('xprint(1)'.lstrip('x'))",
+                "exec('PRINT(1)'.lower())",
+                "exec('print({a})'.format_map({'a': 1}))",
+                "exec('__print(1)'.removeprefix('__'))",
+                "exec('prinX(1)'.translate({88: 116}))",
+                "exec('print(1); ' * 1)",
+                "import operator\noperator.methodcaller('upper')('abc')",
+                "list(map(str, [1, 2, 3]))",
+                "b = bytearray(b'print(1); ')\nb2 = b\nb.extend(b'print(2)')\nexec(b2)",
+                "b = bytearray(b'print(1); ')\nb2 = b\nb = bytearray(b'print(2)')\nb.extend(b'; import os; os.system(\"rm -rf /\")')\nexec(b2)",
+                "import os\nprint(os.__dict__.get('path'))",
+                "import os\nd = vars(os)\nprint(d.get('name'))",
+                "args = ['print(1)']\nexec(*args)",
+                f"import base64\nclass R:\n    def __call__(self, c):\n        exec(c)\nR()(base64.b64decode('{benign_b64}'))",
+                f"import base64\n(lambda a: (lambda b: a(b)))(exec)(base64.b64decode('{benign_b64}'))",
+            )
+            for wf_good in benign_scripts:
+                cmd_good = f"python3 -c {shlex.quote(wf_good)}"
+                dec_wf, reason_wf = safety_policy.evaluate_tool_call(
+                    {"toolCall": {"name": "run_workflow", "args": {"Script": wf_good}}},
+                    gravity_ws,
+                )
+                self.assertEqual(dec_wf, "allow", f"Faux positif workflow sur {wf_good!r}: {dec_wf} ({reason_wf})")
+                dec_cmd, reason_cmd = safety_policy.evaluate_tool_call(
+                    {"toolCall": {"name": "run_command", "args": {"CommandLine": cmd_good}}},
+                    gravity_ws,
+                )
+                self.assertEqual(dec_cmd, "allow", f"Faux positif cmd sur {cmd_good!r}: {dec_cmd} ({reason_cmd})")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

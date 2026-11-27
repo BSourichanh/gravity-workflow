@@ -69,11 +69,7 @@ def _read_template(rel_path: str) -> str:
 def _render_progress_md(mode: str) -> str:
     """Génère `PROGRESS.md` paramétré selon le mode (`full` ou `quickstart`)."""
     is_quickstart = mode == "quickstart"
-    parcours = (
-        "Quick Start [~] 3/8 (8 étapes + 1 bonus)"
-        if is_quickstart
-        else "Guidé (0/8 ; 8 étapes + 1 bonus)"
-    )
+    parcours = "Quick Start [~] 3/8" if is_quickstart else "Guidé (0/8)"
     done_count = 3 if is_quickstart else 0
     checklist = "\n".join(
         f"- [{'x' if idx < done_count else ' '}] {step}"
@@ -89,7 +85,7 @@ def _render_progress_md(mode: str) -> str:
         "  1. Aucune lecture/fuite de secrets (`.env`, `secrets/`, clés SSH/privées, `printenv`)\n"
         "  2. Aucune commande destructrice système/Git/DB (`rm -rf`, `git push --force`, `DROP DATABASE`)\n"
         "  3. Auto-protection des hooks et règles de sécurité\n\n"
-        "## Avancement des étapes (8 étapes + 1 bonus)\n"
+        "## Avancement des étapes\n"
         f"{checklist}\n"
     )
 

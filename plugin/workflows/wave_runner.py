@@ -1,4 +1,4 @@
-"""Runner de vagues natif Gravity pour `run_workflow` (100 % stdlib Python 3, fail-isolated)."""
+"""Runner de vagues natif Gravity pour `run_workflow` (100 % stdlib Python 3.10+, fail-isolated)."""
 
 import asyncio
 import datetime
@@ -87,10 +87,12 @@ from patch_apply import (  # type: ignore[import-not-found]  # noqa: E402
     BUILDER_HYGIENE_DIRECTIVE, BUILD_SCHEMA, DEFAULT_BUILDER_TIMEOUT_S,
     DEFAULT_REVIEWER_TIMEOUT_S, MAX_CHANGED_FILES, REVIEW_SCHEMA,
     _read_worktree_patch, _safe_save_verified_patch, apply_verified_patch,
-    caveman_directive, cleanup_worktree_best_effort, collect_changed_files,
-    collect_repo_tree, create_repo_worktree, load_level_preset_for_ws,
-    read_plan_file, resolve_timeout_seconds, resolve_worktree_base,
+    caveman_directive, collect_changed_files, collect_repo_tree,
+    load_level_preset_for_ws, read_plan_file, resolve_timeout_seconds,
     safe_append_run, safe_update_live,
+)
+from worktree_ops import (  # type: ignore[import-not-found]  # noqa: E402
+    cleanup_worktree_best_effort, create_repo_worktree, resolve_worktree_base,
 )
 
 
@@ -116,9 +118,7 @@ def parse_task_spec(
 ) -> Dict[str, Any]:
     """Valide une tâche structurée (`wave_plan_v1` / dict) et lit `plan_file` + `<repo>/AGENTS.md` (0 token LLM)."""
     if not isinstance(raw_item, dict):
-        raise ValueError(
-            "Tâche invalide : dict structuré avec 'repo_root' requis (chaîne brute refusée)."
-        )
+        raise ValueError("Tâche invalide : dict structuré avec 'repo_root' requis (chaîne brute refusée).")
     overrides: Dict[str, Any] = dict(raw_item)
 
     status_raw = str(overrides.get("status") or "").strip().lower()
@@ -128,10 +128,7 @@ def parse_task_spec(
     repo_root = _resolve_repo_root(overrides.get("repo_root"), ws_root)
 
     plan_file_raw = str(
-        overrides.get("plan_file")
-        or overrides.get("task_file")
-        or overrides.get("path")
-        or ""
+        overrides.get("plan_file") or overrides.get("task_file") or overrides.get("path") or ""
     ).strip()
 
     task_path: Optional[Path] = None
@@ -153,7 +150,7 @@ def parse_task_spec(
     repo_id = str(overrides.get("repo_id") or "").strip()
     repo_name = repo_id or repo_root.name
 
-    target_files_raw = overrides.get("target_files")
+    target_files_raw = overrides.get("target_files") if isinstance(overrides.get("target_files"), list) else overrides.get("code_files")
     target_files = [str(f).strip() for f in target_files_raw if str(f).strip()] if isinstance(target_files_raw, list) else []
 
     agents_text = ""
@@ -245,12 +242,7 @@ def _check_expected_branch(repo_root: Path, expected_branch: str) -> Optional[st
     try:
         proc = subprocess.run(
             ["git", "-C", str(repo_root), "branch", "--show-current"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            check=False,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, check=False,
         )
         if proc.returncode == 0:
             current = proc.stdout.strip()
@@ -284,11 +276,7 @@ def _build_repo_result(
 
 def _build_initial_prompt(spec: Dict[str, Any], wt_path: Path, ws_root: Path, skip_verification: bool) -> str:
     agents_block = f"\nInvariants `{spec['repo_name']}/AGENTS.md` :\n{spec['agents_text']}\n" if spec["agents_text"] else ""
-    target_block = (
-        f"Fichiers cibles déclarés : {', '.join(spec['target_files'])}\n"
-        if spec.get("target_files")
-        else ""
-    )
+    target_block = f"Fichiers cibles déclarés : {', '.join(spec['target_files'])}\n" if spec.get("target_files") else ""
     verify_note = (
         "Vérifications ignorées (--no-verify éphémère)."
         if skip_verification
@@ -326,7 +314,7 @@ async def _execute_in_worktree(
     repo_name: str = spec["repo_name"]
     builder_cav = caveman_directive("builder", caveman_level, log_fn=_log_warn)
     reviewer_cav = caveman_directive("reviewer", caveman_level, log_fn=_log_warn)
-    builder = agent(role=f"Builder {repo_name}", type_name="builder", workspace="inherit", model=build_model)
+    builder = agent(role=f"Builder {repo_name}", type_name="builder", workspace="inherit", model=build_model)  # type: ignore[name-defined]
 
     final_status = "ERROR"
     remediation_count = 0
@@ -369,7 +357,7 @@ async def _execute_in_worktree(
                 else diff_full
             )
             review = await asyncio.wait_for(
-                agent(
+                agent(  # type: ignore[name-defined]
                     _with_directive(
                         (
                             f"Audite à froid `{repo_name}` pour `{spec['title']}` (worktree `{worktree_ws}`).\n"
@@ -400,7 +388,7 @@ async def _execute_in_worktree(
                     )
                     if not applied:
                         final_status = "APPLY_FAILED"
-                        summary_text = "PASS mais échec git apply sur dev."
+                        summary_text = "PASS mais échec git apply sur la branche cible."
                 break
             if attempt > max_remediations:
                 final_status = "FAIL"
@@ -501,7 +489,6 @@ async def _run_single_task(
                 else preset.get("max_remediation_rounds", 1)
             )
         )
-        # plan_file / plan fourni => skip_separate_planner = True (0 token Planner)
         skip_separate_planner = True
         caveman_level = str(preset.get("caveman") or "lite").strip().lower()
         role_models = {"plan": "skipped", "build": build_model, "review": "skipped" if skip_verification else review_model}
@@ -509,8 +496,8 @@ async def _run_single_task(
         wt_path = create_repo_worktree(repo_root, worktree_base=worktree_base, run_id=f"{wave_id}-{idx}")
         try:
             safe_update_live(
-                repo_root, log_fn=_log_warn, stage="workflow:building", preset_profile=preset_profile,
-                role_models=role_models, caveman=caveman_level,
+                repo_root, log_fn=_log_warn, stage="workflow:building", progress="0/1",
+                preset_profile=preset_profile, role_models=role_models, caveman=caveman_level,
                 nodes={"planner": "done", "builder": "active", "reviewer": ""},
                 event={"type": "BUILDER", "decision": "allow", "message": f"Wave {wave_id}: build isolé."},
             )
@@ -529,17 +516,19 @@ async def _run_single_task(
             "TIMEOUT": "workflow:timeout",
             "REFUSED": "workflow:refused",
         }
+        task_done = final_status in ("PASS", "UNSAFE_SKIPPED")
         safe_update_live(
             repo_root, log_fn=_log_warn, stage=stage_map.get(final_status, "workflow:escalated"),
+            progress="1/1" if task_done else "0/1",
             preset_profile=preset_profile, role_models=role_models, caveman=caveman_level,
             nodes={
                 "planner": "done",
-                "builder": "done" if final_status in ("PASS", "UNSAFE_SKIPPED") else "fail",
+                "builder": "done" if task_done else "fail",
                 "reviewer": "done" if final_status == "PASS" else ("" if skip_verification else "fail"),
             },
             event={
                 "type": "WAVE_RUNNER",
-                "decision": "allow" if final_status in ("PASS", "UNSAFE_SKIPPED") else "deny",
+                "decision": "allow" if task_done else "deny",
                 "message": f"Wave {wave_id}: {final_status} (applied={applied}).",
             },
         )
@@ -599,12 +588,14 @@ if _is_workflow_runtime():
     builder_timeout_s = resolve_timeout_seconds(_ARGS.get("builder_timeout_s"), DEFAULT_BUILDER_TIMEOUT_S)
     reviewer_timeout_s = resolve_timeout_seconds(_ARGS.get("reviewer_timeout_s"), DEFAULT_REVIEWER_TIMEOUT_S)
 
-    phase(f"1. Exécution vague parallèle ({len(validated_specs)} tâche(s), id={wave_id})")
+    total_tasks = len(validated_specs)
+    phase(f"1. Exécution vague parallèle ({total_tasks} tâche(s), id={wave_id})")  # type: ignore[name-defined]
     if not validated_specs:
         WAVE_RESULTS: List[Dict[str, Any]] = []
+        safe_update_live(effective_ws, log_fn=_log_warn, stage="idle", progress="0/0")
         _log_warn("[WARN] Aucune tâche fournie dans args['wave_plan'] / args['tasks'].")
     else:
-        WAVE_RESULTS = await parallel(
+        WAVE_RESULTS = await parallel(  # type: ignore[name-defined, top-level-await]
             list(enumerate(validated_specs, 1)),
             lambda item: _run_single_task(
                 item, ws_root=effective_ws, worktree_base=wt_base, wave_id=wave_id,
@@ -613,8 +604,8 @@ if _is_workflow_runtime():
             ),
         )
 
-    phase("2. Consolidation compacte de la vague")
+    phase("2. Consolidation compacte de la vague")  # type: ignore[name-defined]
     WAVE_SUMMARY = format_wave_summary(WAVE_RESULTS, wave_id=wave_id)
     for res in WAVE_RESULTS:
-        log(f"[{res['status']}] {res['repo']} ({res['profile']}) | applied={res['applied']} | files={len(res['changed_files'])}")
+        log(f"[{res['status']}] {res['repo']} ({res['profile']}) | applied={res['applied']} | files={len(res['changed_files'])}")  # type: ignore[name-defined]
     print(WAVE_SUMMARY)

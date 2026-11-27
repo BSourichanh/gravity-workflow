@@ -7,15 +7,16 @@ import sys
 from pathlib import Path
 
 HOOKS_DIR = Path(__file__).resolve().parent
-OBS_DIR = HOOKS_DIR.parent / "observability"
-for _p in (str(HOOKS_DIR), str(OBS_DIR)):
+PLUGIN_ROOT = HOOKS_DIR.parent
+OBS_DIR = PLUGIN_ROOT / "observability"
+for _p in (str(PLUGIN_ROOT), str(OBS_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 
 def main() -> int:
     try:
-        from hook_runtime import (
+        from _shared.hook_runtime import (  # type: ignore[import-not-found]
             configure_utf8_stdio,
             emit_ok,
             first_not_none,
@@ -35,19 +36,27 @@ def main() -> int:
 
     configure_utf8_stdio()
     try:
-        raw = read_stdin_text()
-        if raw:
-            try:
-                event = json.loads(raw)
-            except Exception:
-                emit_ok()
-                return 0
-        else:
-            event = {}
+        raw_stdin = read_stdin_text()
+        if not raw_stdin:
+            emit_ok()
+            return 0
+        try:
+            event = json.loads(raw_stdin)
+        except Exception:
+            emit_ok()
+            return 0
         if not isinstance(event, dict):
-            event = {"raw_payload": event}
+            emit_ok()
+            return 0
+        ws_root = resolve_workspace_root(
+            event,
+            anchor_file=__file__,
+            fallback_cwd=True,
+            env_var="GRAVITY_WORKFLOW_WORKSPACE",
+        )
+        if ws_root is None:
+            ws_root = Path.cwd()
 
-        ws_root = resolve_workspace_root(event, __file__)
         preset = get_active_preset(ws_root)
         entry = {
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),

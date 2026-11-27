@@ -113,6 +113,101 @@ class TestSafetyInlineScripts(unittest.TestCase):
             )
             assert_run_commands_decision(self, safety_policy, (gravity_ws, plain_ws), allow_cmds, "allow", "inline_allow")
 
+    def test_srp_split_modules_and_reexports(self) -> None:
+        import ast
+        from policy import inline_scripts, js_eval, shell_parser, stdin_inspect
+
+        js_exports = (
+            "_advance_js_quoted_or_template",
+            "_collect_js_var_bindings",
+            "_decode_js_escape",
+            "_eval_js_str_expr",
+            "_expand_js_templates",
+            "_extract_balanced_brackets",
+            "_extract_balanced_delims",
+            "_extract_balanced_parens",
+            "_parse_js_array_expr",
+            "_scan_js_template_literal",
+            "_split_js_statements",
+            "_split_script_top_level",
+            "_strip_js_comments",
+            "_unescape_quoted_literal",
+        )
+        stdin_exports = (
+            "_collect_ps_var_assignment",
+            "_extract_inline_spec",
+            "_extract_piped_literal_payload",
+            "_get_stdin_interpreter_kind",
+            "_inspect_stdin_payload",
+        )
+        inline_local = (
+            "_expand_ruby_interpolations",
+            "_fold_inline_concat",
+            "_inspect_inline_script_code",
+            "_tokenize_script_literals",
+        )
+
+        for mod_obj, expected in (
+            (js_eval, js_exports),
+            (stdin_inspect, stdin_exports),
+            (inline_scripts, inline_local),
+        ):
+            for sym in expected:
+                self.assertTrue(hasattr(mod_obj, sym), f"{sym} manquant sur {mod_obj.__name__}")
+
+        for sym in js_exports:
+            self.assertIs(getattr(inline_scripts, sym), getattr(js_eval, sym))
+        for sym in stdin_exports:
+            self.assertIs(getattr(inline_scripts, sym), getattr(stdin_inspect, sym))
+        safety_reexports = tuple(s for s in js_exports + stdin_exports + inline_local if s != "_advance_js_quoted_or_template")
+        for sym in safety_reexports:
+            self.assertIs(getattr(safety_policy, sym), getattr(inline_scripts, sym))
+
+        # Vérifie le DAG acyclique au niveau module (js_eval / stdin_inspect n'importent pas inline_scripts au top-level)
+        for mod_path in (Path(js_eval.__file__), Path(stdin_inspect.__file__)):
+            tree = ast.parse(mod_path.read_text(encoding="utf-8"))
+            for stmt in tree.body:
+                if isinstance(stmt, ast.ImportFrom) and stmt.module:
+                    self.assertNotIn("inline_scripts", stmt.module)
+                elif isinstance(stmt, ast.Import):
+                    for alias in stmt.names:
+                        self.assertNotIn("inline_scripts", alias.name)
+
+        # Vérifie directement les fonctions SRP des 3 modules
+        stripped = js_eval._strip_js_comments("const a = '.'; // secret\nconst b = `env`;")
+        self.assertNotIn("secret", stripped)
+        s_vars, _, _, _, aliases = js_eval._collect_js_var_bindings(stripped)
+        self.assertEqual(s_vars, {"a": ".", "b": "env"})
+        self.assertIn("process", aliases)
+        self.assertEqual(js_eval._eval_js_str_expr("`${a}${b}`", s_vars), ".env")
+
+        head, rich_args, _ = shell_parser._extract_command_head_args_rich("node -e 'console.log(1)'")
+        spec = stdin_inspect._extract_inline_spec(head, rich_args)
+        self.assertIsNotNone(spec)
+        assert spec is not None
+        self.assertEqual(spec[0], "node")
+
+        ps_assign = stdin_inspect._collect_ps_var_assignment("$code = @'\nprint(1)\n'@")
+        self.assertEqual(ps_assign, ("$code", "print(1)", True))
+        payload, is_bare = stdin_inspect._extract_piped_literal_payload("$code", {"$code": "print(1)"})
+        self.assertEqual((payload, is_bare), ("print(1)", True))
+
+        _, rich_py, _ = shell_parser._extract_command_head_args_rich("python3 -u -")
+        self.assertEqual(stdin_inspect._get_stdin_interpreter_kind("python3", rich_py), "python")
+        deny_py, _ = stdin_inspect._inspect_stdin_payload("python", "import os\nprint(os.environ)\n")
+        self.assertIsNotNone(deny_py)
+        deny_js, _ = stdin_inspect._inspect_stdin_payload("node", "console.log(process.env)")
+        self.assertIsNotNone(deny_js)
+        self.assertEqual(stdin_inspect._inspect_stdin_payload("node", "console.log(1)"), (None, None))
+
+        self.assertEqual(inline_scripts._expand_ruby_interpolations('"#{ \'.\' + \'env\' }"'), '".env"')
+        folded, lits = inline_scripts._fold_inline_concat("'.' + 'env'")
+        self.assertEqual((folded, lits), ("'.env'", [".env"]))
+        res_ruby = inline_scripts._inspect_inline_script_code("ruby", 'File.read("#{"."}env")')
+        self.assertIsNotNone(res_ruby)
+        assert res_ruby is not None
+        self.assertEqual(res_ruby[0], "deny")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

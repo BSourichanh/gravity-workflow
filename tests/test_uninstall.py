@@ -23,13 +23,8 @@ import uninstall  # noqa: E402
 
 
 def _run_install_quiet(argv: List[str]) -> int:
-    final_argv = list(argv)
-    if "--skip-validate" not in final_argv and "--strict" not in final_argv:
-        final_argv.append("--skip-validate")
-    if "--no-fix-python" not in final_argv and "--strict" not in final_argv:
-        final_argv.append("--no-fix-python")
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        return install.main(final_argv)
+        return install.main(argv)
 
 
 def _run_uninstall_quiet(argv: List[str]) -> tuple:
@@ -84,7 +79,7 @@ class TestGravityUninstaller(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             target = base / "global" / "gravity-workflow"
-            self.assertEqual(_run_install_quiet(["--target", str(target)]), 0)
+            self.assertEqual(_run_install_quiet(["--target", str(target), "--skip-validate"]), 0)
             self.assertTrue((target / "plugin.json").is_file())
 
             rc, _, err = _run_uninstall_quiet(["--target", str(target)])
@@ -95,7 +90,7 @@ class TestGravityUninstaller(unittest.TestCase):
             ws = base / "proj"
             ws.mkdir()
             self.assertEqual(
-                _run_install_quiet(["--scope", "workspace", "--workspace", str(ws)]), 0
+                _run_install_quiet(["--scope", "workspace", "--workspace", str(ws), "--skip-validate"]), 0
             )
             ws_plugin = ws / ".agents" / "plugins" / "gravity-workflow"
             self.assertTrue((ws_plugin / "plugin.json").is_file())
@@ -174,7 +169,7 @@ class TestGravityUninstaller(unittest.TestCase):
 
             self.assertEqual(
                 _run_install_quiet(
-                    ["--target", str(target), "--init-workspace", str(ws), "--mode", "full"]
+                    ["--target", str(target), "--init-workspace", str(ws), "--mode", "full", "--skip-validate"]
                 ),
                 0,
             )
@@ -232,7 +227,7 @@ class TestGravityUninstaller(unittest.TestCase):
 
             self.assertEqual(
                 _run_install_quiet(
-                    ["--scope", "workspace", "--workspace", str(ws), "--init-workspace", str(ws)]
+                    ["--scope", "workspace", "--workspace", str(ws), "--init-workspace", str(ws), "--skip-validate"]
                 ),
                 0,
             )
@@ -279,13 +274,22 @@ class TestGravityUninstaller(unittest.TestCase):
 
             self.assertEqual(
                 _run_install_quiet(
-                    ["--target", str(target), "--init-workspace", str(ws_mod), "--mode", "full"]
+                    ["--target", str(target), "--init-workspace", str(ws_mod), "--mode", "full", "--skip-validate"]
                 ),
                 0,
             )
             self.assertEqual(
                 _run_install_quiet(
-                    ["--target", str(target), "--force", "--init-workspace", str(ws_clean), "--mode", "full"]
+                    [
+                        "--target",
+                        str(target),
+                        "--force",
+                        "--skip-validate",
+                        "--init-workspace",
+                        str(ws_clean),
+                        "--mode",
+                        "full",
+                    ]
                 ),
                 0,
             )
@@ -334,7 +338,7 @@ class TestGravityUninstaller(unittest.TestCase):
 
             self.assertEqual(
                 _run_install_quiet(
-                    ["--target", str(target), "--init-workspace", str(ws), "--mode", "quickstart"]
+                    ["--target", str(target), "--init-workspace", str(ws), "--mode", "quickstart", "--skip-validate"]
                 ),
                 0,
             )

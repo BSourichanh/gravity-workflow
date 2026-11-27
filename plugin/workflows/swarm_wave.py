@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 WAVE_PLAN_SCHEMA_VERSION = "wave_plan_v1"
 BLOCKED_TASK_STATUSES = frozenset({"draft", "done", "archived", "cancelled"})
 MAX_BUILDER_BRIEF_CHARS = 700
+DEFAULT_EXECUTION_ENGINE = "swarm"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _COMPACT_HYGIENE = (
     "Hygiène: WaitMsBeforeAsync=10000, NotificationTimeoutSeconds=180, "
@@ -35,11 +36,14 @@ for _sub in ("observability", "workflows"):
         sys.path.insert(0, str(_sub_dir))
 
 from patch_apply import (  # type: ignore[import-not-found]  # noqa: E402
-    BUILDER_HYGIENE_DIRECTIVE, MAX_TREE_FILES, _list_worktree_dirty_files,
-    _read_worktree_patch, _safe_save_verified_patch, apply_verified_patch,
-    caveman_directive, cleanup_worktree_best_effort, collect_changed_files,
-    create_repo_worktree, extract_changed_files_from_diff,
-    load_level_preset_for_ws, resolve_worktree_base,
+    BUILDER_HYGIENE_DIRECTIVE, MAX_TREE_FILES, _read_worktree_patch,
+    _safe_save_verified_patch, apply_verified_patch, caveman_directive,
+    collect_changed_files, extract_changed_files_from_diff,
+    load_level_preset_for_ws,
+)
+from worktree_ops import (  # type: ignore[import-not-found]  # noqa: E402
+    _list_worktree_dirty_files, cleanup_worktree_best_effort,
+    create_repo_worktree, resolve_worktree_base,
 )
 
 
@@ -124,21 +128,19 @@ def _validate_task(raw: Any, idx: int, ws_root: Path, default_level: Any) -> Dic
 
     task_id = str(raw.get("id") or (Path(plan_path_str).stem if plan_path_str else f"task-{idx}")).strip() or f"task-{idx}"
     repo_name = str(raw.get("repo_id") or "").strip() or repo_root.name
-    raw_targets = raw.get("target_files") if isinstance(raw.get("target_files"), list) else []
+    target_project = str(raw.get("target_project") or raw.get("repo_id") or repo_name).strip() or repo_name
+    raw_targets = raw.get("target_files") if isinstance(raw.get("target_files"), list) else raw.get("code_files")
+    targets_list = raw_targets if isinstance(raw_targets, list) else []
     return {
-        "id": task_id,
-        "repo_name": repo_name,
-        "repo_root": str(repo_root),
-        "expected_branch": expected_branch,
-        "plan_file": plan_path_str,
+        "id": task_id, "repo_name": repo_name, "target_project": target_project,
+        "repo_root": str(repo_root), "expected_branch": expected_branch, "plan_file": plan_path_str,
         "level": str(raw.get("profile") or raw.get("level") or default_level or "").strip().lower(),
-        "target_files": [str(f).strip() for f in raw_targets if str(f).strip()],
-        "status": status,
+        "target_files": [str(f).strip() for f in targets_list if str(f).strip()], "status": status,
     }
 
 
 def _build_builder_brief(task: Dict[str, Any], wt_path: Path, caveman_level: str) -> str:
-    caveman_line = caveman_directive("builder", caveman_level).strip()
+    caveman_line = " ".join(caveman_directive("builder", caveman_level).splitlines()).strip()
     plan_ref = task["plan_file"] or f"task:{task['id']}"
     header = (
         f"Tâche `{task['id']}` ({task['repo_name']}). "
@@ -148,7 +150,13 @@ def _build_builder_brief(task: Dict[str, Any], wt_path: Path, caveman_level: str
     if len(full) <= MAX_BUILDER_BRIEF_CHARS:
         return full
     compact = f"{header}{caveman_line} {_COMPACT_HYGIENE}".strip()
-    return compact if len(compact) <= MAX_BUILDER_BRIEF_CHARS else f"{header}{_COMPACT_HYGIENE}"[:MAX_BUILDER_BRIEF_CHARS]
+    if len(compact) <= MAX_BUILDER_BRIEF_CHARS:
+        return compact
+    if caveman_line:
+        budget = MAX_BUILDER_BRIEF_CHARS - len(caveman_line) - len(_COMPACT_HYGIENE) - 2
+        if budget > 20:
+            return f"{header[:budget].rstrip()} {caveman_line} {_COMPACT_HYGIENE}".strip()
+    return f"{header}{_COMPACT_HYGIENE}"[:MAX_BUILDER_BRIEF_CHARS]
 
 
 def _compute_reviewer_topology(level: str, task_count: int, allow_pro: bool) -> Dict[str, Any]:
@@ -215,6 +223,7 @@ def prepare_wave(
         preset = load_level_preset_for_ws(eff_ws, level_override)
         eff_level = str(level_override or preset.get("level") or "standard").strip().lower()
         caveman_level = str(preset.get("caveman") or "lite").strip().lower()
+        execution_engine = str(preset.get("execution_engine") or DEFAULT_EXECUTION_ENGINE).strip().lower()
         allow_pro = eff_level != "quick" and str(preset.get("review_model") or "pro").strip().lower() == "pro"
         builder_briefs = {s["id"]: _build_builder_brief(s, Path(s["worktree_path"]), caveman_level) for s in validated_tasks}
         reviewer_topology = _compute_reviewer_topology(eff_level, len(validated_tasks), allow_pro)
@@ -222,8 +231,8 @@ def prepare_wave(
         _save_state(state_path, {
             "schema_version": WAVE_PLAN_SCHEMA_VERSION, "wave_id": wave_id, "workspace": str(eff_ws),
             "worktree_base": str(wt_base), "state_file": str(state_path), "level": eff_level,
-            "caveman": caveman_level, "allow_pro": allow_pro, "reviewer_topology": reviewer_topology,
-            "tasks": validated_tasks,
+            "execution_engine": execution_engine, "caveman": caveman_level,
+            "allow_pro": allow_pro, "reviewer_topology": reviewer_topology, "tasks": validated_tasks,
         })
     except Exception:
         for wt_path, repo_root in created_worktrees:
@@ -235,9 +244,9 @@ def prepare_wave(
 
     return {
         "wave_id": wave_id, "state_file": str(state_path), "worktree_base": str(wt_base),
-        "level": eff_level, "reviewer_topology": reviewer_topology,
+        "level": eff_level, "execution_engine": execution_engine, "reviewer_topology": reviewer_topology,
         "worktrees": {s["id"]: s["worktree_path"] for s in validated_tasks},
-        "builder_briefs": builder_briefs,
+        "builder_briefs": builder_briefs, "tasks": validated_tasks,
     }
 
 
@@ -402,7 +411,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p_diff.add_argument("--tasks", nargs="*", default=None)
     p_diff.add_argument("--json", action="store_true")
 
-    p_apply = sub.add_parser("apply", help="Applique sélectivement les patches PASS sur dev.")
+    p_apply = sub.add_parser("apply", help="Applique sélectivement les patches PASS sur la branche cible.")
     p_apply.add_argument("--state", required=True)
     p_apply.add_argument("--tasks", "--pass-ids", dest="tasks", nargs="+", required=True)
     p_apply.add_argument("--no-cleanup", action="store_true")

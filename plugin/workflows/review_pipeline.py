@@ -10,15 +10,6 @@ from typing import Any, Dict, List
 MAX_REMEDIATION_ROUNDS = 1
 MAX_PROMPT_DIFF_CHARS = 60000
 MAX_TREE_FILES = 200
-EXCLUDED_TREE_DIRS = {
-    ".git",
-    "__pycache__",
-    "node_modules",
-    ".venv",
-    "venv",
-    ".mypy_cache",
-    ".pytest_cache",
-}
 
 try:
     _WORKSPACES = WORKSPACES  # type: ignore[name-defined]
@@ -102,6 +93,7 @@ from patch_apply import (  # type: ignore[import-not-found]  # noqa: E402
     safe_append_run,
     safe_update_live,
 )
+from worktree_ops import EXCLUDED_TREE_DIRS  # type: ignore[import-not-found]  # noqa: E402
 
 
 def _collect_repo_tree(root: Path, max_files: int = MAX_TREE_FILES) -> str:
@@ -184,12 +176,8 @@ if _is_workflow_runtime():
     builder_cav = _caveman_directive("builder", caveman_level)
     reviewer_cav = _caveman_directive("reviewer", caveman_level)
 
-    builder_timeout_s = _resolve_timeout_seconds(
-        _ARGS.get("builder_timeout_s"), DEFAULT_BUILDER_TIMEOUT_S
-    )
-    reviewer_timeout_s = _resolve_timeout_seconds(
-        _ARGS.get("reviewer_timeout_s"), DEFAULT_REVIEWER_TIMEOUT_S
-    )
+    builder_timeout_s = _resolve_timeout_seconds(_ARGS.get("builder_timeout_s"), DEFAULT_BUILDER_TIMEOUT_S)
+    reviewer_timeout_s = _resolve_timeout_seconds(_ARGS.get("reviewer_timeout_s"), DEFAULT_REVIEWER_TIMEOUT_S)
 
     provided_plan = str(_ARGS.get("plan") or "").strip()
     plan_file_raw = str(_ARGS.get("plan_file") or "").strip()
@@ -215,7 +203,7 @@ if _is_workflow_runtime():
     }
     ws_tree = _collect_repo_tree(WS_ROOT)
 
-    phase("1. Contexte & Plan")
+    phase("1. Contexte & Plan")  # type: ignore[name-defined]
     if skip_separate_planner:
         if plan_file_raw and provided_plan and not str(_ARGS.get("plan") or "").strip():
             skip_msg = f"Plan lu depuis plan_file ({plan_file_raw}) : planification séparée sautée."
@@ -225,6 +213,7 @@ if _is_workflow_runtime():
             skip_msg = f"Profil {preset_profile} : planification séparée sautée."
         _safe_update_live(
             stage="workflow:building",
+            progress="0/1",
             mode=str(preset.get("mode", "evo")),
             level=preset_profile,
             preset_profile=preset_profile,
@@ -232,17 +221,14 @@ if _is_workflow_runtime():
             role_models=role_models,
             caveman=caveman_level,
             nodes={"planner": "done", "builder": "active", "reviewer": ""},
-            event={
-                "type": "PLANNER",
-                "decision": "allow",
-                "message": skip_msg,
-            },
+            event={"type": "PLANNER", "decision": "allow", "message": skip_msg},
         )
         plan = provided_plan or str(task)
-        log(skip_msg)
+        log(skip_msg)  # type: ignore[name-defined]
     else:
         _safe_update_live(
             stage="workflow:planning",
+            progress="0/1",
             mode=str(preset.get("mode", "evo")),
             level=preset_profile,
             preset_profile=preset_profile,
@@ -252,7 +238,7 @@ if _is_workflow_runtime():
             nodes={"planner": "active", "builder": "", "reviewer": ""},
             event={"type": "PLANNER", "decision": "allow", "message": f"Planification : {task[:80]}"},
         )
-        plan = await agent(
+        plan = await agent(  # type: ignore[name-defined, top-level-await]
             _with_directive(
                 (
                     f"Établis un plan d'action concis et vérifiable pour la tâche : {task}\n\n"
@@ -266,9 +252,10 @@ if _is_workflow_runtime():
             model=plan_model,
         )
 
-    phase("2. Exécution initiale (Builder multi-tour en branche isolée)")
+    phase("2. Exécution initiale (Builder multi-tour en branche isolée)")  # type: ignore[name-defined]
     _safe_update_live(
         stage="workflow:building",
+        progress="0/1",
         preset_profile=preset_profile,
         role_models=role_models,
         caveman=caveman_level,
@@ -276,12 +263,7 @@ if _is_workflow_runtime():
         event={"type": "BUILDER", "decision": "allow", "message": "Exécution initiale en branche isolée."},
     )
 
-    builder = agent(
-        role="Builder",
-        type_name="builder",
-        workspace="branch",
-        model=build_model,
-    )
+    builder = agent(role="Builder", type_name="builder", workspace="branch", model=build_model)  # type: ignore[name-defined]
 
     final_verdict = "UNKNOWN"
     remediation_count = 0
@@ -318,15 +300,16 @@ if _is_workflow_runtime():
             final_verdict = "REFUSED"
             _safe_update_live(
                 stage="workflow:refused",
+                progress="0/1",
                 preset_profile=preset_profile,
                 role_models=role_models,
                 caveman=caveman_level,
                 nodes={"planner": "done", "builder": "fail", "reviewer": ""},
                 event={"type": "BUILDER", "decision": "deny", "message": f"Tâche refusée : {build['summary']}"},
             )
-            log(f"Exécution interrompue par le Builder (refus sécurité) : {build['summary']}")
+            log(f"Exécution interrompue par le Builder (refus sécurité) : {build['summary']}")  # type: ignore[name-defined]
         elif skip_verification:
-            phase("3. Livraison directe (--no-verify / unsafe éphémère)")
+            phase("3. Livraison directe (--no-verify / unsafe éphémère)")  # type: ignore[name-defined]
             final_verdict = "UNSAFE_SKIPPED"
             diff_full = _read_worktree_patch(
                 str(build.get("workspace_path", "")),
@@ -346,6 +329,7 @@ if _is_workflow_runtime():
             )
             _safe_update_live(
                 stage="workflow:unsafe_done",
+                progress="1/1",
                 preset_profile=preset_profile,
                 role_models=role_models,
                 caveman=caveman_level,
@@ -356,13 +340,14 @@ if _is_workflow_runtime():
                     "message": "Mode --no-verify éphémère : revue indépendante et remédiations désactivées.",
                 },
             )
-            log("Mode --no-verify éphémère actif : livraison directe sans revue indépendante.")
+            log("Mode --no-verify éphémère actif : livraison directe sans revue indépendante.")  # type: ignore[name-defined]
         else:
             review = None
             for attempt in range(1, max_remediation_rounds + 2):
-                phase(f"3.{attempt} Revue indépendante (passage {attempt})")
+                phase(f"3.{attempt} Revue indépendante (passage {attempt})")  # type: ignore[name-defined]
                 _safe_update_live(
                     stage=f"workflow:review:{attempt}",
+                    progress="0/1",
                     preset_profile=preset_profile,
                     role_models=role_models,
                     caveman=caveman_level,
@@ -390,7 +375,7 @@ if _is_workflow_runtime():
                 )
                 val_summary = str(build.get("validation_summary") or "(non fourni)")
                 review = await asyncio.wait_for(
-                    agent(
+                    agent(  # type: ignore[name-defined, top-level-await]
                         _with_directive(
                             (
                                 f"Audite à froid les fichiers produits pour la tâche : {task}\n"
@@ -422,7 +407,7 @@ if _is_workflow_runtime():
                 effective_verdict = "FAIL" if has_blocking_findings else review["verdict"]
                 final_verdict = effective_verdict
 
-                log(f"Passage {attempt} -> Verdict : {effective_verdict} | {review['summary']}")
+                log(f"Passage {attempt} -> Verdict : {effective_verdict} | {review['summary']}")  # type: ignore[name-defined]
 
                 if effective_verdict == "PASS":
                     saved_patch = _safe_save_verified_patch(
@@ -437,7 +422,7 @@ if _is_workflow_runtime():
                             f'--apply --workspace "{WS_ROOT}"'
                             + (f' --worktree "{worktree_ws}"' if worktree_ws else "")
                         )
-                        log(f"Patch vérifié : {saved_patch} | Appliquer : {apply_cmd}")
+                        log(f"Patch vérifié : {saved_patch} | Appliquer : {apply_cmd}")  # type: ignore[name-defined]
                         if bool(_ARGS.get("apply_on_pass")):
                             wt_arg = Path(worktree_ws) if worktree_ws else None
                             applied = apply_verified_patch(
@@ -448,13 +433,14 @@ if _is_workflow_runtime():
                                 plugin_root=PLUGIN_ROOT,
                                 log_fn=_log_warn,
                             )
-                            log(
+                            log(  # type: ignore[name-defined]
                                 "Patch appliqué sur le workspace cible et worktree nettoyé."
                                 if applied
                                 else "[WARN] Échec application automatique du patch sur le workspace cible."
                             )
                     _safe_update_live(
                         stage="workflow:done",
+                        progress="1/1",
                         preset_profile=preset_profile,
                         role_models=role_models,
                         caveman=caveman_level,
@@ -466,6 +452,7 @@ if _is_workflow_runtime():
                 if attempt > max_remediation_rounds:
                     _safe_update_live(
                         stage="workflow:escalated",
+                        progress="0/1",
                         preset_profile=preset_profile,
                         role_models=role_models,
                         caveman=caveman_level,
@@ -476,13 +463,14 @@ if _is_workflow_runtime():
                             "message": "FAIL — Échec après remédiation maximale : escalade humaine requise.",
                         },
                     )
-                    log("Échec après épuisement des tentatives de remédiation. Escalade humaine requise.")
+                    log("Échec après épuisement des tentatives de remédiation. Escalade humaine requise.")  # type: ignore[name-defined]
                     break
 
                 remediation_count += 1
-                phase(f"4.{attempt} Remédiation ciblée")
+                phase(f"4.{attempt} Remédiation ciblée")  # type: ignore[name-defined]
                 _safe_update_live(
                     stage=f"workflow:remediation:{attempt}",
+                    progress="0/1",
                     preset_profile=preset_profile,
                     role_models=role_models,
                     caveman=caveman_level,
@@ -521,6 +509,7 @@ if _is_workflow_runtime():
                     final_verdict = "REFUSED"
                     _safe_update_live(
                         stage="workflow:refused",
+                        progress="0/1",
                         preset_profile=preset_profile,
                         role_models=role_models,
                         caveman=caveman_level,
@@ -531,13 +520,11 @@ if _is_workflow_runtime():
                             "message": f"Remédiation refusée : {build.get('summary', '')}",
                         },
                     )
-                    log(
-                        f"Remédiation interrompue par le Builder (refus sécurité) : {build.get('summary', '')}"
-                    )
+                    log(f"Remédiation interrompue par le Builder (refus sécurité) : {build.get('summary', '')}")  # type: ignore[name-defined]
                     break
 
             if review and review.get("manual_checks"):
-                log(
+                log(  # type: ignore[name-defined]
                     "Checklist [manual] pour validation humaine :\n"
                     + "\n".join(f"- [ ] {c}" for c in review["manual_checks"])
                 )
@@ -545,6 +532,7 @@ if _is_workflow_runtime():
         final_verdict = "TIMEOUT"
         _safe_update_live(
             stage="workflow:timeout",
+            progress="0/1",
             preset_profile=preset_profile,
             role_models=role_models,
             caveman=caveman_level,

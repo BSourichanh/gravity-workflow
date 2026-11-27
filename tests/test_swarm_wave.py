@@ -2,6 +2,7 @@
 """Tests unitaires pour `plugin/workflows/swarm_wave.py` (100 % stdlib)."""
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,7 @@ if WORKFLOWS_DIR not in sys.path:
     sys.path.insert(0, WORKFLOWS_DIR)
 
 import swarm_wave  # noqa: E402
+import worktree_ops  # noqa: E402
 
 
 def _init_git_repo(repo_dir: Path, files: dict, branch: str = "dev") -> None:
@@ -42,7 +44,7 @@ def _init_git_repo(repo_dir: Path, files: dict, branch: str = "dev") -> None:
 
 class TestSwarmWave(WorkflowEnvTestCase):
     def _make_wave_fixture(self, base: Path) -> tuple:
-        ws = make_gravity_workspace(base, "studio_ws")
+        ws = make_gravity_workspace(base, "atelier_ws")
         wt_base = base / "worktrees"
         repo_a = base / "repo-alpha"
         repo_b = base / "repo-beta"
@@ -88,6 +90,8 @@ class TestSwarmWave(WorkflowEnvTestCase):
             res_quick = swarm_wave.prepare_wave(
                 plan_json, workspace_root=ws, worktree_base=wt_base, level_override="quick"
             )
+            self.assertEqual(res_quick["execution_engine"], "swarm")
+            self.assertEqual(len(res_quick["tasks"]), 2)
             self.assertEqual(
                 res_quick["reviewer_topology"],
                 {"mode": "shared", "count": 1, "model": "flash", "monitor": False, "fork": False},
@@ -96,6 +100,7 @@ class TestSwarmWave(WorkflowEnvTestCase):
                 self.assertLessEqual(len(brief), 700, f"Brief trop long pour {tid}: {len(brief)}")
                 self.assertNotIn("SECRET_INLINE_MARKER", brief)
                 self.assertIn("git commit/push/tag", brief)
+                self.assertIn("[Caveman:", brief)
                 wt_dir = Path(res_quick["worktrees"][tid])
                 self.assertTrue(wt_dir.is_dir())
                 head_ref = subprocess.run(
@@ -156,6 +161,47 @@ class TestSwarmWave(WorkflowEnvTestCase):
 
             remaining = [p for p in wt_base.iterdir() if p.is_dir()] if wt_base.exists() else []
             self.assertEqual(remaining, [], f"Worktrees non nettoyés après échec: {remaining}")
+
+    def test_prepare_snap_linux_fallback_uses_non_hidden_home_worktrees(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            fake_home = base / "fake_home"
+            fake_home.mkdir()
+            ws, _, repo_a, _, _, plan_a, _ = self._make_wave_fixture(base)
+            snap_plan = {
+                "schema_version": "wave_plan_v1",
+                "wave": "w-snap",
+                "workspace": str(ws),
+                "tasks": [
+                    {
+                        "id": "task-snap",
+                        "target_project": "repo-alpha",
+                        "repo_root": str(repo_a),
+                        "expected_branch": "dev",
+                        "plan_file": str(plan_a),
+                        "code_files": ["app.py"],
+                        "status": "ready",
+                    }
+                ],
+            }
+            with mock.patch("pathlib.Path.home", return_value=fake_home), mock.patch.object(
+                worktree_ops.sys, "platform", "linux"
+            ), mock.patch.object(worktree_ops, "_is_snap_agy", return_value=True), mock.patch.dict(
+                os.environ, {}, clear=False
+            ):
+                for key in ("GRAVITY_WORKTREE_BASE", "GRAVITY_WORKFLOW_HOME", "GRAVITY_HOME"):
+                    os.environ.pop(key, None)
+                prep = swarm_wave.prepare_wave(snap_plan, workspace_root=ws)
+                try:
+                    expected_base = (fake_home / "gravity-worktrees").resolve()
+                    self.assertEqual(Path(prep["worktree_base"]), expected_base)
+                    self.assertEqual(prep["tasks"][0]["target_project"], "repo-alpha")
+                    self.assertEqual(prep["tasks"][0]["target_files"], ["app.py"])
+                    wt_dir = Path(prep["tasks"][0]["worktree_path"])
+                    self.assertEqual(wt_dir.parent, expected_base)
+                    self.assertTrue(wt_dir.is_dir())
+                finally:
+                    swarm_wave.cleanup_wave(prep["state_file"], remove_state=True)
 
     def test_diff_untracked_sanitized_patch_apply_strict_id_branch_and_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

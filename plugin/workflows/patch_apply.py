@@ -1,31 +1,32 @@
 #!/usr/bin/env python3
-"""Utilitaires de sauvegarde/application de patch vérifié et nettoyage worktree (100 % stdlib)."""
+"""Utilitaires de sauvegarde/application de patch vérifié et helpers workflow (100 % stdlib Python 3.10+)."""
 
 import argparse
 import os
-import re
-import shutil
 import subprocess
 import sys
-import time
-import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+_WF_DIR = Path(__file__).resolve().parent
+PLUGIN_ROOT = _WF_DIR.parent
+for _sub in (PLUGIN_ROOT / "observability", _WF_DIR):
+    _sub_str = str(_sub.resolve())
+    if _sub.is_dir() and _sub_str not in sys.path:
+        sys.path.insert(0, _sub_str)
+
+from worktree_ops import (  # type: ignore[import-not-found]  # noqa: E402
+    EXCLUDED_TREE_DIRS, _is_excluded_wt_path, _is_hidden_under_home,
+    _is_protected_cleanup_target, _is_snap_agy, _is_verified_linked_worktree,
+    _list_worktree_dirty_files, _log_warn, _run_git, _stage_untracked_intent,
+    cleanup_worktree_best_effort, create_repo_worktree, resolve_worktree_base,
+)
 
 MAX_PROMPT_DIFF_CHARS = 60000
 DEFAULT_BUILDER_TIMEOUT_S = 900
 DEFAULT_REVIEWER_TIMEOUT_S = 360
 MAX_CHANGED_FILES = 20
 MAX_TREE_FILES = 200
-EXCLUDED_TREE_DIRS = {
-    ".git",
-    "__pycache__",
-    "node_modules",
-    ".venv",
-    "venv",
-    ".mypy_cache",
-    ".pytest_cache",
-}
 BUILDER_HYGIENE_DIRECTIVE = (
     "Hygiène d'exécution obligatoire : "
     "pour toute commande longue via run_command, utilise WaitMsBeforeAsync=10000 et "
@@ -39,56 +40,23 @@ BUILDER_HYGIENE_DIRECTIVE = (
 BUILD_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
-        "workspace_path": {"type": "string"},
-        "modified_files": {"type": "array", "items": {"type": "string"}},
-        "git_diff": {"type": "string"},
-        "validation_summary": {"type": "string"},
-        "refused": {"type": "boolean"},
-        "summary": {"type": "string"},
+        "workspace_path": {"type": "string"}, "modified_files": {"type": "array", "items": {"type": "string"}},
+        "git_diff": {"type": "string"}, "validation_summary": {"type": "string"},
+        "refused": {"type": "boolean"}, "summary": {"type": "string"},
     },
-    "required": [
-        "workspace_path",
-        "modified_files",
-        "git_diff",
-        "validation_summary",
-        "refused",
-        "summary",
-    ],
+    "required": ["workspace_path", "modified_files", "git_diff", "validation_summary", "refused", "summary"],
 }
 REVIEW_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
-        "verdict": {"type": "string", "enum": ["PASS", "FAIL"]},
-        "comprehension_check": {"type": "string"},
-        "blockers": {"type": "array", "items": {"type": "string"}},
-        "majors": {"type": "array", "items": {"type": "string"}},
-        "uncertain": {"type": "array", "items": {"type": "string"}},
-        "nits": {"type": "array", "items": {"type": "string"}},
-        "manual_checks": {"type": "array", "items": {"type": "string"}},
-        "summary": {"type": "string"},
+        "verdict": {"type": "string", "enum": ["PASS", "FAIL"]}, "comprehension_check": {"type": "string"},
+        "blockers": {"type": "array", "items": {"type": "string"}}, "majors": {"type": "array", "items": {"type": "string"}},
+        "uncertain": {"type": "array", "items": {"type": "string"}}, "nits": {"type": "array", "items": {"type": "string"}},
+        "manual_checks": {"type": "array", "items": {"type": "string"}}, "summary": {"type": "string"},
     },
-    "required": [
-        "verdict",
-        "comprehension_check",
-        "blockers",
-        "majors",
-        "uncertain",
-        "nits",
-        "summary",
-    ],
+    "required": ["verdict", "comprehension_check", "blockers", "majors", "uncertain", "nits", "summary"],
 }
-_SLUG_RE = re.compile(r"[^a-z0-9]+")
-_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-_OBS_DIR = (PLUGIN_ROOT / "observability").resolve()
-if _OBS_DIR.is_dir() and str(_OBS_DIR) not in sys.path:
-    sys.path.insert(0, str(_OBS_DIR))
-
 WS_ROOT = Path.cwd().resolve()
-
-
-def _log_warn(message: str) -> None:
-    print(message, file=sys.stderr)
 
 
 def _is_unified_diff(text: str) -> bool:
@@ -128,331 +96,11 @@ def _safe_save_verified_patch(
             normalized += "\n"
         with patch_file.open("w", encoding="utf-8", newline="\n") as fh:
             fh.write(normalized)
-        warn(
-            f"Patch vérifié sauvegardé dans {patch_file} (worktree source : {workspace_path})."
-        )
+        warn(f"Patch vérifié sauvegardé dans {patch_file} (worktree source : {workspace_path}).")
         return patch_file
     except Exception as exc:
         warn(f"[WARN] Sauvegarde patch centralisée échouée ({type(exc).__name__}: {exc})")
         return None
-
-
-def _is_snap_agy() -> bool:
-    """Retourne True sur Linux si `agy`/`antigravity` provient d'un paquet Snap (`/snap/`)."""
-    if not sys.platform.startswith("linux"):
-        return False
-    for cmd in ("agy", "antigravity"):
-        resolved = shutil.which(cmd)
-        if not resolved:
-            continue
-        norm = resolved.replace("\\", "/")
-        if norm.startswith("/snap/") or "/snap/" in norm:
-            return True
-        try:
-            real = os.path.realpath(resolved).replace("\\", "/")
-        except OSError:
-            real = ""
-        if real.endswith("/snap") or real.startswith("/snap/"):
-            return True
-    return False
-
-
-def _is_hidden_under_home(path: Path) -> bool:
-    """Retourne True si `path` se situe sous un dossier caché (`.*`) de `Path.home()`."""
-    try:
-        home = Path.home().resolve()
-        rel = Path(path).expanduser().resolve().relative_to(home)
-    except (OSError, ValueError):
-        return False
-    return any(part.startswith(".") and part not in {".", ".."} for part in rel.parts)
-
-
-def resolve_worktree_base(worktree_base: Optional[Path] = None) -> Path:
-    """Résout le dossier racine des worktrees isolés (`worktree_base` > `GRAVITY_WORKTREE_BASE` > workflow home, repli Snap Linux `~/gravity-worktrees`)."""
-    if worktree_base is not None:
-        return Path(worktree_base).expanduser().resolve()
-    env_wt_base = os.environ.get("GRAVITY_WORKTREE_BASE", "").strip()
-    if env_wt_base:
-        return Path(env_wt_base).expanduser().resolve()
-    try:
-        from state_writer import resolve_workflow_home  # type: ignore[import-not-found]
-
-        candidate = (resolve_workflow_home() / "worktrees").resolve()
-    except Exception:
-        env_wf = os.environ.get("GRAVITY_WORKFLOW_HOME", "").strip()
-        if env_wf:
-            candidate = (Path(env_wf).expanduser().resolve() / "worktrees").resolve()
-        else:
-            env_gravity = os.environ.get("GRAVITY_HOME", "").strip()
-            if env_gravity:
-                candidate = (Path(env_gravity).expanduser().resolve() / "workflow" / "worktrees").resolve()
-            else:
-                candidate = (Path.home() / ".gemini" / "gravity" / "workflow" / "worktrees").resolve()
-    if sys.platform.startswith("linux") and _is_snap_agy() and _is_hidden_under_home(candidate):
-        return (Path.home() / "gravity-worktrees").resolve()
-    return candidate
-
-
-def _is_protected_cleanup_target(
-    wt: Path,
-    ws: Path,
-    plugin_root: Optional[Path] = None,
-) -> bool:
-    """Refuse toute suppression sur le workspace appelant, ses parents, le plugin ou un chemin protégé."""
-    if wt == ws or wt in ws.parents or ws in wt.parents:
-        return True
-    if wt == wt.parent or wt == Path.home().resolve():
-        return True
-    plugin_resolved = (plugin_root or PLUGIN_ROOT).resolve()
-    if wt == plugin_resolved or wt in plugin_resolved.parents or plugin_resolved in wt.parents:
-        return True
-    default_base = resolve_worktree_base()
-    if wt == default_base or wt in default_base.parents:
-        return True
-    low_parts = {p.lower() for p in wt.parts}
-    if ".git" in low_parts or ".agents" in low_parts or "workspaces" in low_parts:
-        return True
-    if wt.name.lower() in {"hooks", "worktrees", "workflow", "gravity", "gravity-worktrees"}:
-        return True
-    if ".gemini" in low_parts and "worktrees" not in low_parts:
-        return True
-    return False
-
-
-def _is_verified_linked_worktree(wt: Path, ws: Path) -> bool:
-    """Vérifie positivement que `wt` est un vrai git worktree lié (jamais un dossier arbitraire)."""
-    if (wt / ".git").is_dir():
-        return False
-
-    dot_git = wt / ".git"
-    if dot_git.is_file():
-        try:
-            content = dot_git.read_text(encoding="utf-8", errors="replace").strip()
-            if content.lower().startswith("gitdir:"):
-                raw_target = content.split(":", 1)[1].strip().replace("\\", "/")
-                if "/worktrees/" in raw_target or raw_target.endswith("/worktrees"):
-                    return True
-        except OSError:
-            pass
-
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(ws), "worktree", "list", "--porcelain"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            check=False,
-        )
-        if proc.returncode == 0:
-            for line in proc.stdout.splitlines():
-                if line.startswith("worktree "):
-                    cand_raw = line[len("worktree ") :].strip()
-                    if not cand_raw:
-                        continue
-                    try:
-                        cand_resolved = Path(cand_raw).expanduser().resolve()
-                    except OSError:
-                        continue
-                    if cand_resolved == wt and cand_resolved != ws:
-                        return True
-    except (OSError, subprocess.SubprocessError):
-        pass
-
-    default_base = resolve_worktree_base()
-    if wt.parent == default_base and not (wt / ".git").is_dir():
-        return True
-    return False
-
-
-def create_repo_worktree(
-    repo_root: Path,
-    worktree_base: Optional[Path] = None,
-    run_id: Optional[str] = None,
-    *,
-    ref: str = "HEAD",
-) -> Path:
-    """Crée un `git worktree --detach` dédié sous `$GRAVITY_HOME/workflow/worktrees/<repo>-<id>`."""
-    repo = Path(repo_root).expanduser().resolve()
-    if not repo.is_dir() or not (repo / ".git").exists():
-        raise ValueError(f"Dépôt Git cible introuvable : {repo}")
-
-    base_dir = resolve_worktree_base(worktree_base)
-    if base_dir == repo or repo in base_dir.parents or base_dir in repo.parents:
-        raise ValueError(f"worktree_base ne doit pas recouper le dépôt cible : {base_dir}")
-    low_base = {p.lower() for p in base_dir.parts}
-    if ".gemini" in low_base and "antigravity" in low_base and "worktrees" not in low_base:
-        raise ValueError(f"worktree_base interdit sous .gemini/antigravity hors worktrees/ : {base_dir}")
-
-    repo_slug = _SLUG_RE.sub("-", repo.name.lower()).strip("-") or "repo"
-    raw_id = str(run_id).strip() if run_id is not None else ""
-    clean_id = _ID_RE.sub("-", raw_id).strip("-.") if raw_id else f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
-    if not clean_id:
-        clean_id = uuid.uuid4().hex[:8]
-
-    wt_path = (base_dir / f"{repo_slug}-{clean_id}").resolve()
-    try:
-        wt_path.relative_to(base_dir)
-    except ValueError as exc:
-        raise ValueError(f"Chemin worktree hors de worktree_base : {wt_path}") from exc
-    if _is_protected_cleanup_target(wt_path, repo):
-        raise ValueError(f"Chemin worktree protégé refusé : {wt_path}")
-    if wt_path.exists():
-        raise FileExistsError(f"Le worktree cible existe déjà : {wt_path}")
-
-    base_dir.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(
-        ["git", "-C", str(repo), "worktree", "add", "--detach", str(wt_path), ref],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=30,
-        check=False,
-    )
-    if proc.returncode != 0 or not wt_path.is_dir():
-        if wt_path.exists():
-            shutil.rmtree(wt_path, ignore_errors=True)
-        err_msg = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
-        raise RuntimeError(f"Échec git worktree add sur {repo}: {err_msg}")
-    return wt_path
-
-
-def cleanup_worktree_best_effort(
-    worktree_path: Optional[Path],
-    caller_workspace: Path,
-    *,
-    plugin_root: Optional[Path] = None,
-    log_fn: Optional[Callable[[str], None]] = None,
-) -> bool:
-    """Nettoie best-effort un worktree Git isolé (jamais `caller_workspace` ni chemin protégé)."""
-    warn = log_fn or _log_warn
-    if worktree_path is None:
-        return False
-    try:
-        wt = Path(worktree_path).expanduser().resolve()
-        ws = Path(caller_workspace).expanduser().resolve()
-    except OSError:
-        return False
-    if _is_protected_cleanup_target(wt, ws, plugin_root=plugin_root) or not wt.exists():
-        return False
-    if not _is_verified_linked_worktree(wt, ws):
-        warn(f"[WARN] Suppression refusée hors worktree Git lié vérifié : {wt}")
-        return False
-
-    try:
-        subprocess.run(
-            ["git", "-C", str(ws), "worktree", "remove", "--force", str(wt)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=15,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        warn(f"[WARN] Nettoyage git worktree échoué ({type(exc).__name__}: {exc})")
-
-    if wt.exists():
-        shutil.rmtree(wt, ignore_errors=True)
-
-    try:
-        subprocess.run(
-            ["git", "-C", str(ws), "worktree", "prune"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return not wt.exists()
-
-
-def _is_excluded_wt_path(rel_path: str) -> bool:
-    """Retourne True si `rel_path` cible `.gravity_verified.patch` ou traverse `EXCLUDED_TREE_DIRS`."""
-    norm = str(rel_path or "").replace("\\", "/").strip("/")
-    if not norm:
-        return True
-    parts = [p for p in norm.split("/") if p and p != "."]
-    if not parts:
-        return True
-    return parts[-1] == ".gravity_verified.patch" or any(p in EXCLUDED_TREE_DIRS for p in parts)
-
-
-def _list_worktree_dirty_files(wt: Path) -> Optional[List[str]]:
-    """Liste les fichiers modifiés/non suivis d'un worktree (hors exclusions), ou None si erreur git."""
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(wt), "status", "--porcelain", "-z", "-uall"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=15,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode != 0:
-        return None
-    entries = proc.stdout.split("\0")
-    dirty: List[str] = []
-    seen = set()
-    idx = 0
-    while idx < len(entries):
-        entry = entries[idx]
-        idx += 1
-        if not entry or len(entry) < 4:
-            continue
-        xy = entry[:2]
-        rel = entry[3:] if entry[2] == " " else entry[2:].lstrip()
-        if "R" in xy or "C" in xy:
-            idx += 1
-        cleaned = _clean_diff_path(rel)
-        if not cleaned or _is_excluded_wt_path(cleaned) or cleaned in seen:
-            continue
-        seen.add(cleaned)
-        dirty.append(cleaned)
-    return dirty
-
-
-def _stage_untracked_intent(
-    raw_ws: str,
-    *,
-    log_fn: Optional[Callable[[str], None]] = None,
-) -> None:
-    """Enregistre l'intention d'ajout (`git add -N`) des fichiers untracked hors exclusions."""
-    warn = log_fn or _log_warn
-    try:
-        proc = subprocess.run(
-            ["git", "-C", raw_ws, "ls-files", "--others", "--exclude-standard", "-z"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=15,
-            check=False,
-        )
-        if proc.returncode != 0 or not proc.stdout:
-            return
-        to_stage = [p for p in proc.stdout.split("\0") if p and not _is_excluded_wt_path(p)]
-        for idx in range(0, len(to_stage), 50):
-            chunk = to_stage[idx : idx + 50]
-            subprocess.run(
-                ["git", "-C", raw_ws, "add", "-N", "--", *chunk],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=15,
-                check=False,
-            )
-    except (OSError, subprocess.SubprocessError) as exc:
-        warn(f"[WARN] Enregistrement git add -N échoué ({type(exc).__name__}: {exc})")
 
 
 def apply_verified_patch(
@@ -492,27 +140,11 @@ def apply_verified_patch(
         return False
 
     try:
-        chk = subprocess.run(
-            ["git", "-C", str(ws), "apply", "--check", str(patch_file)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-            check=False,
-        )
+        chk = _run_git(ws, ("apply", "--check", str(patch_file)), timeout=30)
         if chk.returncode != 0:
             warn(f"[WARN] git apply --check échoué : {chk.stderr.strip()}")
             return False
-        app = subprocess.run(
-            ["git", "-C", str(ws), "apply", "--whitespace=nowarn", str(patch_file)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-            check=False,
-        )
+        app = _run_git(ws, ("apply", "--whitespace=nowarn", str(patch_file)), timeout=30)
         if app.returncode != 0:
             warn(f"[WARN] git apply échoué : {app.stderr.strip()}")
             return False
@@ -564,12 +196,8 @@ def _read_worktree_patch(
         try:
             if patch_candidate.is_file():
                 raw_bytes = patch_candidate.read_bytes()
-                encoding = (
-                    "utf-16"
-                    if raw_bytes.startswith((b"\xff\xfe", b"\xfe\xff"))
-                    else "utf-8"
-                )
-                content = raw_bytes.decode(encoding, errors="replace")
+                enc = "utf-16" if raw_bytes.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8"
+                content = raw_bytes.decode(enc, errors="replace")
                 if content.strip():
                     return content
         except Exception as exc:
@@ -580,23 +208,11 @@ def _read_worktree_patch(
         return text_fallback
 
     if raw_ws and Path(raw_ws).is_dir():
-        should_stage = (
-            bool(stage_untracked)
-            if stage_untracked is not None
-            else (Path(raw_ws) / ".git").is_file()
-        )
+        should_stage = bool(stage_untracked) if stage_untracked is not None else (Path(raw_ws) / ".git").is_file()
         if should_stage:
             _stage_untracked_intent(raw_ws, log_fn=warn)
         try:
-            diff_proc = subprocess.run(
-                ["git", "-C", raw_ws, "diff"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=15,
-                check=False,
-            )
+            diff_proc = _run_git(raw_ws, ("diff",), timeout=15)
             if diff_proc.returncode == 0 and diff_proc.stdout.strip():
                 return diff_proc.stdout
         except (OSError, subprocess.SubprocessError) as exc:
@@ -669,9 +285,7 @@ def _parse_diff_git_target(line: str) -> str:
     if idx != -1:
         return _clean_diff_path(rest[idx + 1 :], prefix="b/")
     parts = rest.split()
-    if len(parts) >= 2:
-        return _clean_diff_path(parts[-1], prefix="b/")
-    return ""
+    return _clean_diff_path(parts[-1], prefix="b/") if len(parts) >= 2 else ""
 
 
 def extract_changed_files_from_diff(
@@ -877,18 +491,12 @@ def load_level_preset_for_ws(
     warn = log_fn or _log_warn
     lvl_str = str(level_override).strip().lower() if level_override else ""
     fallback: Dict[str, Any] = {
-        "plan_model": "flash",
-        "build_model": "flash",
+        "plan_model": "flash", "build_model": "flash",
         "review_model": "flash" if lvl_str == "quick" else "pro",
         "max_remediation_rounds": 0 if lvl_str == "quick" else default_remediations,
-        "level": lvl_str or "standard",
-        "mode": "evo",
-        "suggested_profile": "standard",
-        "caveman": "lite",
-        "caveman_planner": "lite",
-        "execution_engine": "swarm",
-        "skip_separate_planner": lvl_str == "quick",
-        "skip_verification": no_verify,
+        "level": lvl_str or "standard", "mode": "evo", "suggested_profile": "standard",
+        "caveman": "lite", "caveman_planner": "lite", "execution_engine": "swarm",
+        "skip_separate_planner": lvl_str == "quick", "skip_verification": no_verify,
     }
     try:
         from profile_engine import get_active_preset  # type: ignore[import-not-found]
@@ -909,34 +517,11 @@ def load_level_preset_for_ws(
 
 def _cli_main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Outils CLI patch Gravity Workflow.")
-    parser.add_argument(
-        "--apply",
-        action="store_true",
-        help="Vérifie et applique `last_verified.patch` sur `--workspace`.",
-    )
-    parser.add_argument(
-        "--workspace",
-        type=Path,
-        default=Path.cwd(),
-        help="Racine du dépôt cible (défaut: répertoire courant).",
-    )
-    parser.add_argument(
-        "--patch",
-        type=Path,
-        default=None,
-        help="Chemin explicite du patch unifié (défaut: last_verified.patch centralisé).",
-    )
-    parser.add_argument(
-        "--worktree",
-        type=Path,
-        default=None,
-        help="Chemin du worktree isolé à nettoyer best-effort après application.",
-    )
-    parser.add_argument(
-        "--no-cleanup",
-        action="store_true",
-        help="Conserve le worktree après application du patch.",
-    )
+    parser.add_argument("--apply", action="store_true", help="Vérifie et applique `last_verified.patch` sur `--workspace`.")
+    parser.add_argument("--workspace", type=Path, default=Path.cwd(), help="Racine du dépôt cible (défaut: répertoire courant).")
+    parser.add_argument("--patch", type=Path, default=None, help="Chemin explicite du patch unifié (défaut: last_verified.patch centralisé).")
+    parser.add_argument("--worktree", type=Path, default=None, help="Chemin du worktree isolé à nettoyer best-effort après application.")
+    parser.add_argument("--no-cleanup", action="store_true", help="Conserve le worktree après application du patch.")
     parsed = parser.parse_args(argv)
     if not parsed.apply:
         parser.print_help()

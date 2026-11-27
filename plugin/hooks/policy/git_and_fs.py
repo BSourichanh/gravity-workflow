@@ -553,26 +553,25 @@ def _segment_targets_harness(
                 is_sed_inplace = True
                 break
 
-    cmd_writes_or_execs = (
+    writes_or_execs = (
         head in HARNESS_WRITE_OR_EXEC_HEADS
         or _is_python_head(head)
         or is_sed_inplace
+        or _has_unquoted_redirection(seg)
     )
-    has_redir = _has_unquoted_redirection(seg)
-    if not cmd_writes_or_execs and not has_redir:
+    if not writes_or_execs:
         return False
 
+    inline_spec = _extract_inline_spec(head, rich_args)
     raw_candidates: List[str] = list(_extract_redirection_targets(seg))
-    if cmd_writes_or_execs:
-        inline_spec = _extract_inline_spec(head, rich_args)
-        if inline_spec is not None:
-            _, payload_indices, _ = inline_spec
-            for idx, tok in enumerate(args):
-                if idx not in payload_indices:
-                    raw_candidates.append(tok)
-        else:
-            raw_candidates.extend(_tokenize_shell_segment(seg))
-            raw_candidates.extend(PATH_TOKEN_RE.findall(seg))
+    if inline_spec is not None:
+        _, payload_indices, _ = inline_spec
+        for idx, tok in enumerate(args):
+            if idx not in payload_indices:
+                raw_candidates.append(tok)
+    else:
+        raw_candidates.extend(_tokenize_shell_segment(seg))
+        raw_candidates.extend(PATH_TOKEN_RE.findall(seg))
 
     candidates: List[str] = []
     seen: Set[str] = set()

@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Tests unitaires de segmentation shell, anti-faux-positifs, Git/curl/find et anti-contournement."""
 
+import ast
 import base64
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -327,6 +331,44 @@ class TestSafetyShell(unittest.TestCase):
             assert reason_find is not None
             self.assertNotEqual(reason_find, "deny")
             self.assertIn("find", reason_find)
+
+    def test_safety_policy_and_evaluator_shared_runtime_acyclic_imports(self) -> None:
+        eval_src = (PLUGIN_ROOT / "hooks/policy/evaluator.py").read_text(encoding="utf-8")
+        tree = ast.parse(eval_src)
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    self.assertNotEqual(alias.name, "safety_policy")
+                    self.assertNotEqual(alias.name, "hook_runtime")
+            elif isinstance(node, ast.ImportFrom):
+                self.assertNotEqual(node.module, "safety_policy")
+                self.assertNotEqual(node.module, "hook_runtime")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "ws_env_resolve"
+            ws.mkdir()
+            env = dict(os.environ)
+            env["GRAVITY_WORKFLOW_WORKSPACE"] = str(ws)
+            probe = (
+                f"import sys; sys.path.insert(0, {str(PLUGIN_ROOT)!r}); "
+                f"sys.path.insert(0, {str(PLUGIN_ROOT / 'hooks')!r}); "
+                "import safety_policy; from policy import evaluator; "
+                "assert 'hook_runtime' not in sys.modules; "
+                "assert 'hooks.hook_runtime' not in sys.modules; "
+                "assert '_shared.hook_runtime' in sys.modules; "
+                "print(str(safety_policy.resolve_workspace_root({}, safety_policy.__file__)))"
+            )
+            proc = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", probe],
+                text=True,
+                capture_output=True,
+                env=env,
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(Path(proc.stdout.strip()), ws)
+            self.assertEqual(safety_policy.first_str_arg({"CommandLine": "  git status  "}, ("cmd", "CommandLine")), "git status")
 
 
 if __name__ == "__main__":
