@@ -56,6 +56,6 @@ Dans le projet cible (modèles sous [`workspace-template/.agents/rules/`](../wor
   - `AGENTS.md` (workspace et racine dépôt) : `<= 2 500` octets UTF-8 sans BOM, fins de ligne LF uniquement.
   - `01-safety-boundaries.md` : `trigger: always_on`, taille `<= 2 048` octets (après expansion `@[label](path)`).
   - `05-git-versioning.md` : `trigger: model_decision` (hors budget `always_on`), conventions Git & versioning réservées au chef d'orchestre uniquement (jamais aux sous-agents ni workers `swarm`), déployée automatiquement par `/gravity-workflow` si absente.
-  - `06-engineering-principles.md` : `trigger: model_decision` (`0` token `always_on`), critères KISS, YAGNI, DRY, SOLID et CUPID déployés en `quickstart` et `full`.
+  - `06-engineering-principles.md` : `trigger: model_decision` (`0` token `always_on`), critères KISS, YAGNI, DRY, SOLID, CUPID et repères pragmatiques Hexagonal/DDD (domaine isolé, ports/adapteurs, proportionnalité KISS/YAGNI) déployés en `quickstart` et `full`.
   - Chaque fichier de règle : `<= 24 000` octets.
   - Budget actif agrégé (`AGENTS.md` + `GEMINI.md` + règles `always_on`) : `< 20 000` tokens estimés (`defaultRulesBudget`), préservant un préfixe statique pour le Context Caching Gemini.
