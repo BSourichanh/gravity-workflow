@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`TASK-UX-02` — Declare `SPI-2` `capture_policy` in `plugin/config/module.json` (`plugin/config/module.json`, `tests/test_module_contract.py`):**
+  - Added `capture_policy` (`commands: ["/gravity-workflow"]`, `exclude_subcommands: ["status", "evals", "init", "help"]`, `consultative_bypass: true`, `label_prefix: "workflow"`) while keeping all existing `module.json` v1 fields intact, with unit contract coverage in `tests/test_module_contract.py`.
+
 ## [0.5.0] - 2026-11-27
 
 ### Fixed

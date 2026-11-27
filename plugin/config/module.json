@@ -37,5 +37,18 @@
     "consumes": [
       "session-metrics"
     ]
+  },
+  "capture_policy": {
+    "commands": [
+      "/gravity-workflow"
+    ],
+    "exclude_subcommands": [
+      "status",
+      "evals",
+      "init",
+      "help"
+    ],
+    "consultative_bypass": true,
+    "label_prefix": "workflow"
   }
 }
