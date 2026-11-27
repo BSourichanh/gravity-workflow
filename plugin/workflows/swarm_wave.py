@@ -30,11 +30,12 @@ def _resolve_plugin_root() -> Path:
 
 
 PLUGIN_ROOT = _resolve_plugin_root()
-for _sub in ("observability", "workflows"):
-    _sub_dir = (PLUGIN_ROOT / _sub).resolve()
+for _sub in (PLUGIN_ROOT, PLUGIN_ROOT / "observability", PLUGIN_ROOT / "workflows"):
+    _sub_dir = _sub.resolve()
     if _sub_dir.is_dir() and str(_sub_dir) not in sys.path:
         sys.path.insert(0, str(_sub_dir))
 
+from _shared.atomic_io import write_json_atomic, write_text_atomic  # type: ignore[import-not-found]  # noqa: E402
 from patch_apply import (  # type: ignore[import-not-found]  # noqa: E402
     BUILDER_HYGIENE_DIRECTIVE, MAX_TREE_FILES, _read_worktree_patch,
     _safe_save_verified_patch, apply_verified_patch, caveman_directive,
@@ -169,8 +170,7 @@ def _compute_reviewer_topology(level: str, task_count: int, allow_pro: bool) -> 
 
 
 def _save_state(state_path: Path, state: Dict[str, Any]) -> None:
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+    write_json_atomic(state_path, state, indent=2, ensure_ascii=False)
 
 
 def _load_state(state_file: Any) -> Tuple[Path, Dict[str, Any]]:
@@ -299,7 +299,7 @@ def extract_wave_diffs(state_file: Any, *, task_ids: Optional[Sequence[str]] = N
         normalized = diff_text.replace("\r\n", "\n").replace("\r", "\n")
         if normalized and not normalized.endswith("\n"):
             normalized += "\n"
-        patch_file.write_text(normalized, encoding="utf-8", newline="\n")
+        write_text_atomic(patch_file, normalized)
         if normalized.strip():
             _safe_save_verified_patch(normalized, str(wt_path), Path(task["repo_root"]))
 

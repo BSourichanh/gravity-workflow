@@ -179,7 +179,7 @@ class TestDashboardProviderSPI1(unittest.TestCase):
     def test_module_contract_declares_spi1_dashboard_and_session_metrics_consume(self) -> None:
         mod = json.loads((PLUGIN_ROOT / "config" / "module.json").read_text(encoding="utf-8"))
         self.assertEqual(mod["dashboard"]["provider_script"], "scripts/dashboard_provider.py")
-        self.assertEqual(mod["dashboard"]["views"], ["workflow"])
+        self.assertEqual(mod["dashboard"]["views"], ["workflow", "health"])
         self.assertEqual(mod["dashboard"]["actions"], [])
         self.assertIn("session-metrics", mod["signals"]["consumes"])
         self.assertTrue(self._provider.is_file())
@@ -250,6 +250,70 @@ class TestDashboardProviderSPI1(unittest.TestCase):
         )
         self.assertEqual(via_stdin["signature"], data["signature"])
         self.assertEqual(via_stdin["runs"]["count"], 1)
+
+    def test_health_view_ok_and_strict_read_only(self) -> None:
+        empty_health = self._run_provider(["--view", "health", "--json"])
+        self.assertTrue(empty_health["ok"])
+        self.assertEqual(empty_health["status"], "OK")
+        self.assertEqual(empty_health["warnings"], [])
+        self.assertIn("hooks.json OK", empty_health["summary"])
+        self.assertFalse(self._wf_home.exists())
+
+        ws = self._base / "health-repo"
+        ws.mkdir()
+        profile_engine.update_profile_settings(ws, raw_mode="standard", reason="health check")
+        state_writer.update_live_state(stage="testing", progress="1/1", workspace_root=ws)
+        state_writer.append_run_log(ws, {"timestamp": "2026-11-27T10:00:00Z", "event": "Stop"})
+
+        pop_health = self._run_provider(["--view", "health", "--json"])
+        self.assertTrue(pop_health["ok"])
+        self.assertEqual(pop_health["status"], "OK")
+        self.assertEqual(pop_health["warnings"], [])
+        self.assertIn("1 live state(s)", pop_health["summary"])
+
+    def test_health_view_warns_on_corrupted_files_symlinks_and_missing_hooks(self) -> None:
+        import dashboard_provider  # noqa: E402
+
+        ws = self._base / "broken-repo"
+        ws.mkdir()
+        state_writer.update_live_state(stage="testing", progress="0/1", workspace_root=ws)
+        storage_dir = state_writer.resolve_state_path(workspace_root=ws).parent
+        (storage_dir / "runs.jsonl").write_text('{"ok": true}\n{corrupted\n', encoding="utf-8")
+        (storage_dir / "profile.json").write_text("{not-json", encoding="utf-8")
+        target_secret = self._base / "secret.json"
+        target_secret.write_text("{}", encoding="utf-8")
+        live_file = storage_dir / "live_state.json"
+        live_file.unlink()
+        try:
+            os.symlink(target_secret, live_file)
+            symlink_created = True
+        except OSError:
+            symlink_created = False
+
+        res = self._run_provider(["--view", "health", "--json"])
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["status"], "WARN")
+        joined = "\n".join(res["warnings"])
+        self.assertIn("runs.jsonl", joined)
+        self.assertIn("profile.json", joined)
+        if symlink_created:
+            self.assertIn("symlink", joined.lower())
+
+        fake_plugin = self._base / "fake_plugin"
+        fake_plugin.mkdir()
+        (fake_plugin / "hooks.json").write_text(
+            json.dumps({
+                "bad-hook": {
+                    "enabled": True,
+                    "PreToolUse": [{"matcher": "bash", "hooks": [{"type": "command", "command": "python3 hooks/missing_hook.py"}]}],
+                }
+            }),
+            encoding="utf-8",
+        )
+        hook_res = dashboard_provider.get_health_view(workflow_home=self._wf_home, plugin_root=fake_plugin)
+        self.assertTrue(hook_res["ok"])
+        self.assertEqual(hook_res["status"], "WARN")
+        self.assertTrue(any("missing_hook.py" in w for w in hook_res["warnings"]))
 
 
 if __name__ == "__main__":

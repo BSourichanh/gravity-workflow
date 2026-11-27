@@ -805,6 +805,136 @@ class TestWaveRunnerAndWatchdogs(WorkflowEnvTestCase):
                         )
             self.assertEqual(agent_calls, [])
 
+    def test_check_expected_branch_fail_closed_and_branch_drift_before_apply(self) -> None:
+        wr_path = PLUGIN_ROOT / "workflows" / "wave_runner.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ws = base / "ws"
+            ws.mkdir()
+            wt_base = base / "wt_base"
+            repo = base / "repo"
+            _init_git_repo(repo, {"app.py": "v0\n"}, branch="dev")
+            non_git = base / "non_git"
+            non_git.mkdir()
+
+            ns_mod, _, _ = _exec_workflow(
+                wr_path,
+                workspaces=[ws],
+                args_dict={"plugin_root": str(PLUGIN_ROOT), "tasks": []},
+                fake_agent=lambda *_a, **_kw: None,
+            )
+            check_expected_branch = ns_mod["_check_expected_branch"]
+
+            # 1. Fail-closed on non-git error, subprocess exception, and detached HEAD
+            err_git = check_expected_branch(non_git, "dev")
+            self.assertIsNotNone(err_git)
+            with mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired(["git"], 10)):
+                err_sub = check_expected_branch(repo, "dev")
+                self.assertIsNotNone(err_sub)
+                self.assertIn("TimeoutExpired", err_sub or "")
+
+            subprocess.run(["git", "-C", str(repo), "checkout", "-q", "--detach"], check=True)
+            err_det = check_expected_branch(repo, "dev")
+            self.assertIsNotNone(err_det)
+            self.assertIn("HEAD detached", err_det or "")
+            subprocess.run(["git", "-C", str(repo), "checkout", "-q", "dev"], check=True)
+
+            # 2. Branch drift before apply in both PASS and skip_verification branches -> APPLY_FAILED
+            class _DriftingBuilder:
+                async def __call__(self, prompt, _schema):
+                    marker = "Travaille EXCLUSIVEMENT dans le worktree isolé `"
+                    wt_dir = Path(prompt.split(marker, 1)[1].split("`", 1)[0])
+                    (wt_dir / "app.py").write_text("v1\n", encoding="utf-8", newline="\n")
+                    subprocess.run(["git", "-C", str(wt_dir), "add", "-N", "."], check=True, capture_output=True)
+                    subprocess.run(
+                        [
+                            "git", "-C", str(wt_dir), "diff",
+                            f"--output={wt_dir / '.gravity_verified.patch'}", "--", ".", ":(exclude).gravity_verified.patch",
+                        ],
+                        check=True,
+                        capture_output=True,
+                    )
+                    # Simulate external branch drift on target repo before apply
+                    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-B", "drifted"], check=True)
+                    return {
+                        "workspace_path": str(wt_dir),
+                        "modified_files": ["app.py"],
+                        "git_diff": "",
+                        "validation_summary": "ok",
+                        "refused": False,
+                        "summary": "Built",
+                    }
+
+            def fake_agent(*_a, **kw):
+                role = kw.get("role", "")
+                if role.startswith("Builder"):
+                    return _DriftingBuilder()
+
+                async def _rev():
+                    return {
+                        "verdict": "PASS",
+                        "comprehension_check": "OK",
+                        "blockers": [],
+                        "majors": [],
+                        "uncertain": [],
+                        "nits": [],
+                        "manual_checks": [],
+                        "summary": "PASS",
+                    }
+
+                return _rev()
+
+            for no_verify in (False, True):
+                subprocess.run(["git", "-C", str(repo), "checkout", "-q", "dev"], check=True)
+                ns, _, _ = _exec_workflow(
+                    wr_path,
+                    workspaces=[ws],
+                    args_dict={
+                        "plugin_root": str(PLUGIN_ROOT),
+                        "tasks": [{
+                            "id": f"drift-{no_verify}",
+                            "repo_root": str(repo),
+                            "expected_branch": "dev",
+                            "profile": "quick",
+                            "plan": "# Drift test\nUpdate app.py\n",
+                            "no_verify": no_verify,
+                        }],
+                        "apply_on_pass": True,
+                        "worktree_base": str(wt_base),
+                    },
+                    fake_agent=fake_agent,
+                )
+                res = ns["WAVE_RESULTS"][0]
+                self.assertEqual(res["status"], "APPLY_FAILED")
+                self.assertFalse(res["applied"])
+                self.assertIn("drifted", res["summary"])
+                self.assertEqual((repo / "app.py").read_text(encoding="utf-8"), "v0\n")
+
+    def test_safe_save_verified_patch_atomic_and_anti_symlink(self) -> None:
+        sample_diff = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-v0\n+v1\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ws = base / "repo"
+            ws.mkdir()
+            saved = patch_apply._safe_save_verified_patch(sample_diff.replace("\n", "\r\n"), str(ws), workspace_root=ws)
+            self.assertIsNotNone(saved)
+            assert saved is not None
+            self.assertEqual(saved.read_bytes(), sample_diff.encode("utf-8"))
+            self.assertEqual(list(saved.parent.glob("*.tmp")), [])
+
+            target = base / "outside.txt"
+            target.write_text("KEEP", encoding="utf-8")
+            saved.unlink()
+            try:
+                os.symlink(target, saved)
+            except OSError:
+                return
+            warns: list[str] = []
+            res = patch_apply._safe_save_verified_patch(sample_diff, str(ws), workspace_root=ws, log_fn=warns.append)
+            self.assertIsNone(res)
+            self.assertEqual(target.read_text(encoding="utf-8"), "KEEP")
+            self.assertTrue(any("symlink" in w.lower() or "échouée" in w.lower() for w in warns))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

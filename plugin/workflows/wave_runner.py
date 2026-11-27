@@ -92,7 +92,7 @@ from patch_apply import (  # type: ignore[import-not-found]  # noqa: E402
     safe_append_run, safe_update_live,
 )
 from worktree_ops import (  # type: ignore[import-not-found]  # noqa: E402
-    cleanup_worktree_best_effort, create_repo_worktree, resolve_worktree_base,
+    _run_git, cleanup_worktree_best_effort, create_repo_worktree, resolve_worktree_base,
 )
 
 
@@ -240,16 +240,15 @@ def _check_expected_branch(repo_root: Path, expected_branch: str) -> Optional[st
     if not expected_branch:
         return None
     try:
-        proc = subprocess.run(
-            ["git", "-C", str(repo_root), "branch", "--show-current"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, check=False,
-        )
-        if proc.returncode == 0:
-            current = proc.stdout.strip()
-            if current and current != expected_branch:
-                return f"Branche attendue '{expected_branch}', courante '{current}'."
-    except (OSError, subprocess.SubprocessError):
-        pass
+        proc = _run_git(repo_root, ("branch", "--show-current"), timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"Vérification branche impossible sur {repo_root}: {type(exc).__name__}: {exc}"
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+        return f"Vérification branche impossible sur {repo_root}: {detail}"
+    current = proc.stdout.strip()
+    if not current or current != expected_branch:
+        return f"Branche attendue '{expected_branch}', courante '{current or 'HEAD detached'}'."
     return None
 
 
@@ -344,9 +343,14 @@ async def _execute_in_worktree(
         if skip_verification:
             saved = _safe_save_verified_patch(diff_full, worktree_ws, workspace_root=repo_root, log_fn=_log_warn)
             if apply_on_pass and saved is not None:
+                branch_err = _check_expected_branch(repo_root, spec["expected_branch"])
+                if branch_err:
+                    return "APPLY_FAILED", False, 0, False, changed_files, branch_err
                 applied = apply_verified_patch(
                     repo_root, saved, worktree_path=wt_path, cleanup_worktree=True, plugin_root=PLUGIN_ROOT, log_fn=_log_warn
                 )
+                if not applied:
+                    return "APPLY_FAILED", False, 0, False, changed_files, "UNSAFE_SKIPPED mais échec git apply sur la branche cible."
             return "UNSAFE_SKIPPED", applied, 0, False, changed_files, str(build.get("summary") or "Livré sans revue (--no-verify)")
 
         for attempt in range(1, max_remediations + 2):
@@ -383,12 +387,18 @@ async def _execute_in_worktree(
                 final_status = "PASS"
                 saved = _safe_save_verified_patch(diff_full, worktree_ws, workspace_root=repo_root, log_fn=_log_warn)
                 if apply_on_pass and saved is not None:
-                    applied = apply_verified_patch(
-                        repo_root, saved, worktree_path=wt_path, cleanup_worktree=True, plugin_root=PLUGIN_ROOT, log_fn=_log_warn
-                    )
-                    if not applied:
+                    branch_err = _check_expected_branch(repo_root, spec["expected_branch"])
+                    if branch_err:
                         final_status = "APPLY_FAILED"
-                        summary_text = "PASS mais échec git apply sur la branche cible."
+                        applied = False
+                        summary_text = branch_err
+                    else:
+                        applied = apply_verified_patch(
+                            repo_root, saved, worktree_path=wt_path, cleanup_worktree=True, plugin_root=PLUGIN_ROOT, log_fn=_log_warn
+                        )
+                        if not applied:
+                            final_status = "APPLY_FAILED"
+                            summary_text = "PASS mais échec git apply sur la branche cible."
                 break
             if attempt > max_remediations:
                 final_status = "FAIL"

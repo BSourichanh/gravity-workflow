@@ -280,6 +280,37 @@ class TestSwarmWave(WorkflowEnvTestCase):
             self.assertFalse(c2["already_missing"])
             self.assertTrue(c3["already_missing"])
 
+    def test_atomic_io_rejects_symlinks_for_state_and_extracted_patches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ws, wt_base, _, _, plan_json, _, _ = self._make_wave_fixture(base)
+            target = base / "protected.txt"
+            target.write_text("UNTOUCHED", encoding="utf-8")
+
+            # 1. _save_state refuses symlink target
+            sym_state = base / "sym_state.json"
+            try:
+                os.symlink(target, sym_state)
+            except OSError:
+                return
+            with self.assertRaises(ValueError):
+                swarm_wave._save_state(sym_state, {"tasks": []})
+            self.assertEqual(target.read_text(encoding="utf-8"), "UNTOUCHED")
+
+            # 2. extract_wave_diffs refuses symlinked .patch file
+            prep = swarm_wave.prepare_wave(plan_json, workspace_root=ws, worktree_base=wt_base)
+            try:
+                wt_a = Path(prep["worktrees"]["task-alpha"])
+                (wt_a / "app.py").write_text("print('updated')\n", encoding="utf-8", newline="\n")
+                patches_dir = Path(prep["state_file"]).parent / "swarm-wave-w4-test-patches"
+                patches_dir.mkdir(parents=True, exist_ok=True)
+                os.symlink(target, patches_dir / "task-alpha.patch")
+                with self.assertRaises(ValueError):
+                    swarm_wave.extract_wave_diffs(prep["state_file"], task_ids=["task-alpha"])
+                self.assertEqual(target.read_text(encoding="utf-8"), "UNTOUCHED")
+            finally:
+                swarm_wave.cleanup_wave(prep["state_file"], remove_state=True)
+
 
 if __name__ == "__main__":
     unittest.main()

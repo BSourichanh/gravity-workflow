@@ -10,11 +10,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 _WF_DIR = Path(__file__).resolve().parent
 PLUGIN_ROOT = _WF_DIR.parent
-for _sub in (PLUGIN_ROOT / "observability", _WF_DIR):
+for _sub in (PLUGIN_ROOT, PLUGIN_ROOT / "observability", _WF_DIR):
     _sub_str = str(_sub.resolve())
     if _sub.is_dir() and _sub_str not in sys.path:
         sys.path.insert(0, _sub_str)
 
+from _shared.atomic_io import write_text_atomic  # type: ignore[import-not-found]  # noqa: E402
 from worktree_ops import (  # type: ignore[import-not-found]  # noqa: E402
     EXCLUDED_TREE_DIRS, _is_excluded_wt_path, _is_hidden_under_home,
     _is_protected_cleanup_target, _is_snap_agy, _is_verified_linked_worktree,
@@ -90,12 +91,10 @@ def _safe_save_verified_patch(
         from state_writer import resolve_patch_path  # type: ignore[import-not-found]
 
         patch_file = resolve_patch_path(target_ws)
-        patch_file.parent.mkdir(parents=True, exist_ok=True)
         normalized = diff_full.replace("\r\n", "\n").replace("\r", "\n")
         if not normalized.endswith("\n"):
             normalized += "\n"
-        with patch_file.open("w", encoding="utf-8", newline="\n") as fh:
-            fh.write(normalized)
+        write_text_atomic(patch_file, normalized)
         warn(f"Patch vérifié sauvegardé dans {patch_file} (worktree source : {workspace_path}).")
         return patch_file
     except Exception as exc:

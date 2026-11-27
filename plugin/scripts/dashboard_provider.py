@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 from typing import Any, Optional, Sequence
 
@@ -19,7 +20,11 @@ for _p in (str(PLUGIN_ROOT), str(PLUGIN_ROOT / "observability")):
         sys.path.insert(0, _p)
 
 from _shared.hook_runtime import configure_utf8_stdio, read_stdin_text  # noqa: E402
-from _shared.path_safety import is_symlink_or_junction, safe_home_dir  # noqa: E402
+from _shared.path_safety import (  # noqa: E402
+    ensure_no_symlink_or_junction_under,
+    is_symlink_or_junction,
+    safe_home_dir,
+)
 
 try:
     import metrics_signals as _metrics_signals  # type: ignore[import-not-found]
@@ -259,6 +264,8 @@ def _read_runs_summary_ro(runs_file: Optional[Path], warnings: list[str]) -> dic
             continue
         if isinstance(obj, dict):
             entries.append(obj)
+        else:
+            warnings.append(f"Ignored non-object JSONL line {idx} in runs.jsonl.")
     return {"count": len(entries), "latest": entries[-1] if entries else None, "recent": entries[-MAX_RECENT_RUNS:], "runs_path": str(runs_file)}
 
 
@@ -385,6 +392,139 @@ def get_workflow_view(
     return _enforce_payload_budget(payload)
 
 
+def _extract_hook_script_rel(command: str) -> str:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return ""
+    if not tokens:
+        return ""
+    exe_stem = Path(tokens[0]).stem.lower()
+    if exe_stem.startswith("python") or exe_stem == "py":
+        for tok in tokens[1:]:
+            if tok in ("-m", "-c"):
+                return ""
+            if not tok.startswith("-"):
+                return tok
+        return ""
+    return tokens[0]
+
+
+def _check_hooks_health_ro(plugin_root: Path, warnings: list[str]) -> None:
+    if is_symlink_or_junction(plugin_root):
+        warnings.append(f"Refused symlink or junction plugin_root: {plugin_root}.")
+        return
+    hooks_path = plugin_root / "hooks.json"
+    if is_symlink_or_junction(hooks_path) or not hooks_path.is_file():
+        warnings.append(f"Missing or symlinked hooks.json: {hooks_path}.")
+        return
+    hooks_data = _read_json_ro(hooks_path, warnings)
+    if hooks_data is None:
+        return
+    if not isinstance(hooks_data, dict):
+        warnings.append("Invalid structure in hooks.json: expected JSON object.")
+        return
+    for hook_name, cfg in hooks_data.items():
+        if not isinstance(cfg, dict):
+            continue
+        for ev_key, matchers in cfg.items():
+            if ev_key == "enabled" or not isinstance(matchers, list):
+                continue
+            for matcher_block in matchers:
+                if not isinstance(matcher_block, dict):
+                    continue
+                hook_list = matcher_block.get("hooks")
+                if not isinstance(hook_list, list):
+                    continue
+                for hook_item in hook_list:
+                    if not isinstance(hook_item, dict):
+                        continue
+                    cmd = hook_item.get("command")
+                    if not isinstance(cmd, str) or not cmd.strip():
+                        warnings.append(f"Empty hook command in hooks.json ({hook_name}/{ev_key}).")
+                        continue
+                    rel_script = _extract_hook_script_rel(cmd)
+                    if not rel_script:
+                        warnings.append(f"Unparseable hook command in hooks.json ({hook_name}/{ev_key}): {cmd!r}.")
+                        continue
+                    script_cand = plugin_root / rel_script
+                    try:
+                        resolved_script = ensure_no_symlink_or_junction_under(plugin_root, script_cand)
+                    except (OSError, ValueError):
+                        warnings.append(f"Unsafe or symlinked hook script in hooks.json ({hook_name}): {rel_script}.")
+                        continue
+                    if not resolved_script.is_file():
+                        warnings.append(f"Missing hook script referenced in hooks.json ({hook_name}): {rel_script}.")
+
+
+def _check_json_object_ro(path: Path, label: str, warnings: list[str]) -> bool:
+    if is_symlink_or_junction(path):
+        warnings.append(f"Ignored symlink or junction {label}: {path.name}.")
+        return False
+    if not path.is_file():
+        return False
+    data = _read_json_ro(path, warnings)
+    if isinstance(data, dict):
+        return True
+    if data is not None:
+        warnings.append(f"Invalid structure in {label}: expected JSON object.")
+    return False
+
+
+def get_health_view(
+    *,
+    gravity_home: Optional[Path] = None,
+    workflow_home: Optional[Path] = None,
+    registry_path: Optional[Path] = None,
+    plugin_root: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Return read-only SPI-1 health report for Gravity Workflow hooks and runtime state."""
+    eff_plugin_root = Path(plugin_root).expanduser().resolve() if plugin_root is not None else PLUGIN_ROOT
+    eff_gravity = _resolve_gravity_home_opt(gravity_home)
+    wf_home = _resolve_workflow_home(gravity_home=eff_gravity, workflow_home=workflow_home)
+    reg_file = _resolve_registry_path(wf_home, registry_path=registry_path)
+    warnings: list[str] = []
+
+    _check_hooks_health_ro(eff_plugin_root, warnings)
+
+    live_count = 0
+    if is_symlink_or_junction(wf_home):
+        warnings.append(f"Refused symlink or junction workflow_home: {wf_home}.")
+    elif wf_home.is_dir():
+        if is_symlink_or_junction(reg_file.parent) or is_symlink_or_junction(reg_file):
+            warnings.append(f"Ignored symlink or junction live_workspaces.json: {reg_file}.")
+        elif reg_file.is_file():
+            reg_data = _read_json_ro(reg_file, warnings)
+            if reg_data is not None and (not isinstance(reg_data, dict) or not isinstance(reg_data.get("workspaces"), list)):
+                warnings.append("Invalid structure in live_workspaces.json: expected JSON object with 'workspaces' list.")
+
+        ws_dir = wf_home / "workspaces"
+        if is_symlink_or_junction(ws_dir):
+            warnings.append(f"Ignored symlink or junction workspaces directory: {ws_dir}.")
+        elif ws_dir.is_dir():
+            try:
+                subdirs = sorted(ws_dir.iterdir(), key=lambda p: p.name)
+            except OSError as exc:
+                warnings.append(f"Failed to scan workspaces directory: {exc}")
+                subdirs = []
+            for sub in subdirs:
+                if is_symlink_or_junction(sub):
+                    warnings.append(f"Ignored symlink or junction workspace directory: {sub.name}.")
+                    continue
+                if not sub.is_dir():
+                    continue
+                if _check_json_object_ro(sub / "live_state.json", f"{sub.name}/live_state.json", warnings):
+                    live_count += 1
+                runs_file = sub / "runs.jsonl"
+                if is_symlink_or_junction(runs_file) or runs_file.is_file():
+                    _read_runs_summary_ro(runs_file, warnings)
+                _check_json_object_ro(sub / "profile.json", f"{sub.name}/profile.json", warnings)
+
+    status = "WARN" if warnings else "OK"
+    summary = f"{len(warnings)} warning(s)" if warnings else f"hooks.json OK · {live_count} live state(s)"
+    return {"ok": True, "status": status, "summary": summary, "warnings": warnings}
+
+
 def _read_request_payload() -> tuple[dict[str, Any], dict[str, Any]]:
     if not (raw := read_stdin_text(timeout_s=0.5)):
         return {}, {}
@@ -418,17 +558,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if args.action:
         out: dict[str, Any] = {"ok": False, "action": args.action, "error": f"Unsupported action for module 'workflow': {args.action}"}
-    elif args.view not in ("workflow", ""):
+    elif args.view not in ("workflow", "health", ""):
         out = {"changed": True, "unchanged": False, "available": False, "error": f"Unknown view for module 'workflow': {args.view!r}", "warnings": [f"Unknown view: {args.view!r}"]}
     else:
         params, ctx = _read_request_payload()
-        out = get_workflow_view(
-            ws=args.workspace or str(params.get("ws") or params.get("workspace") or ctx.get("ws") or ""),
-            since_signature=args.since_signature or str(params.get("since_signature") or ""),
-            gravity_home=args.gravity_home or _opt_path(ctx.get("gravity_home")),
-            workflow_home=args.workflow_home or _opt_path(ctx.get("workflow_home")),
-            registry_path=args.registry_path or _opt_path(ctx.get("registry_path")),
-        )
+        eff_gravity = args.gravity_home or _opt_path(ctx.get("gravity_home"))
+        eff_wf_home = args.workflow_home or _opt_path(ctx.get("workflow_home"))
+        eff_reg_path = args.registry_path or _opt_path(ctx.get("registry_path"))
+        if args.view == "health":
+            out = get_health_view(
+                gravity_home=eff_gravity,
+                workflow_home=eff_wf_home,
+                registry_path=eff_reg_path,
+            )
+        else:
+            out = get_workflow_view(
+                ws=args.workspace or str(params.get("ws") or params.get("workspace") or ctx.get("ws") or ""),
+                since_signature=args.since_signature or str(params.get("since_signature") or ""),
+                gravity_home=eff_gravity,
+                workflow_home=eff_wf_home,
+                registry_path=eff_reg_path,
+            )
     sys.stdout.write(json.dumps(out, indent=None if args.json else 2, ensure_ascii=False) + "\n")
     sys.stdout.flush()
     return 0

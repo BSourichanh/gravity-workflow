@@ -24,7 +24,8 @@
   "dashboard": {
     "provider_script": "scripts/dashboard_provider.py",
     "views": [
-      "workflow"
+      "workflow",
+      "health"
     ],
     "actions": []
   },
