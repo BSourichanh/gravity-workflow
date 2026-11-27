@@ -12,7 +12,7 @@ Antigravity exécute les commandes de `hooks.json` depuis **la racine du plugin*
 
 ## Garde-fou `PreToolUse` ([`pre_tool_guard.py`](../plugin/hooks/pre_tool_guard.py) + [`safety_policy.py`](../plugin/hooks/safety_policy.py) -> [`policy/`](../plugin/hooks/policy/))
 
-La politique de sécurité est structurée en **7 sous-modules SRP** sous `plugin/hooks/policy/` (`constants.py`, `paths.py`, `shell_parser.py`, `git_and_fs.py`, `python_ast.py`, `inline_scripts.py`, `evaluator.py`) derrière la façade mince rétrocompatible [`safety_policy.py`](../plugin/hooks/safety_policy.py). Le matcher couvre les outils shell (`run_command`, `execute_command`, `bash`, `shell`), `run_workflow`, d'écriture (`write_to_file`, `write_file`, `replace_file_content`, `edit_file`, `multi_replace_file_content`), de lecture/recherche (`view_file`, `read_file`, `grep_search`, `search_files`, `list_dir`, `find_by_name`) et `call_mcp_tool`. Il reste **toujours actif**, même en modes `fast` et `unsafe`.
+La politique de sécurité est structurée en **16 sous-modules SRP** sous `plugin/hooks/policy/` (`constants.py`, `paths.py`, `shell_parser.py`, `git_and_fs.py`, 8 modules `python_ast*.py` [`python_ast.py`, `python_ast_state.py`, `python_ast_eval.py`, `python_ast_cands.py`, `python_ast_imports.py`, `python_ast_flow.py`, `python_ast_calls.py`, `python_ast_readonly.py`], 3 modules d'inspection inline/stdin [`inline_scripts.py`, `js_eval.py`, `stdin_inspect.py`] et `evaluator.py`, plus `__init__.py` soit 17 fichiers) derrière la façade mince rétrocompatible [`safety_policy.py`](../plugin/hooks/safety_policy.py). Le matcher couvre les outils shell (`run_command`, `execute_command`, `bash`, `shell`), `run_workflow`, d'écriture (`write_to_file`, `write_file`, `replace_file_content`, `edit_file`, `multi_replace_file_content`), de lecture/recherche (`view_file`, `read_file`, `grep_search`, `search_files`, `list_dir`, `find_by_name`) et `call_mcp_tool`. Il reste **toujours actif**, même avec l'argument éphémère `--no-verify` / `unsafe`.
 
 Pour l'analyse des commandes shell sans faux positifs inter-commandes ni contournement par guillemets :
 - **`_split_shell_chains()` / `split_shell_segments()` :** découpe la ligne de commande en chaînes de pipes (`;`, `&&`, `||`, `&` *(hors redirections `2>&1`/`&>` et appel PowerShell `&` en tête)*, `\n`) puis en étapes `|` uniquement hors guillemets et hors here-strings PowerShell (`@'\n...\n'@` et `@"\n...\n"@`), préserve les backslashes Windows (`C:\...`) et extrait récursivement (profondeur bornée à `4`) les sous-commandes `$(...)` et `` `...` `` hors single-quotes.
@@ -31,17 +31,18 @@ Pour l'analyse des commandes shell sans faux positifs inter-commandes ni contour
 ## Hooks `SessionStart`, `PostToolUse` & `Stop`
 
 - **[`session_start_caveman.py`](../plugin/hooks/session_start_caveman.py) (`SessionStart`, groupe `harness-session-caveman`, `"enabled": false` dans `plugin/hooks.json`) :**
-  - Désactivé par défaut dans `plugin/hooks.json` (`"enabled": false`) tout en restant fonctionnel en invocation directe : charge `.agents/gravity-workflow/profile.json` (repli centralisé) et vérifie le niveau `caveman` (`lite` par défaut).
-  - Si hors projet Gravity Workflow, si `caveman == "off"`, ou si `stdin` est malformé : émet `{}` et sort en `0`.
+  - Désactivé par défaut dans `plugin/hooks.json` (`"enabled": false`) tout en restant fonctionnel en invocation directe sur **tout dépôt** sans nécessiter `is_gravity_workspace()` : résout le workspace cible et charge d'abord `$GRAVITY_WORKFLOW_HOME/workspaces/<slug>-<sha256_8>/profile.json` (`$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow` > `~/.gemini/gravity/workflow/`) avec repli lecture seule sur `<ws>/.agents/gravity-workflow/profile.json` si présent, puis vérifie le niveau `caveman` (`lite` par défaut).
+  - Si `caveman == "off"` ou si `stdin` JSON est malformé (non-objet ou JSON invalide) : émet `{}` et sort en `0`.
   - Sinon, injecte une seule fois au démarrage (`injectSteps[0].systemMessage.systemMessage`) la directive compacte produite par `caveman_protocol.build_session_start_prompt()`, préservant le Context Caching Gemini et imposant l'**auto-clarté** (prose complète obligatoire sur alertes/refus `PreToolUse`, confirmations irréversibles et `/grill-me`).
 - **[`post_tool_format.py`](../plugin/hooks/post_tool_format.py) (`PostToolUse`) :**
   - Émet strictement `{}` et sort en `0`.
-  - Ignore immédiatement si le workspace a `"verification": "unsafe"` dans `.agents/gravity-workflow/profile.json`, si l'outil a retourné `error`, ou si la cible est dans `.agents/`.
-  - Exécute `ruff format` / `black --quiet` sur `.py`, ou `prettier --write` uniquement si une config Prettier (`.prettierrc*`, `prettier.config.*`, ou clé `"prettier"` dans `package.json`) existe dans le projet.
+  - Ne lit pas `profile.json` (le mode éphémère `--no-verify` / `unsafe` n'est jamais persisté dans `profile.json`).
+  - Ignore immédiatement si `stdin` est vide/invalide, si l'outil a retourné `error`, si aucun chemin cible n'est fourni, ou si la cible est dans `.agents/` ou absente.
+  - Exécute `ruff format` / `black --quiet` sur `.py`, ou `prettier --write` (`.js`, `.ts`, `.tsx`, `.jsx`, `.json`, `.md`, `.yml`, `.yaml`) uniquement si une config Prettier (`.prettierrc*`, `prettier.config.*`, ou clé `"prettier"` dans `package.json`) existe dans le projet.
 - **[`stop_session_logger.py`](../plugin/hooks/stop_session_logger.py) (`Stop`) :**
-  - Ignore immédiatement (émet `{}` en `exit 0` sans créer `.agents/gravity-workflow/`) si le workspace n'est pas initialisé Gravity Workflow (`is_gravity_workspace()`).
-  - Enregistre les champs Antigravity (`conversationId`, `modelName`, `terminationReason`, `executionNum`, `fullyIdle`, `continuationActive`, `transcriptPath`, `error`, `cwd`) sous verrou exclusif dans `.agents/gravity-workflow/observability/runs.jsonl`.
-  - Déclenche `profile_engine.evolve_on_stop(ws_root, entry)` (y compris l'adaptation `evo` de `caveman` si `caveman_locked: false`) puis émet `{}` en `exit 0`.
+  - S'applique sur **tout dépôt** sans `is_gravity_workspace()` (zéro fichier créé dans `<ws>/.agents/`). Si `stdin` est vide ou non-JSON-objet, émet `{}` et sort en `0`.
+  - Enregistre les champs Antigravity (`conversationId`, `modelName`, `terminationReason`, `executionNum`, `fullyIdle`, `continuationActive`, `transcriptPath`, `error`, `cwd`) ainsi que `preset_profile` et `role_models` sous verrou exclusif dans `runs.jsonl` centralisé (`$GRAVITY_WORKFLOW_HOME/workspaces/<slug>-<sha256_8>/runs.jsonl`) via `state_writer.append_run_log()`.
+  - Déclenche `profile_engine.evolve_on_stop(ws_root, entry)` (délégué à `evo_engine.evolve_on_stop`, y compris l'adaptation `evo` de `caveman` si `caveman_locked: false`) puis émet `{}` en `exit 0`.
 
 ---
 

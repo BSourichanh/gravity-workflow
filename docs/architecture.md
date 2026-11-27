@@ -17,7 +17,7 @@ Gravity Workflow sépare strictement le moteur du harnais des fichiers propres a
 plugin/
 ├── plugin.json                         # Manifeste Antigravity (9 champs officiels, UTF-8 sans BOM)
 ├── config/
-│   └── module.json                     # Contrat module v1 (id="workflow", storage="workflow", ui="none", target="gravity")
+│   └── module.json                     # Contrat module v1 (id="workflow", storage="workflow", ui="none", target="gravity", SPI-1 views=["workflow", "health"])
 ├── hooks.json                          # Groupes PreToolUse, PostToolUse, SessionStart et Stop (portables python3)
 ├── README.md
 ├── assets/logo.svg                     # SVG carré 1:1
@@ -30,18 +30,28 @@ plugin/
 │   │   ├── SKILL.md                    # Chef d'orchestre principal /gravity-workflow
 │   │   └── references/                 # 10 fiches chargées à la demande (00 à 09)
 │   └── caveman/
-│       └── SKILL.md                    # Skill compagnon /caveman (intensités, commit, compress)
+│       ├── SKILL.md                    # Skill compagnon /caveman (intensités, commit, compress)
+│       └── references/style-examples.md # Exemples contrastés par intensité (lite/full/ultra)
 ├── _shared/                            # Socle Python 3.10+ stdlib synchronisé (atomic_io, file_lock, hook_runtime, installer_core, path_safety, signal_bus, transcript_reader, validator_core)
 ├── hooks/
 │   ├── safety_policy.py                # Façade rétrocompatible (<= 220 L) vers policy/
-│   ├── policy/                         # Sous-modules SRP deny / force_ask / allow
+│   ├── policy/                         # 16 sous-modules SRP deny / force_ask / allow (+ __init__.py)
 │   │   ├── __init__.py
 │   │   ├── constants.py                # Tables statiques, regex, secrets, destructeurs
 │   │   ├── paths.py                    # Normalisation chemins, protections plugin/harnais/secrets
 │   │   ├── shell_parser.py             # Tokenisation PowerShell/POSIX, sous-expressions, redirections
 │   │   ├── git_and_fs.py               # Règles Git (force-push/config -c) et rm/secrets/DB
-│   │   ├── python_ast*.py              # Inspection AST Python découpée (eval, imports, readonly, principal)
-│   │   ├── inline_scripts.py           # Extraction/inspection (+ js_eval.py, stdin_inspect.py)
+│   │   ├── python_ast.py               # Analyse AST Python (passes 1/2, flux séquentiels, re-exports)
+│   │   ├── python_ast_state.py         # Structures d'état AST, imports, scalaires/base64
+│   │   ├── python_ast_eval.py          # Évaluation statique AST (chaînes, octets, compréhensions)
+│   │   ├── python_ast_cands.py         # Candidats multi-branches et détection d'obfuscation AST
+│   │   ├── python_ast_imports.py       # Résolution d'imports dynamiques et bindings AST
+│   │   ├── python_ast_flow.py          # Appels indirects et suivi de mutation bytearray
+│   │   ├── python_ast_calls.py         # Inspection des appels sensibles et os.environ
+│   │   ├── python_ast_readonly.py      # Vérification harnais lecture seule et repli AST
+│   │   ├── inline_scripts.py           # Inspection scripts inline (node/perl/ruby) et re-exports
+│   │   ├── js_eval.py                  # Scanning lexical JS et évaluation statique templates/chaînes
+│   │   ├── stdin_inspect.py            # Extraction specs inline et inspection payloads stdin/pipes
 │   │   └── evaluator.py                # Orchestration _evaluate_shell_command et décisions fail-closed
 │   ├── pre_tool_guard.py               # Hook PreToolUse fail-closed (chmod 0755)
 │   ├── post_tool_format.py             # Hook PostToolUse auto-formatage (chmod 0755)
@@ -77,7 +87,7 @@ plugin/
 │       │   └── 06-engineering-principles.md
 │       └── gravity-workflow/{.gitignore,BACKLOG.md,profile.json}
 └── scripts/
-    ├── dashboard_provider.py           # Fournisseur SPI-1 read-only pour /gravity dashboard (chmod 0755)
+    ├── dashboard_provider.py           # Fournisseur SPI-1 read-only vues ["workflow", "health"] pour /gravity dashboard (chmod 0755)
     ├── init_workspace.py               # Bootstrapper projet full/quickstart + --with-stack (chmod 0755)
     ├── validate.py                     # CLI validation --strict (chmod 0755)
     ├── test_unit.py                    # Lanceur rétrocompatible vers tests/test_*.py (<= 50 L, 100 % stdlib)
@@ -97,7 +107,7 @@ workspace-template/
     │   ├── 03-api-architecture.md      # trigger: model_decision — opt-in --with-stack api
     │   ├── 04-release-checklist.md     # trigger: manual
     │   ├── 05-git-versioning.md        # trigger: model_decision (chef d'orchestre uniquement)
-    │   └── 06-engineering-principles.md # trigger: model_decision (KISS, YAGNI, DRY, SOLID, CUPID)
+    │   └── 06-engineering-principles.md # trigger: model_decision (KISS, YAGNI, DRY, SOLID, CUPID + Hexagonal/DDD pragmatique)
     └── gravity-workflow/
         ├── .gitignore                  # Ignore *.lock, runs.jsonl, last_verified.patch, reports
         ├── PROGRESS.md                 # Suivi des 8 étapes + Bonus
