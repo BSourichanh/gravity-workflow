@@ -317,7 +317,7 @@ def validate_module_contract(
         (_is_nonempty_str(pname) and (not expected_plugin_name or pname == expected_plugin_name), f"config/module.json : 'plugin_name' invalide ({pname!r})."),
         (_is_nonempty_str(data.get("role")), "config/module.json : 'role' doit être une chaîne non vide."),
         (isinstance(st, dict) and isinstance(st.get("subdir"), str) and bool(MODULE_ID_RE.match(st["subdir"])) and _is_nonempty_str(st.get("env_override")), "config/module.json : 'storage' (subdir, env_override) invalide."),
-        (isinstance(ui, dict) and _is_nonempty_str(ui.get("mode")) and _is_nonempty_str(ui.get("target")), "config/module.json : 'ui' (mode, target) invalide."),
+        (isinstance(ui, dict) and _is_nonempty_str(ui.get("mode")) and _is_nonempty_str(ui.get("target")), "config/module.json : 'ui.mode' ou 'ui.target' invalide."),
     ):
         if not ok:
             report.error(msg)
@@ -561,7 +561,8 @@ def run_agy_plugin_validate(
     is_snap = "/snap/" in resolved_bin or "/snap/" in os.path.realpath(resolved_bin)
     has_hidden = any(part.startswith(".") for part in Path(src_abs).parts if part not in ("/", ""))
     tmp_base = os.path.abspath(tempfile.gettempdir())
-    in_tmp = src_abs in ("/tmp", tmp_base) or src_abs.startswith(("/tmp/", tmp_base.rstrip(os.sep) + os.sep))
+    in_posix_tmp = os.name != "nt" and Path(src_abs).parts[:2] == ("/", "tmp")
+    in_tmp = in_posix_tmp or src_abs == tmp_base or src_abs.startswith(tmp_base.rstrip(os.sep) + os.sep)
     stage_parent, target_dir, staged = None, src_abs, False
     try:
         if is_snap or has_hidden or in_tmp:

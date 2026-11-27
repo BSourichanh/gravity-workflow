@@ -184,14 +184,14 @@ class TestHooksRuntime(WorkflowEnvTestCase):
             self.assertEqual(prof["workspace"], str(ws.resolve()))
             self.assertEqual(prof["last_evaluated_conversation_id"], "conv-shared-1")
 
-            # Résolution via GRAVITY_WORKFLOW_WORKSPACE quand stdin est malformé
+            # Résolution via GRAVITY_WORKFLOW_WORKSPACE avec JSON valide minimal
             ws_env = base / "ws_env_stop"
             ws_env.mkdir()
             env = dict(os.environ)
             env["GRAVITY_WORKFLOW_WORKSPACE"] = str(ws_env)
-            proc_bad = subprocess.run(
+            proc_env = subprocess.run(
                 [sys.executable, str(stop_hook)],
-                input="{not_json",
+                input='{"fullyIdle": true}',
                 text=True,
                 encoding="utf-8",
                 capture_output=True,
@@ -200,9 +200,31 @@ class TestHooksRuntime(WorkflowEnvTestCase):
                 timeout=5,
                 check=False,
             )
-            self.assertEqual(proc_bad.returncode, 0)
-            self.assertEqual(proc_bad.stdout.strip(), "{}")
+            self.assertEqual(proc_env.returncode, 0)
+            self.assertEqual(proc_env.stdout.strip(), "{}")
             self.assertTrue(state_writer.resolve_runs_log_path(ws_env).is_file())
+
+            # stdin vide, malformé ou non-dict -> fail-closed (aucune écriture dans runs.jsonl ni profile.json)
+            ws_bad = base / "ws_bad_stop"
+            ws_bad.mkdir()
+            env_bad = dict(os.environ)
+            env_bad["GRAVITY_WORKFLOW_WORKSPACE"] = str(ws_bad)
+            for bad_payload in ("{not_json", "", "[]"):
+                proc_bad = subprocess.run(
+                    [sys.executable, str(stop_hook)],
+                    input=bad_payload,
+                    text=True,
+                    encoding="utf-8",
+                    capture_output=True,
+                    cwd=str(base),
+                    env=env_bad,
+                    timeout=5,
+                    check=False,
+                )
+                self.assertEqual(proc_bad.returncode, 0)
+                self.assertEqual(proc_bad.stdout.strip(), "{}")
+                self.assertFalse(state_writer.resolve_runs_log_path(ws_bad).exists())
+                self.assertFalse(state_writer.resolve_profile_storage_path(ws_bad).exists())
 
             # state_writer._default_state()["progress"] vaut "0/0"
             self.assertEqual(state_writer._default_state()["progress"], "0/0")

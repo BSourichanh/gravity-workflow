@@ -2,6 +2,7 @@
 """Hook Stop Gravity Workflow : journalisation centralisée `runs.jsonl` + adaptation consultative `evo`."""
 
 import datetime
+import json
 import sys
 from pathlib import Path
 
@@ -19,7 +20,7 @@ def main() -> int:
             configure_utf8_stdio,
             emit_ok,
             first_not_none,
-            read_stdin_json,
+            read_stdin_text,
             resolve_workspace_root,
         )
         from profile_engine import (  # type: ignore[import-not-found]
@@ -35,7 +36,18 @@ def main() -> int:
 
     configure_utf8_stdio()
     try:
-        event = read_stdin_json()
+        raw_stdin = read_stdin_text()
+        if not raw_stdin:
+            emit_ok()
+            return 0
+        try:
+            event = json.loads(raw_stdin)
+        except Exception:
+            emit_ok()
+            return 0
+        if not isinstance(event, dict):
+            emit_ok()
+            return 0
         ws_root = resolve_workspace_root(
             event,
             anchor_file=__file__,

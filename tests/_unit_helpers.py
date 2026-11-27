@@ -13,9 +13,9 @@ PLUGIN_ROOT = REPO_ROOT / "plugin"
 
 
 def ensure_plugin_paths() -> Path:
-    """Ajoute les sous-dossiers moteur du plugin à sys.path (idempotent) et retourne PLUGIN_ROOT."""
-    for sub in ("scripts", "evals", "observability", "hooks"):
-        path_str = str(PLUGIN_ROOT / sub)
+    """Ajoute PLUGIN_ROOT et les sous-dossiers moteur du plugin à sys.path (idempotent)."""
+    for sub in ("", "scripts", "evals", "observability", "hooks"):
+        path_str = str(PLUGIN_ROOT / sub) if sub else str(PLUGIN_ROOT)
         if path_str not in sys.path:
             sys.path.insert(0, path_str)
     return PLUGIN_ROOT

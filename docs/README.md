@@ -25,7 +25,7 @@ Cette documentation remplace la spécification statique monolithique par des fic
 1. **100 % bibliothèque standard Python 3 :** aucune dépendance tierce dans [`plugin/`](../plugin/), [`workspace-template/`](../workspace-template/), [`install.py`](../install.py), [`uninstall.py`](../uninstall.py) ni [`tests/`](../tests/).
 2. **Séparation stricte moteur vs projet :** toute la logique et les modèles du harnais vivent dans `plugin/` (`plugin/templates/`) ; l'initialisation dans un projet utilisateur ne crée que le socle vital `AGENTS.md` + `.agents/` (`11` fichiers en `quickstart`, `12` en `full`, plus stacks opt-in `--with-stack python|api`, illustrés par les `14` fichiers de référence de `workspace-template/`), tandis que le stockage global vit dans `~/.gemini/gravity/workflow/` (`$GRAVITY_WORKFLOW_HOME` > `$GRAVITY_HOME/workflow`).
 3. **Zéro jargon interne :** ne jamais introduire de numérotation artificielle (`Module XX`) dans les skills, fiches de référence ou cette documentation.
-4. **Dépôt compagnon métriques & hub :** la collecte et l'analyse des coûts/tokens de sessions Antigravity vivent dans `../gravity-metrics` et l'orchestration centrale / future UI unifiée dans le plugin Core [`../gravity`](../gravity/).
+4. **Dépôt compagnon métriques & hub :** la collecte et l'analyse des coûts/tokens de sessions Antigravity vivent dans `../gravity-metrics` et l'orchestration centrale / future UI unifiée dans le plugin Core `../gravity`.
 
 ---
 

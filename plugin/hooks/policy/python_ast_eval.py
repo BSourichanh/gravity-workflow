@@ -369,7 +369,10 @@ def _eval_static_str(
         return (left + right) if (left is not None and right is not None) else None
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         left, right = rec(node.left), rec(node.right)
-        return f"{left.rstrip('/\\')}/{right}" if (left is not None and right is not None) else None
+        if left is None or right is None:
+            return None
+        cleaned_left = left.rstrip("/\\")
+        return f"{cleaned_left}/{right}"
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
         ls, rn = rec(node.left), _eval_static_int(node.right, env_ints, const_vars, _depth + 1)
         if ls is not None and rn is not None:

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "source_repo": "gravity",
   "source_path": "shared/gravity_shared",
-  "generated_at": "2026-11-26T12:50:54Z",
+  "generated_at": "2026-11-27T00:25:19Z",
   "files": {
     "__init__.py": "ca90d689072a9e41f3b914866c9d6dff2a740c31ae8542e09df9d62de57f13c2",
     "atomic_io.py": "4e482388687c39942a3694ac0a3e3cd9156fcceb36c1d607c530dd7c4b1044b9",
@@ -12,6 +12,6 @@
     "path_safety.py": "1b1223ca6b5cd07fdda5783af64751e3961c5baed2eed2b5935618c698a0c847",
     "signal_bus.py": "22f5cd670224d1036fe147879f00c6a54f528967f85ca4f28a9c47b05241b77d",
     "transcript_reader.py": "e3c138f38a937f3f4ee25f6db6659f8d3883753df9cc6d03c4429abe039a427b",
-    "validator_core.py": "f93f576d3b19bfb510145e9cbd9a74d10b0ebcb75fa01cf0a433bc0cbdc2e95b"
+    "validator_core.py": "37fd97f5a8c8cf19891024d0eedff0adf8ee9283048a3133fed3311285693b63"
   }
 }
