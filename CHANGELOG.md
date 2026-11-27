@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-27
+
 ### Fixed
 - **`TASK-WF-01a` — Close `bytearray` Alias/Non-`Expr`, String `%`/`*`/Transforms/`codecs.lookup`, Ctor Alias, Indirect Call (`methodcaller`/`__call__`/`*args`/`**kwargs`/`setattr`/`map`/Curried), and `os.environ` Dict `.get`/Alias Bypasses (`plugin/hooks/policy/`, `plugin/scripts/validators/`, `tests/`):**
   - Hardened `plugin/hooks/policy/python_ast*.py` by extracting cohesive `python_ast_cands.py` and `python_ast_calls.py` modules (all 8 `python_ast*.py` modules strictly `< 650` L, `plugin/**/*.py <= 800` L, 100% Python 3.10+ stdlib, strictly acyclic DAG, added `"python_ast_cands"` & `"python_ast_calls"` to `WORKFLOW_LOCAL_MODULES` in `plugin/scripts/validators/plugin_validator.py`):

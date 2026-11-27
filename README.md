@@ -176,7 +176,7 @@ python install.py --uninstall --method agy
 | [`workspace-template/`](workspace-template/) | Reference 14-file project workspace synchronized with [`plugin/templates/`](plugin/templates/) and [`plugin/scripts/init_workspace.py`](plugin/scripts/init_workspace.py) |
 | [`docs/`](docs/README.md) | Modular living documentation kept in sync with the codebase (French) |
 | [`AGENTS.md`](AGENTS.md) | Repository-level agent instructions and Python stdlib / KISS-YAGNI-DRY-SOLID-CUPID / living docs / integrity invariants |
-| [`CHANGELOG.md`](CHANGELOG.md) | Release notes (`v0.4.0` / `[Unreleased]`) |
+| [`CHANGELOG.md`](CHANGELOG.md) | Release notes (`v0.5.0` / `[Unreleased]`) |
 | [`LICENSE`](LICENSE) | MIT License |
 
 ---
